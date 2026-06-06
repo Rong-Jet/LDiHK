@@ -60,6 +60,8 @@ class ParserDispatchTests(unittest.TestCase):
             "subscriptions/subscriptions.csv": "subscriptions",
             "subscriptions/subscriptions.json": "subscriptions",
             "playlists/likes.json": "likes_playlists",
+            "playlists/watch-later.json": "likes_playlists",
+            "playlists/favorites.json": "likes_playlists",
             "comments/comments.csv": "comments_live_chat",
             "live chats/live chats.csv": "comments_live_chat",
             "my-comments/comment-1.html": "comments_live_chat",

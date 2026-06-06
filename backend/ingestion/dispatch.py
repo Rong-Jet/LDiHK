@@ -55,6 +55,11 @@ DISPATCH_TABLE: tuple[ParserRoute, ...] = (
         path_pattern="likes.json",
     ),
     ParserRoute(
+        parser_name="likes_playlists",
+        callable_path="backend.ingestion.parsers.likes_playlists:parse_likes_playlists",
+        path_pattern="playlists/*.json",
+    ),
+    ParserRoute(
         parser_name="comments_live_chat",
         callable_path=(
             "backend.ingestion.parsers.comments_live_chat:parse_comments_live_chat"
