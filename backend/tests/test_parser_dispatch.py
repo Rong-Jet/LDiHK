@@ -57,6 +57,7 @@ class ParserDispatchTests(unittest.TestCase):
         cases = {
             "watch-history.html": "watch_history",
             "watch-history.json": "watch_history",
+            "history/search-history.json": "search_history",
             "subscriptions/subscriptions.csv": "subscriptions",
             "subscriptions/subscriptions.json": "subscriptions",
             "playlists/likes.json": "likes_playlists",
@@ -70,6 +71,16 @@ class ParserDispatchTests(unittest.TestCase):
             with self.subTest(suffix=suffix):
                 source_path = f"Takeout/YouTube and YouTube Music/{suffix}"
                 self.assertEqual(parser_name_for_path(source_path), parser_name)
+
+    def test_routes_youtube_my_activity_json_to_search_parser(self):
+        result = dispatch_member_path("Takeout/My Activity/YouTube/MyActivity.json")
+
+        self.assertFalse(result.ignored)
+        self.assertEqual(result.parser_name, "search_history")
+        self.assertEqual(
+            result.callable_path,
+            "backend.ingestion.parsers.search_history:parse_search_history",
+        )
 
     def test_unmatched_files_are_ignored(self):
         result = dispatch_member_path(
