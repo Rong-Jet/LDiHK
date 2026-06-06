@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from zipfile import ZipFile
 
 from backend.app import create_app
@@ -31,23 +32,83 @@ class DeploymentSmokeTests(unittest.TestCase):
             encoding="utf-8"
         )
         env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+        pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        uv_lock = (ROOT / "uv.lock").read_text(encoding="utf-8")
 
-        self.assertIn('CMD ["python", "backend/scripts/run_web.py"]', dockerfile)
+        self.assertIn('"gunicorn', dockerfile)
+        self.assertIn("backend.app:app", dockerfile)
         self.assertIn("HEALTHCHECK", dockerfile)
+        self.assertIn('"gunicorn>=', pyproject)
+        self.assertIn('name = "gunicorn"', uv_lock)
+        self.assertIn("gunicorn -b 0.0.0.0:$PORT backend.app:app", deployment_doc)
         self.assertIn("backend/scripts/run_worker.py", deployment_doc)
+        self.assertIn("backend/scripts/run_enrichment_worker.py", deployment_doc)
         self.assertIn("backend/scripts/run_migrations.py", deployment_doc)
+        self.assertIn("one Docker image", deployment_doc)
 
         for variable in (
             "PORT",
             "DATABASE_URL",
+            "FRONTEND_ALLOWED_ORIGINS",
+            "REQUIRE_LDIHK_BEARER",
+            "ALLOW_IDENTIFIER_DIMENSIONS",
+            "QUERY_BUCKET_TIMEZONE",
             "AWS_ACCESS_KEY_ID",
             "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
             "AWS_REGION",
             "S3_BUCKET",
+            "MAX_IMPORT_ZIP_BYTES",
+            "IMPORT_WORKER_POLL_INTERVAL_SECONDS",
             "YOUTUBE_API_KEY",
+            "YOUTUBE_MAX_DURATION_SECONDS",
+            "ENRICHMENT_BATCH_SIZE",
+            "ENRICHMENT_POLL_INTERVAL_SECONDS",
+            "ENRICHMENT_RETRY_BASE_SECONDS",
+            "LOG_LEVEL",
             "TEST_DATABASE_URL",
         ):
             self.assertRegex(env_example, rf"(?m)^{variable}=")
+
+    def test_db_backed_routes_return_stable_unavailable_without_database_url(self):
+        app = create_app()
+        client = app.test_client()
+
+        with patch.dict("os.environ", {"DATABASE_URL": ""}, clear=False):
+            health_response = client.get("/health")
+            create_response = client.post(
+                "/api/imports",
+                json={
+                    "user_id": "smoke_user",
+                    "s3_bucket": "smoke-bucket",
+                    "s3_key": "uploads/smoke_user/takeout.zip",
+                },
+            )
+            get_response = client.get(
+                "/api/imports/00000000-0000-0000-0000-000000000001"
+            )
+            query_response = client.post(
+                "/api/query",
+                json={
+                    "dataset": "youtube_usage",
+                    "user_id": "smoke_user",
+                    "metrics": ["event_count"],
+                    "dimensions": ["event_type"],
+                    "filters": {},
+                },
+            )
+
+        self.assertEqual(health_response.status_code, 200)
+        self.assertEqual(health_response.get_json(), {"status": "ok"})
+        for response in (create_response, get_response, query_response):
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(
+                response.get_json(),
+                {
+                    "error": "database_unavailable",
+                    "message": "DATABASE_URL is required to connect to Postgres",
+                },
+            )
 
     def test_migration_runner_smoke_applies_pending_migration(self):
         with tempfile.TemporaryDirectory() as tmpdir:

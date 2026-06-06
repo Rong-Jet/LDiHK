@@ -14,7 +14,9 @@ from backend.app import create_app
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run the backend web process.")
+    parser = argparse.ArgumentParser(
+        description="Run the backend web process with Flask's local server."
+    )
     parser.add_argument(
         "--host",
         default=os.environ.get("HOST", "0.0.0.0"),
