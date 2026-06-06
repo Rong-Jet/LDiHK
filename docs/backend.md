@@ -3,151 +3,193 @@
 This is the living business contract for what the backend delivers. Historical
 implementation details belong in `docs/backend/versions/`.
 
+## Version Map
+
+- v1: local YouTube Takeout processing and full JSON API.
+- v2: frontend-ready local temporal chart API.
+- v3: local SQLite duration enrichment and structured query API.
+- v4: S3/Postgres YouTube Takeout ingestion backend.
+- v5: hosted backend workers, Supabase database, Render deployment, and hosted
+  smoke testing.
+
+Version documents:
+
+```text
+docs/backend/versions/v1-youtube-usage-pipeline-api.md
+docs/backend/versions/v2-youtube-temporal-api.md
+docs/backend/versions/v3-sql-duration-query-api.md
+docs/backend/versions/v4-youtube-takeout-s3-postgres-backend.md
+docs/backend/versions/v5-hosted-backend-workers-and-deployment.md
+```
+
+Frontend handoff contract:
+
+```text
+docs/backend/frontend-api-spec.md
+```
+
 ## Current Delivery
 
-- The backend serves privacy-minimized YouTube usage data for one local user.
-- The backend keeps the full processed JSON API available for the frontend.
-- The backend serves frontend-ready v2 temporal chart data derived from the
-  processed JSON artifact.
-- The backend can import watched YouTube events into a v3 SQLite usage store.
-- The backend can enrich v3 video metadata with YouTube Data API durations.
-- The backend serves structured v3 query responses from SQLite.
-- The backend must not expose watched titles, URLs, channel names, video IDs, or
-  raw Google Takeout HTML.
-- The backend treats `Watched` YouTube activity as usage.
-- The backend excludes YouTube Music from delivered v2 usage metrics so the
-  product can focus on YouTube video usage first.
-- The backend excludes `Viewed` activity from delivered usage metrics because
-  post/community views are not relevant to the product's usage analysis.
+- The backend exposes a health endpoint.
+- The backend accepts frontend-created S3 upload references through
+  `POST /api/imports`.
+- User-scoped requests derive public `ldihk_id` from
+  `Authorization: Bearer <LDiHKID>` and map it internally to the Postgres
+  `user_id` schema.
+- The backend creates queued import jobs in Postgres.
+- The backend exposes import status through `GET /api/imports/{import_id}`.
+- The import worker polls Postgres, claims queued imports, downloads ZIP files
+  from S3, safely scans ZIP members, dispatches supported YouTube parsers, and
+  writes normalized records to Postgres.
+- The backend stores normalized usage events for watch history, search history,
+  likes, playlist/watch-later adds, comments, live chats, and subscriptions
+  where Takeout source files are available and parser support exists.
+- The backend stores privacy-minimized fields by default: IDs, timestamps,
+  event types, hashed titles, hashed channel titles, hashed search terms, and
+  count/sample-hash warnings.
+- The backend does not store raw ZIP contents, raw watched titles, raw search
+  terms, raw comments, or raw Takeout HTML by default.
+- The backend exposes `POST /api/query` for structured, allowlisted,
+  parameterized dashboard queries.
+- The frontend must not submit raw SQL.
+- Duration enrichment primitives exist for YouTube Data API duration and
+  availability lookup, but hosted asynchronous enrichment wiring is a v5
+  completion item.
+- The existing v1-v3 local JSON/SQLite endpoints may remain available during
+  transition, but the backend direction is v4/v5 hosted Postgres.
 
-## v2 Business Requirements
+## Backend-Owned v5 Outcomes
 
-- Add frontend-ready temporal APIs derived from the existing processed JSON.
-- Keep the existing full JSON endpoint available.
-- Provide daily evolution data for time-series charts.
-- Provide day-by-hour data for calendar or heatmap visualizations.
-- Include zero-count dates so time-series charts can render continuous ranges.
-- Include zero-count day/hour buckets so heatmaps can render complete grids.
-- Default temporal outputs to the full local-date range covered by watched
-  events.
-- Do not require date-range query parameters in v2.
-- Return both `event_count` and `estimated_seconds`.
-- Include `session_count` in daily output.
-- Count daily sessions by the session start date only.
-- Count events by their start timestamp.
-- Calculate `estimated_seconds` from merged intervals, split into the relevant
-  day/hour buckets.
-- Return YouTube-only totals.
-- Do not include raw event rows in the v2 temporal endpoint.
-- Do not return average session length; the frontend can derive averages from
-  the session list.
-- Use a fixed placeholder duration of `600` seconds for each watched event.
-- Label placeholder duration as estimated data.
-- Do not call the YouTube API or enrich records with real video duration in v2.
-- Define sessions from watched events only.
-- Start a new session when the inactivity gap between the current merged
-  session end and the next watched-event interval start is more than `30`
-  minutes.
-- Model each watched event as a `600` second interval.
-- Prevent duration overlaps by merging overlapping watched-event intervals.
-- Calculate estimated duration from the merged interval span, not from
-  `event_count * 600`.
-- Use the same merged intervals for daily totals, hourly heatmaps, and sessions.
-- Split merged interval duration across day and hour boundaries when needed.
-
-## v3 Business Requirements
-
-- Use SQL as the backend data bank for usage events and video metadata.
-- Reparse the local Takeout HTML during v3 SQL import so internal video IDs can
-  be stored without weakening the public v1 JSON privacy contract.
-- Treat the v1 processed JSON as a public transition artifact, not the long-term
-  data bank.
-- Preserve privacy at the API boundary: do not expose watched titles, channel
-  names, video IDs, raw Takeout HTML, or raw SQL execution.
-- Do not allow the frontend to submit arbitrary SQL.
-- Let the frontend submit structured query requests that the backend validates
-  and compiles into parameterized SQL.
-- Store internal YouTube video IDs so durations can be fetched and cached.
-- Fetch actual video duration from the YouTube Data API when an API key is
-  configured.
-- Cache video duration results by `video_id` to avoid repeated API calls.
-- Track unavailable, deleted, private, failed, and capped-duration videos.
-- Keep duration enrichment separate from query serving so API reads do not call
-  external services.
+- Supabase Postgres is provisioned, migrated, and used by web and worker
+  services.
+- Render hosts the backend Docker image as separate web, import worker, and
+  enrichment worker services.
+- The web service runs with a production WSGI server.
+- Import workers enforce the configured S3 bucket and ZIP size limits.
+- Duration enrichment runs asynchronously after imports and improves query
+  quality without blocking import completion.
+- CORS and demo-auth boundaries are explicit so the deployed frontend can call
+  backend APIs.
+- The query endpoint can power:
+  - daily watch counts
+  - estimated watch seconds
+  - hourly heatmap data
+  - event counts by type
+  - subscription count
+  - top channels by event count
+  - top videos by event count when identifier dimensions are enabled
+- A hosted smoke test proves Render + Supabase + S3 + YouTube API configuration.
 
 ## Required API Outcomes
 
-The full JSON endpoint remains available:
+Health:
 
 ```text
-GET /api/users/local_user/youtube-usage
+GET /health
 ```
 
-v2 adds a temporal endpoint shaped for frontend charts:
+Import creation:
 
 ```text
-GET /api/v2/users/local_user/youtube-usage/temporal
+POST /api/imports
 ```
 
-The temporal response should include:
+Request:
 
 ```json
 {
-  "person_id": "local_user",
-  "schema_version": "youtube_usage.temporal.v2",
-  "source_schema_version": "youtube_usage.v1",
-  "duration_strategy": {
-    "kind": "fixed_placeholder",
-    "watched_event_seconds": 600,
-    "is_estimate": true
-  },
-  "daily": [
-    {
-      "date": "2026-06-06",
-      "event_count": 42,
-      "estimated_seconds": 25200,
-      "session_count": 5
-    }
-  ],
-  "hourly_heatmap": [
-    {
-      "date": "2026-06-06",
-      "hour": 8,
-      "event_count": 3,
-      "estimated_seconds": 1800
-    }
-  ],
-  "sessions": [
-    {
-      "session_id": "session_000001",
-      "started_at": "2026-06-06T08:12:00+02:00",
-      "ended_at": "2026-06-06T09:03:12+02:00",
-      "observed_span_seconds": 3072,
-      "event_count": 5,
-      "estimated_seconds": 3072
-    }
-  ]
+  "s3_bucket": "existing-bucket",
+  "s3_key": "uploads/demo-user-123/takeout.zip",
+  "s3_etag": "optional-etag"
 }
 ```
 
-v3 adds a structured SQL-backed query endpoint:
+Response:
 
-```text
-POST /api/v3/query
+```json
+{
+  "import_id": "uuid",
+  "ldihk_id": "demo-user-123",
+  "status": "queued"
+}
 ```
 
-The frontend sends validated query requests, not raw SQL.
+Import status:
 
-The v3 query response includes `duration_strategy`, `quality`, and aggregate
-`rows`. Unknown-duration events count toward `event_count`, are excluded from
-`watch_seconds`, and increment `events_missing_duration`.
+```text
+GET /api/imports/{import_id}
+```
+
+Structured query:
+
+```text
+POST /api/query
+```
+
+Request:
+
+```json
+{
+  "dataset": "youtube_usage",
+  "metrics": ["event_count", "estimated_watch_seconds"],
+  "dimensions": ["date", "hour"],
+  "filters": {
+    "start_date": "2026-06-01",
+    "end_date": "2026-06-07",
+    "event_type": "watch"
+  },
+  "options": {
+    "include_zero_buckets": true,
+    "limit": 500
+  }
+}
+```
+
+Response includes:
+
+- `schema_version`
+- `dataset`
+- `ldihk_id`
+- `duration_strategy`
+- `query`
+- `quality`
+- `rows`
+
+## Privacy And Safety Requirements
+
+- Do not expose raw source ZIPs through API responses.
+- Do not store raw ZIP contents after processing.
+- Do not store raw watched titles, raw search terms, or raw comment text by
+  default.
+- Hash private text fields before persistence.
+- Keep frontend query requests structured and allowlisted.
+- Parameterize compiled SQL.
+- Enforce a maximum query result limit.
+- Treat YouTube channel IDs and video IDs as user data. Expose them only when
+  the product enables identifier dimensions.
+- Keep creator-side YouTube metrics out of scope.
+
+## Deployment Requirements
+
+- Use one Docker image for web and workers.
+- Use Supabase Postgres or equivalent hosted Postgres.
+- Use an existing S3 bucket for frontend-uploaded Takeout ZIP files.
+- Use Render Web Service for the API.
+- Use Render Background Workers for import and enrichment loops.
+- Run migrations before long-lived services handle traffic.
+- Keep backend S3 credentials read-only for uploaded ZIP objects.
+- Keep YouTube Data API calls in the enrichment worker path, not in API reads.
+- Pass a real hosted smoke test before declaring the backend demo-ready.
 
 ## Out Of Scope
 
+- Frontend upload UI.
+- Frontend dashboard implementation.
+- Browser-to-S3 upload implementation.
 - Frontend-submitted raw SQL.
-- Content metadata analysis beyond duration lookup.
+- Creator-side YouTube metrics such as uploads, revenue, channel analytics, or
+  studio metrics.
 - Instagram, TikTok, and Douyin support.
-- Multi-user support.
-- Postgres or analytics warehouse migration.
+- Redis, Celery, Kubernetes, Terraform, or a separate analytics warehouse for
+  the hackathon MVP.
 - AI augmentation.
-- Serving or exposing raw source exports.

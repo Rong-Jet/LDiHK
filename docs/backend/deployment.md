@@ -21,7 +21,7 @@ Copy `.env.example` and set provider secrets in the deployment platform:
 | `AWS_SECRET_ACCESS_KEY` | Worker if no IAM role | Worker | S3 credential for downloading queued Takeout ZIPs. |
 | `AWS_SESSION_TOKEN` | No | Worker | Temporary AWS credential token when required. |
 | `AWS_REGION` | Worker | Worker | Region for the S3 bucket. |
-| `S3_BUCKET` | Upload/API clients | Upload flow | Bucket clients should place ZIPs under `uploads/<user_id>/`. |
+| `S3_BUCKET` | Upload/API clients | Upload flow | Bucket clients should place ZIPs under `uploads/<LDiHKID>/`. |
 | `YOUTUBE_API_KEY` | Enrichment only | Duration enrichment | Required when running duration enrichment jobs. |
 | `TEST_DATABASE_URL` | No | Tests | Optional live Postgres target for integration tests. |
 

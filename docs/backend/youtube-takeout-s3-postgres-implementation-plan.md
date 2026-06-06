@@ -2,10 +2,11 @@
 
 ## Status
 
-Planning handoff.
+Pinned as backend v4 on 2026-06-07.
 
-This document is intended for another implementation agent. It describes the
-MVP architecture for a hosted YouTube Takeout ingestion pipeline where users
+This document is the source implementation plan for
+`docs/backend/versions/v4-youtube-takeout-s3-postgres-backend.md`. It describes
+the MVP architecture for a hosted YouTube Takeout ingestion pipeline where users
 upload ZIP exports from the frontend, the ZIPs are stored in AWS S3, and the
 backend imports usage analytics into SQL.
 
