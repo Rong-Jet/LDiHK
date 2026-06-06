@@ -1,0 +1,13 @@
+[project]
+name = "ldihk-backend"
+version = "0.1.0"
+description = "Local YouTube Takeout processing pipeline and read-only API"
+requires-python = ">=3.11"
+dependencies = [
+    "beautifulsoup4>=4.12.0",
+    "flask>=3.0.0",
+    "lxml>=5.0.0",
+]
+
+[tool.uv]
+package = false
