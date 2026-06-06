@@ -40,6 +40,16 @@ DISPATCH_TABLE: tuple[ParserRoute, ...] = (
         path_pattern="watch-history.json",
     ),
     ParserRoute(
+        parser_name="search_history",
+        callable_path="backend.ingestion.parsers.search_history:parse_search_history",
+        path_pattern="search-history.json",
+    ),
+    ParserRoute(
+        parser_name="search_history",
+        callable_path="backend.ingestion.parsers.search_history:parse_search_history",
+        path_pattern="my activity/youtube/myactivity.json",
+    ),
+    ParserRoute(
         parser_name="subscriptions",
         callable_path="backend.ingestion.parsers.subscriptions:parse_subscriptions",
         path_pattern="subscriptions.csv",
@@ -53,6 +63,11 @@ DISPATCH_TABLE: tuple[ParserRoute, ...] = (
         parser_name="likes_playlists",
         callable_path="backend.ingestion.parsers.likes_playlists:parse_likes_playlists",
         path_pattern="likes.json",
+    ),
+    ParserRoute(
+        parser_name="likes_playlists",
+        callable_path="backend.ingestion.parsers.likes_playlists:parse_likes_playlists",
+        path_pattern="playlists/*.json",
     ),
     ParserRoute(
         parser_name="comments_live_chat",
