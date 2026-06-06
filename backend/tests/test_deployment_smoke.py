@@ -73,25 +73,47 @@ class DeploymentSmokeTests(unittest.TestCase):
     def test_db_backed_routes_return_stable_unavailable_without_database_url(self):
         app = create_app()
         client = app.test_client()
+        auth_headers = {"Authorization": "Bearer smoke_user"}
 
         with patch.dict("os.environ", {"DATABASE_URL": ""}, clear=False):
             health_response = client.get("/health")
-            create_response = client.post(
+            unauthenticated_create_response = client.post(
                 "/api/imports",
                 json={
-                    "user_id": "smoke_user",
                     "s3_bucket": "smoke-bucket",
                     "s3_key": "uploads/smoke_user/takeout.zip",
                 },
             )
-            get_response = client.get(
+            unauthenticated_get_response = client.get(
                 "/api/imports/00000000-0000-0000-0000-000000000001"
             )
-            query_response = client.post(
+            unauthenticated_query_response = client.post(
                 "/api/query",
                 json={
                     "dataset": "youtube_usage",
-                    "user_id": "smoke_user",
+                    "metrics": ["event_count"],
+                    "dimensions": ["event_type"],
+                    "filters": {},
+                },
+            )
+
+            authenticated_create_response = client.post(
+                "/api/imports",
+                headers=auth_headers,
+                json={
+                    "s3_bucket": "smoke-bucket",
+                    "s3_key": "uploads/smoke_user/takeout.zip",
+                },
+            )
+            authenticated_get_response = client.get(
+                "/api/imports/00000000-0000-0000-0000-000000000001",
+                headers=auth_headers,
+            )
+            authenticated_query_response = client.post(
+                "/api/query",
+                headers=auth_headers,
+                json={
+                    "dataset": "youtube_usage",
                     "metrics": ["event_count"],
                     "dimensions": ["event_type"],
                     "filters": {},
@@ -100,7 +122,18 @@ class DeploymentSmokeTests(unittest.TestCase):
 
         self.assertEqual(health_response.status_code, 200)
         self.assertEqual(health_response.get_json(), {"status": "ok"})
-        for response in (create_response, get_response, query_response):
+        for response in (
+            unauthenticated_create_response,
+            unauthenticated_get_response,
+            unauthenticated_query_response,
+        ):
+            self.assertEqual(response.status_code, 401)
+            self.assertEqual(response.get_json(), {"error": "missing_authorization"})
+        for response in (
+            authenticated_create_response,
+            authenticated_get_response,
+            authenticated_query_response,
+        ):
             self.assertEqual(response.status_code, 503)
             self.assertEqual(
                 response.get_json(),
