@@ -242,87 +242,98 @@ class S3ZipImportWorker:
             zip_path = Path(tmpdir) / "takeout.zip"
             self.s3_client.download_zip(job.s3_bucket, job.s3_key, zip_path)
 
-            with self.repository.import_persistence_transaction():
-                with ZipFile(zip_path) as zip_file:
-                    for member in iter_safe_zip_members(zip_file):
-                        dispatch = self.dispatch_member(member.source_path)
-                        if dispatch.ignored:
-                            continue
+            with ZipFile(zip_path) as zip_file:
+                safe_members = list(iter_safe_zip_members(zip_file))
+                for member in safe_members:
+                    dispatch = self.dispatch_member(member.source_path)
+                    if dispatch.ignored:
+                        continue
 
-                        content = zip_file.read(member.zip_info)
-                        content_sha256 = hashlib.sha256(content).hexdigest()
-                        parser_name = dispatch.parser_name or "unknown"
-                        parser = self.parser_loader(dispatch)
-                        try:
-                            parse_result = parser(
-                                content,
-                                source_path=member.source_path,
-                            )
-                        except Exception:
-                            summary.failed_source_file = FailedSourceFileWrite(
-                                import_id=job.id,
-                                path=member.source_path,
-                                sha256=content_sha256,
-                                parser_name=parser_name,
-                                records_seen=0,
-                                warnings_count=0,
-                            )
-                            raise
-
-                        file_warnings_count = len(parse_result.warnings)
-                        source_file_id = self.repository.record_source_file(
+                    content = zip_file.read(member.zip_info)
+                    content_sha256 = hashlib.sha256(content).hexdigest()
+                    parser_name = dispatch.parser_name or "unknown"
+                    parser = self.parser_loader(dispatch)
+                    try:
+                        parse_result = parser(
+                            content,
+                            source_path=member.source_path,
+                        )
+                    except Exception:
+                        summary.failed_source_file = FailedSourceFileWrite(
                             import_id=job.id,
                             path=member.source_path,
                             sha256=content_sha256,
                             parser_name=parser_name,
-                            status=SOURCE_FILE_STATUS_RUNNING,
-                            records_seen=parse_result.records_seen,
-                            records_imported=0,
-                            warnings_count=file_warnings_count,
+                            records_seen=0,
+                            warnings_count=0,
                         )
-                        try:
+                        raise
+
+                    file_warnings_count = len(parse_result.warnings)
+                    try:
+                        with self.repository.import_persistence_transaction():
+                            next_records_seen = (
+                                summary.records_seen + parse_result.records_seen
+                            )
+                            source_file_id = self.repository.record_source_file(
+                                import_id=job.id,
+                                path=member.source_path,
+                                sha256=content_sha256,
+                                parser_name=parser_name,
+                                status=SOURCE_FILE_STATUS_RUNNING,
+                                records_seen=parse_result.records_seen,
+                                records_imported=0,
+                                warnings_count=file_warnings_count,
+                            )
                             file_records_imported = self._persist_parse_result(
                                 job=job,
                                 source_file_id=source_file_id,
                                 source_path=member.source_path,
                                 parse_result=parse_result,
                             )
-                        except Exception:
-                            summary.failed_source_file = FailedSourceFileWrite(
-                                import_id=job.id,
-                                path=member.source_path,
-                                sha256=content_sha256,
-                                parser_name=parser_name,
+                            next_records_imported = (
+                                summary.records_imported + file_records_imported
+                            )
+                            next_warnings_count = (
+                                summary.warnings_count + file_warnings_count
+                            )
+
+                            self.repository.update_source_file_status(
+                                source_file_id=source_file_id,
+                                status=SOURCE_FILE_STATUS_COMPLETED,
                                 records_seen=parse_result.records_seen,
+                                records_imported=file_records_imported,
                                 warnings_count=file_warnings_count,
                             )
-                            raise
 
-                        self.repository.update_source_file_status(
-                            source_file_id=source_file_id,
-                            status=SOURCE_FILE_STATUS_COMPLETED,
+                            self.repository.update_import_counts(
+                                import_id=job.id,
+                                records_seen=next_records_seen,
+                                records_imported=next_records_imported,
+                                warnings_count=next_warnings_count,
+                            )
+                    except Exception:
+                        summary.failed_source_file = FailedSourceFileWrite(
+                            import_id=job.id,
+                            path=member.source_path,
+                            sha256=content_sha256,
+                            parser_name=parser_name,
                             records_seen=parse_result.records_seen,
-                            records_imported=file_records_imported,
                             warnings_count=file_warnings_count,
                         )
+                        raise
 
-                        summary.source_files += 1
-                        summary.records_seen += parse_result.records_seen
-                        summary.records_imported += file_records_imported
-                        summary.warnings_count += file_warnings_count
-                        self.repository.update_import_counts(
-                            import_id=job.id,
-                            records_seen=summary.records_seen,
-                            records_imported=summary.records_imported,
-                            warnings_count=summary.warnings_count,
-                        )
+                    summary.source_files += 1
+                    summary.records_seen = next_records_seen
+                    summary.records_imported = next_records_imported
+                    summary.warnings_count = next_warnings_count
 
-                self.repository.mark_import_completed(
-                    import_id=job.id,
-                    records_seen=summary.records_seen,
-                    records_imported=summary.records_imported,
-                    warnings_count=summary.warnings_count,
-                )
+            self.repository.mark_import_completed(
+                import_id=job.id,
+                records_seen=summary.records_seen,
+                records_imported=summary.records_imported,
+                warnings_count=summary.warnings_count,
+            )
 
     def _record_failed_source_file(
         self,
@@ -781,12 +792,17 @@ def _load_parser(dispatch: DispatchResult) -> ParserCallable:
 
 def _failure_summary(summary: ImportProcessingSummary) -> ImportProcessingSummary:
     if summary.failed_source_file is None:
-        return ImportProcessingSummary()
+        return ImportProcessingSummary(
+            records_seen=summary.records_seen,
+            records_imported=summary.records_imported,
+            warnings_count=summary.warnings_count,
+            source_files=summary.source_files,
+        )
     return ImportProcessingSummary(
-        records_seen=summary.failed_source_file.records_seen,
-        records_imported=0,
-        warnings_count=summary.failed_source_file.warnings_count,
-        source_files=1,
+        records_seen=summary.records_seen,
+        records_imported=summary.records_imported,
+        warnings_count=summary.warnings_count,
+        source_files=summary.source_files + 1,
         failed_source_file=summary.failed_source_file,
     )
 

@@ -67,6 +67,7 @@ class FakeImportRepository:
         self.records_seen = 0
         self.records_imported = 0
         self.warnings_count = 0
+        self.count_history: list[tuple[int, int, int]] = []
         self.error_message: str | None = None
 
     def claim_queued_import(self) -> ImportJob | None:
@@ -185,6 +186,7 @@ class FakeImportRepository:
         self.records_seen = records_seen
         self.records_imported = records_imported
         self.warnings_count = warnings_count
+        self.count_history.append((records_seen, records_imported, warnings_count))
 
     def mark_import_completed(
         self,
@@ -387,6 +389,33 @@ class S3ZipWorkerTests(unittest.TestCase):
         self.assertEqual(repository.records_imported, 1)
         self.assertEqual(repository.source_files[0].records_imported, 1)
 
+    def test_duplicate_event_fingerprints_do_not_increase_imported_count(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_zip = Path(tmpdir) / "takeout.zip"
+            write_zip(source_zip, {"watch-history.html": b"history"})
+            repository = FakeImportRepository(
+                ImportJob(
+                    id="import-duplicate",
+                    user_id="user-1",
+                    s3_bucket="bucket",
+                    s3_key="uploads/user-1/takeout.zip",
+                ),
+                event_insert_results=[False],
+            )
+            worker = S3ZipImportWorker(
+                repository=repository,
+                s3_client=FakeS3Client(source_zip),
+                dispatch_member=fake_dispatch_member,
+                parser_loader=lambda dispatch: successful_parser,
+            )
+
+            result = worker.process_one()
+
+        self.assertEqual(result.status, IMPORT_STATUS_COMPLETED)
+        self.assertEqual(repository.records_seen, 2)
+        self.assertEqual(repository.records_imported, 0)
+        self.assertEqual(repository.source_files[0].records_imported, 0)
+
     def test_later_write_failure_rolls_back_partial_parser_output(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             source_zip = Path(tmpdir) / "takeout.zip"
@@ -419,7 +448,7 @@ class S3ZipWorkerTests(unittest.TestCase):
         self.assertEqual(repository.source_files[0].status, SOURCE_FILE_STATUS_FAILED)
         self.assertEqual(repository.source_files[0].path, "watch-history.html")
 
-    def test_later_source_file_failure_rolls_back_prior_source_files(self):
+    def test_later_source_file_failure_preserves_prior_source_file_commit(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             source_zip = Path(tmpdir) / "takeout.zip"
             write_zip(
@@ -448,13 +477,18 @@ class S3ZipWorkerTests(unittest.TestCase):
 
         self.assertEqual(result.status, IMPORT_STATUS_FAILED)
         self.assertIn("second source failed", repository.error_message)
-        self.assertEqual(repository.usage_events, [])
-        self.assertEqual(repository.subscriptions, [])
-        self.assertEqual(repository.import_warnings, [])
-        self.assertEqual(repository.records_imported, 0)
-        self.assertEqual(len(repository.source_files), 1)
-        self.assertEqual(repository.source_files[0].path, "second/watch-history.html")
-        self.assertEqual(repository.source_files[0].status, SOURCE_FILE_STATUS_FAILED)
+        self.assertEqual(len(repository.usage_events), 1)
+        self.assertEqual(len(repository.subscriptions), 1)
+        self.assertEqual(len(repository.import_warnings), 1)
+        self.assertEqual(repository.records_seen, 3)
+        self.assertEqual(repository.records_imported, 2)
+        self.assertEqual(repository.warnings_count, 1)
+        self.assertEqual(repository.count_history, [(3, 2, 1)])
+        self.assertEqual(len(repository.source_files), 2)
+        self.assertEqual(repository.source_files[0].path, "first/watch-history.html")
+        self.assertEqual(repository.source_files[0].status, SOURCE_FILE_STATUS_COMPLETED)
+        self.assertEqual(repository.source_files[1].path, "second/watch-history.html")
+        self.assertEqual(repository.source_files[1].status, SOURCE_FILE_STATUS_FAILED)
 
     def test_parser_warnings_are_aggregated_by_code_and_sample_hash(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -511,6 +545,39 @@ class S3ZipWorkerTests(unittest.TestCase):
         self.assertEqual(repository.status_history, ["running", "failed"])
         self.assertIn("traversal", repository.error_message)
         self.assertEqual(repository.source_files, [])
+
+    def test_rejects_late_zip_path_traversal_before_persisting_safe_members(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_zip = Path(tmpdir) / "takeout.zip"
+            write_zip(
+                source_zip,
+                {
+                    "watch-history.html": b"history",
+                    "../evil.txt": b"evil",
+                },
+            )
+            repository = FakeImportRepository(
+                ImportJob(
+                    id="import-late-traversal",
+                    user_id="user-1",
+                    s3_bucket="bucket",
+                    s3_key="uploads/user-1/takeout.zip",
+                )
+            )
+            worker = S3ZipImportWorker(
+                repository=repository,
+                s3_client=FakeS3Client(source_zip),
+                dispatch_member=fake_dispatch_member,
+                parser_loader=lambda dispatch: successful_parser,
+            )
+
+            result = worker.process_one()
+
+        self.assertEqual(result.status, IMPORT_STATUS_FAILED)
+        self.assertIn("traversal", repository.error_message)
+        self.assertEqual(repository.source_files, [])
+        self.assertEqual(repository.usage_events, [])
+        self.assertEqual(repository.records_imported, 0)
 
     def test_parser_errors_mark_import_and_source_file_failed(self):
         with tempfile.TemporaryDirectory() as tmpdir:
