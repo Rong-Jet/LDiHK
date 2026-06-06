@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 
+@dataclass(frozen=True)
+class S3ObjectMetadata:
+    content_length: int
+
+
 class S3Client(Protocol):
+    def head_object(self, bucket: str, key: str) -> S3ObjectMetadata:
+        ...
+
     def download_zip(self, bucket: str, key: str, destination: Path) -> None:
         ...
 
@@ -21,6 +30,14 @@ class Boto3S3Client:
                 ) from error
             client = boto3.client("s3")
         self._client = client
+
+    def head_object(self, bucket: str, key: str) -> S3ObjectMetadata:
+        response = self._client.head_object(Bucket=bucket, Key=key)
+        try:
+            content_length = int(response["ContentLength"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise RuntimeError("S3 HeadObject response missing ContentLength") from error
+        return S3ObjectMetadata(content_length=content_length)
 
     def download_zip(self, bucket: str, key: str, destination: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 from backend.app import create_app
 from backend.imports_api import ImportJob
@@ -54,6 +55,15 @@ class InMemoryImportRepository:
 
 
 class ImportApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._env_patcher = patch.dict(
+            "os.environ",
+            {"S3_BUCKET": "existing-bucket"},
+            clear=False,
+        )
+        self._env_patcher.start()
+        self.addCleanup(self._env_patcher.stop)
+
     def test_create_import_requires_authorization(self):
         repository = InMemoryImportRepository()
         app = create_app(imports_repository=repository)
@@ -140,6 +150,32 @@ class ImportApiTests(unittest.TestCase):
                     "s3_bucket": "existing-bucket",
                     "s3_key": "uploads/demo_user/takeout.zip",
                     "s3_etag": "optional-etag",
+                }
+            ],
+        )
+
+    def test_create_import_allows_missing_s3_etag(self):
+        repository = InMemoryImportRepository()
+        app = create_app(imports_repository=repository)
+
+        response = app.test_client().post(
+            "/api/imports",
+            headers=auth_headers(),
+            json={
+                "s3_bucket": "existing-bucket",
+                "s3_key": "uploads/demo_user/takeout.zip",
+            },
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            repository.created_payloads,
+            [
+                {
+                    "user_id": "demo_user",
+                    "s3_bucket": "existing-bucket",
+                    "s3_key": "uploads/demo_user/takeout.zip",
+                    "s3_etag": None,
                 }
             ],
         )
@@ -240,6 +276,29 @@ class ImportApiTests(unittest.TestCase):
         )
         self.assertEqual(repository.created_payloads, [])
 
+    def test_create_import_rejects_bucket_that_does_not_match_configured_s3_bucket(self):
+        repository = InMemoryImportRepository()
+        app = create_app(imports_repository=repository)
+
+        response = app.test_client().post(
+            "/api/imports",
+            headers=auth_headers(),
+            json={
+                "s3_bucket": "other-bucket",
+                "s3_key": "uploads/demo_user/takeout.zip",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json(),
+            {
+                "error": "invalid_payload",
+                "fields": {"s3_bucket": "must_match_configured_bucket"},
+            },
+        )
+        self.assertEqual(repository.created_payloads, [])
+
     def test_create_import_rejects_unsafe_s3_keys(self):
         repository = InMemoryImportRepository()
         app = create_app(imports_repository=repository)
@@ -282,6 +341,29 @@ class ImportApiTests(unittest.TestCase):
             {
                 "error": "invalid_payload",
                 "fields": {"s3_key": "must_match_user_upload_prefix"},
+            },
+        )
+        self.assertEqual(repository.created_payloads, [])
+
+    def test_create_import_rejects_non_zip_s3_key(self):
+        repository = InMemoryImportRepository()
+        app = create_app(imports_repository=repository)
+
+        response = app.test_client().post(
+            "/api/imports",
+            headers=auth_headers(),
+            json={
+                "s3_bucket": "existing-bucket",
+                "s3_key": "uploads/demo_user/takeout.json",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json(),
+            {
+                "error": "invalid_payload",
+                "fields": {"s3_key": "must_be_zip"},
             },
         )
         self.assertEqual(repository.created_payloads, [])

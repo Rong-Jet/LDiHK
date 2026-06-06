@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import uuid
 from dataclasses import dataclass
@@ -174,7 +175,17 @@ def create_imports_blueprint(
         if identity_errors:
             return identity_field_error_response(identity_errors)
 
-        validated = _validate_create_payload(payload, ldihk_id=identity.ldihk_id)
+        configured_s3_bucket = _configured_s3_bucket()
+        if configured_s3_bucket is None:
+            return _server_config_error_response("S3_BUCKET is required")
+        if not _valid_s3_bucket(configured_s3_bucket):
+            return _server_config_error_response("S3_BUCKET must be a valid bucket")
+
+        validated = _validate_create_payload(
+            payload,
+            ldihk_id=identity.ldihk_id,
+            configured_s3_bucket=configured_s3_bucket,
+        )
         if isinstance(validated, dict) and "errors" in validated:
             return _validation_error_response(validated["errors"])
 
@@ -230,6 +241,7 @@ def _validate_create_payload(
     payload: object,
     *,
     ldihk_id: str,
+    configured_s3_bucket: str,
 ) -> _CreateImportPayload | dict[str, dict[str, str]]:
     if not isinstance(payload, dict):
         return {"errors": {"body": "must_be_json_object"}}
@@ -239,8 +251,11 @@ def _validate_create_payload(
     s3_key = _required_string(payload, "s3_key", errors)
     s3_etag = _optional_string(payload, "s3_etag", errors)
 
-    if s3_bucket is not None and not _valid_s3_bucket(s3_bucket):
-        errors["s3_bucket"] = "invalid_bucket"
+    if s3_bucket is not None:
+        if not _valid_s3_bucket(s3_bucket):
+            errors["s3_bucket"] = "invalid_bucket"
+        elif s3_bucket != configured_s3_bucket:
+            errors["s3_bucket"] = "must_match_configured_bucket"
     if s3_key is not None:
         s3_key_error = _s3_key_error(s3_key, ldihk_id)
         if s3_key_error is not None:
@@ -297,6 +312,11 @@ def _valid_s3_bucket(bucket: str) -> bool:
     return True
 
 
+def _configured_s3_bucket() -> str | None:
+    bucket = os.environ.get("S3_BUCKET", "").strip()
+    return bucket or None
+
+
 def _s3_key_error(s3_key: str, user_id: str) -> str | None:
     if _is_unsafe_s3_key(s3_key):
         return "unsafe_key"
@@ -331,6 +351,10 @@ def _database_unavailable_response(error: Exception):
         ),
         503,
     )
+
+
+def _server_config_error_response(message: str):
+    return jsonify({"error": "server_config_error", "message": message}), 503
 
 
 def _status_payload(job: ImportJob) -> dict[str, object]:

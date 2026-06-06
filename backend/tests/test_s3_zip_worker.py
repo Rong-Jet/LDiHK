@@ -18,6 +18,7 @@ from backend.ingestion.models import (
     ParsedEvent,
     ParsedSubscription,
 )
+from backend.ingestion.s3 import S3ObjectMetadata
 from backend.ingestion.worker import (
     IMPORT_STATUS_COMPLETED,
     IMPORT_STATUS_FAILED,
@@ -220,9 +221,17 @@ class FakeImportRepository:
 
 
 class FakeS3Client:
-    def __init__(self, zip_path: Path) -> None:
+    def __init__(self, zip_path: Path, *, object_size: int | None = None) -> None:
         self.zip_path = zip_path
+        self.object_size = (
+            zip_path.stat().st_size if object_size is None else object_size
+        )
+        self.heads: list[tuple[str, str]] = []
         self.downloads: list[tuple[str, str, Path]] = []
+
+    def head_object(self, bucket: str, key: str) -> S3ObjectMetadata:
+        self.heads.append((bucket, key))
+        return S3ObjectMetadata(content_length=self.object_size)
 
     def download_zip(self, bucket: str, key: str, destination: Path) -> None:
         self.downloads.append((bucket, key, destination))
@@ -260,6 +269,10 @@ class S3ZipWorkerTests(unittest.TestCase):
 
         self.assertEqual(result.status, IMPORT_STATUS_COMPLETED)
         self.assertEqual(repository.status_history, ["running", "completed"])
+        self.assertEqual(
+            s3_client.heads,
+            [("existing-bucket", "uploads/user-1/takeout.zip")],
+        )
         self.assertEqual(
             s3_client.downloads[0][:2],
             ("existing-bucket", "uploads/user-1/takeout.zip"),
@@ -447,6 +460,36 @@ class S3ZipWorkerTests(unittest.TestCase):
         self.assertEqual(len(repository.source_files), 1)
         self.assertEqual(repository.source_files[0].status, SOURCE_FILE_STATUS_FAILED)
         self.assertEqual(repository.source_files[0].path, "watch-history.html")
+
+    def test_rejects_s3_object_larger_than_configured_limit_before_download(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_zip = Path(tmpdir) / "takeout.zip"
+            write_zip(source_zip, {"watch-history.html": b"history"})
+            repository = FakeImportRepository(
+                ImportJob(
+                    id="import-oversized",
+                    user_id="user-1",
+                    s3_bucket="bucket",
+                    s3_key="uploads/user-1/takeout.zip",
+                )
+            )
+            s3_client = FakeS3Client(source_zip, object_size=11)
+            worker = S3ZipImportWorker(
+                repository=repository,
+                s3_client=s3_client,
+                dispatch_member=fake_dispatch_member,
+                parser_loader=lambda dispatch: successful_parser,
+                max_zip_bytes=10,
+            )
+
+            result = worker.process_one()
+
+        self.assertEqual(result.status, IMPORT_STATUS_FAILED)
+        self.assertEqual(repository.status_history, ["running", "failed"])
+        self.assertIn("exceeds MAX_IMPORT_ZIP_BYTES", repository.error_message)
+        self.assertEqual(s3_client.heads, [("bucket", "uploads/user-1/takeout.zip")])
+        self.assertEqual(s3_client.downloads, [])
+        self.assertEqual(repository.source_files, [])
 
     def test_later_source_file_failure_preserves_prior_source_file_commit(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -12,6 +12,7 @@ from zipfile import ZipFile
 from backend.app import create_app
 from backend.db import run_migrations
 from backend.imports_api import ImportJob as ApiImportJob
+from backend.ingestion.s3 import S3ObjectMetadata
 from backend.ingestion.worker import (
     IMPORT_STATUS_COMPLETED,
     ImportJob,
@@ -75,7 +76,11 @@ class DeploymentSmokeTests(unittest.TestCase):
         client = app.test_client()
         auth_headers = {"Authorization": "Bearer smoke_user"}
 
-        with patch.dict("os.environ", {"DATABASE_URL": ""}, clear=False):
+        with patch.dict(
+            "os.environ",
+            {"DATABASE_URL": "", "S3_BUCKET": "smoke-bucket"},
+            clear=False,
+        ):
             health_response = client.get("/health")
             unauthenticated_create_response = client.post(
                 "/api/imports",
@@ -171,26 +176,27 @@ class DeploymentSmokeTests(unittest.TestCase):
         )
         client = app.test_client()
 
-        health_response = client.get("/health")
-        create_response = client.post(
-            "/api/imports",
-            headers={"Authorization": "Bearer smoke_user"},
-            json={
-                "s3_bucket": "smoke-bucket",
-                "s3_key": "uploads/smoke_user/takeout.zip",
-            },
-        )
-        query_response = client.post(
-            "/api/query",
-            headers={"Authorization": "Bearer smoke_user"},
-            json={
-                "dataset": "youtube_usage",
-                "metrics": ["event_count"],
-                "dimensions": ["event_type"],
-                "filters": {},
-                "options": {"limit": 10},
-            },
-        )
+        with patch.dict("os.environ", {"S3_BUCKET": "smoke-bucket"}, clear=False):
+            health_response = client.get("/health")
+            create_response = client.post(
+                "/api/imports",
+                headers={"Authorization": "Bearer smoke_user"},
+                json={
+                    "s3_bucket": "smoke-bucket",
+                    "s3_key": "uploads/smoke_user/takeout.zip",
+                },
+            )
+            query_response = client.post(
+                "/api/query",
+                headers={"Authorization": "Bearer smoke_user"},
+                json={
+                    "dataset": "youtube_usage",
+                    "metrics": ["event_count"],
+                    "dimensions": ["event_type"],
+                    "filters": {},
+                    "options": {"limit": 10},
+                },
+            )
 
         self.assertEqual(health_response.status_code, 200)
         self.assertEqual(health_response.get_json(), {"status": "ok"})
@@ -499,7 +505,12 @@ class SmokeWorkerRepository:
 class SmokeS3Client:
     def __init__(self, zip_path: Path) -> None:
         self.zip_path = zip_path
+        self.heads: list[tuple[str, str]] = []
         self.downloads: list[tuple[str, str]] = []
+
+    def head_object(self, bucket: str, key: str) -> S3ObjectMetadata:
+        self.heads.append((bucket, key))
+        return S3ObjectMetadata(content_length=self.zip_path.stat().st_size)
 
     def download_zip(self, bucket: str, key: str, destination: Path) -> None:
         self.downloads.append((bucket, key))

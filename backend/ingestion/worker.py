@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 import hashlib
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Callable, ContextManager, Protocol
@@ -24,6 +25,7 @@ IMPORT_STATUS_FAILED = "failed"
 SOURCE_FILE_STATUS_RUNNING = "running"
 SOURCE_FILE_STATUS_COMPLETED = "completed"
 SOURCE_FILE_STATUS_FAILED = "failed"
+DEFAULT_MAX_IMPORT_ZIP_BYTES = 1073741824
 
 
 @dataclass(frozen=True)
@@ -189,11 +191,19 @@ class S3ZipImportWorker:
         s3_client: S3Client,
         dispatch_member: DispatchMember = dispatch_member_path,
         parser_loader: ParserLoader | None = None,
+        max_zip_bytes: int | None = None,
     ) -> None:
         self.repository = repository
         self.s3_client = s3_client
         self.dispatch_member = dispatch_member
         self.parser_loader = parser_loader or _load_parser
+        self.max_zip_bytes = (
+            _max_import_zip_bytes_from_environment()
+            if max_zip_bytes is None
+            else max_zip_bytes
+        )
+        if self.max_zip_bytes <= 0:
+            raise ValueError("MAX_IMPORT_ZIP_BYTES must be greater than zero")
 
     def process_one(self) -> WorkerRunResult:
         job = self.repository.claim_queued_import()
@@ -238,6 +248,7 @@ class S3ZipImportWorker:
         job: ImportJob,
         summary: ImportProcessingSummary,
     ) -> None:
+        self._assert_s3_object_within_size_limit(job)
         with TemporaryDirectory(prefix=f"import-{job.id}-") as tmpdir:
             zip_path = Path(tmpdir) / "takeout.zip"
             self.s3_client.download_zip(job.s3_bucket, job.s3_key, zip_path)
@@ -333,6 +344,15 @@ class S3ZipImportWorker:
                 records_seen=summary.records_seen,
                 records_imported=summary.records_imported,
                 warnings_count=summary.warnings_count,
+            )
+
+    def _assert_s3_object_within_size_limit(self, job: ImportJob) -> None:
+        metadata = self.s3_client.head_object(job.s3_bucket, job.s3_key)
+        if metadata.content_length > self.max_zip_bytes:
+            raise ValueError(
+                "S3 object size "
+                f"{metadata.content_length} bytes exceeds "
+                f"MAX_IMPORT_ZIP_BYTES={self.max_zip_bytes}"
             )
 
     def _record_failed_source_file(
@@ -825,3 +845,13 @@ def _error_message(error: Exception) -> str:
     if message:
         return message[:1000]
     return error.__class__.__name__
+
+
+def _max_import_zip_bytes_from_environment() -> int:
+    raw_value = os.environ.get("MAX_IMPORT_ZIP_BYTES", "").strip()
+    if not raw_value:
+        return DEFAULT_MAX_IMPORT_ZIP_BYTES
+    try:
+        return int(raw_value)
+    except ValueError as error:
+        raise ValueError("MAX_IMPORT_ZIP_BYTES must be an integer") from error
