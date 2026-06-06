@@ -60,13 +60,13 @@ unless one platform has already been chosen.
 
 ## Acceptance Criteria
 
-- [ ] One Docker image can run the web process.
-- [ ] The same image can run the worker process.
-- [ ] Required environment variables are documented.
-- [ ] Health endpoint works.
-- [ ] Smoke test proves DB connectivity.
-- [ ] Smoke test proves query endpoint can return seeded data.
-- [ ] Docs explain deployment with AWS S3, hosted Postgres, and YouTube API key.
+- [x] One Docker image can run the web process.
+- [x] The same image can run the worker process.
+- [x] Required environment variables are documented.
+- [x] Health endpoint works.
+- [x] Smoke test proves DB connectivity.
+- [x] Smoke test proves query endpoint can return seeded data.
+- [x] Docs explain deployment with AWS S3, hosted Postgres, and YouTube API key.
 
 ## Blocked By
 
