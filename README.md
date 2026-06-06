@@ -27,6 +27,26 @@ This writes:
 data/processed/users/local_user/youtube_usage.v1.json
 ```
 
+Build the v3 SQLite usage store:
+
+```sh
+uv run python backend/scripts/import_youtube_usage_sql.py
+```
+
+This writes:
+
+```text
+data/processed/users/local_user/youtube_usage.v3.sqlite
+```
+
+Enrich v3 video durations when a YouTube Data API key is configured:
+
+```sh
+cp .env.example .env
+# Set YOUTUBE_API_KEY in .env
+uv run python backend/scripts/enrich_youtube_durations.py
+```
+
 Start the read-only API:
 
 ```sh
@@ -38,6 +58,8 @@ Available endpoints:
 ```text
 GET http://127.0.0.1:5000/health
 GET http://127.0.0.1:5000/api/users/local_user/youtube-usage
+GET http://127.0.0.1:5000/api/v2/users/local_user/youtube-usage/temporal
+POST http://127.0.0.1:5000/api/v3/query
 ```
 
 If `uv` cannot write to its default cache in a restricted environment, prefix commands with:

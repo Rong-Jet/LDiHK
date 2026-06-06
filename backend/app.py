@@ -3,14 +3,51 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 
+from backend.youtube_sql import (
+    DEFAULT_SQLITE_PATH,
+    QueryValidationError,
+    query_youtube_usage,
+)
+from backend.youtube_temporal import build_temporal_usage
 from backend.youtube_usage import DEFAULT_OUTPUT_PATH
 
 
-def create_app(processed_path: Path | str = DEFAULT_OUTPUT_PATH) -> Flask:
+def create_app(
+    processed_path: Path | str = DEFAULT_OUTPUT_PATH,
+    sqlite_path: Path | str = DEFAULT_SQLITE_PATH,
+) -> Flask:
     app = Flask(__name__)
     processed_path = Path(processed_path)
+    sqlite_path = Path(sqlite_path)
+
+    def processed_data_missing():
+        return (
+            jsonify(
+                {
+                    "error": "processed_data_missing",
+                    "expected_path": str(processed_path),
+                }
+            ),
+            503,
+        )
+
+    def read_processed_payload() -> dict[str, object] | None:
+        if not processed_path.exists():
+            return None
+        return json.loads(processed_path.read_text(encoding="utf-8"))
+
+    def sql_data_missing():
+        return (
+            jsonify(
+                {
+                    "error": "sql_data_missing",
+                    "expected_path": str(sqlite_path),
+                }
+            ),
+            503,
+        )
 
     @app.get("/health")
     def health():
@@ -18,18 +55,26 @@ def create_app(processed_path: Path | str = DEFAULT_OUTPUT_PATH) -> Flask:
 
     @app.get("/api/users/local_user/youtube-usage")
     def youtube_usage():
-        if not processed_path.exists():
-            return (
-                jsonify(
-                    {
-                        "error": "processed_data_missing",
-                        "expected_path": str(processed_path),
-                    }
-                ),
-                503,
-            )
+        payload = read_processed_payload()
+        if payload is None:
+            return processed_data_missing()
+        return jsonify(payload)
 
-        payload = json.loads(processed_path.read_text(encoding="utf-8"))
+    @app.get("/api/v2/users/local_user/youtube-usage/temporal")
+    def youtube_usage_temporal():
+        payload = read_processed_payload()
+        if payload is None:
+            return processed_data_missing()
+        return jsonify(build_temporal_usage(payload))
+
+    @app.post("/api/v3/query")
+    def youtube_usage_v3_query():
+        if not sqlite_path.exists():
+            return sql_data_missing()
+        try:
+            payload = query_youtube_usage(sqlite_path, request.get_json(silent=True))
+        except QueryValidationError as error:
+            return jsonify({"error": error.code}), 400
         return jsonify(payload)
 
     return app
