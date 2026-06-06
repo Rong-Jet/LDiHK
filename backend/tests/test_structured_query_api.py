@@ -12,6 +12,10 @@ from backend.query_api import (
 )
 
 
+def auth_headers(ldihk_id: str = "demo_user") -> dict[str, str]:
+    return {"Authorization": f"Bearer {ldihk_id}"}
+
+
 class FakeCursor:
     def __init__(self, columns: list[str], rows: list[tuple[object, ...]]):
         self.description = [(column,) for column in columns]
@@ -60,15 +64,82 @@ class RecordingConnection:
 
 
 class StructuredQueryApiTests(unittest.TestCase):
+    def test_query_requires_authorization(self):
+        app = create_app(query_connection_factory=RecordingConnection)
+
+        response = app.test_client().post(
+            "/api/query",
+            json={
+                "dataset": "youtube_usage",
+                "metrics": ["event_count"],
+                "dimensions": [],
+                "filters": {},
+            },
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.get_json(), {"error": "missing_authorization"})
+
+    def test_query_rejects_malformed_authorization(self):
+        app = create_app(query_connection_factory=RecordingConnection)
+
+        response = app.test_client().post(
+            "/api/query",
+            headers={"Authorization": "Bearer demo_user extra"},
+            json={
+                "dataset": "youtube_usage",
+                "metrics": ["event_count"],
+                "dimensions": [],
+                "filters": {},
+            },
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.get_json(), {"error": "invalid_authorization"})
+
+    def test_query_rejects_body_identity_fields(self):
+        cases = [
+            ("user_id", {"user_id": "spoofed_user"}),
+            ("person_id", {"person_id": "spoofed_user"}),
+            ("ldihk_id", {"ldihk_id": "spoofed_user"}),
+            ("user_id", {"filters": {"user_id": "spoofed_user"}}),
+        ]
+
+        for field, identity_payload in cases:
+            with self.subTest(field=field, identity_payload=identity_payload):
+                app = create_app(query_connection_factory=RecordingConnection)
+                payload = {
+                    "dataset": "youtube_usage",
+                    "metrics": ["event_count"],
+                    "dimensions": [],
+                    "filters": {},
+                }
+                payload.update(identity_payload)
+
+                response = app.test_client().post(
+                    "/api/query",
+                    headers=auth_headers(),
+                    json=payload,
+                )
+
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(
+                    response.get_json(),
+                    {
+                        "error": "invalid_payload",
+                        "fields": {field: "not_allowed"},
+                    },
+                )
+
     def test_valid_grouped_query_returns_rows_and_quality(self):
         connection = RecordingConnection()
         app = create_app(query_connection_factory=lambda: connection)
 
         response = app.test_client().post(
             "/api/query",
+            headers=auth_headers(),
             json={
                 "dataset": "youtube_usage",
-                "user_id": "demo_user",
                 "metrics": [
                     "event_count",
                     "estimated_watch_seconds",
@@ -90,7 +161,9 @@ class StructuredQueryApiTests(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload["schema_version"], "youtube_usage.structured_query.v1")
         self.assertEqual(payload["dataset"], "youtube_usage")
-        self.assertEqual(payload["user_id"], "demo_user")
+        self.assertEqual(payload["ldihk_id"], "demo_user")
+        self.assertNotIn("user_id", payload)
+        self.assertNotIn("user_id", payload["query"]["filters"])
         self.assertEqual(
             payload["rows"],
             [
@@ -117,19 +190,23 @@ class StructuredQueryApiTests(unittest.TestCase):
             },
         )
         self.assertTrue(connection.closed)
+        self.assertEqual(connection.calls[0][1][0], "demo_user")
+        self.assertEqual(connection.calls[0][1][2], "demo_user")
 
     def test_raw_sql_unknown_fields_and_invalid_limit_are_rejected(self):
         app = create_app(query_connection_factory=RecordingConnection)
         client = app.test_client()
 
         raw_sql_response = client.post(
-            "/api/query", json={"sql": "SELECT * FROM usage_events"}
+            "/api/query",
+            headers=auth_headers(),
+            json={"sql": "SELECT * FROM usage_events"},
         )
         unknown_metric_response = client.post(
             "/api/query",
+            headers=auth_headers(),
             json={
                 "dataset": "youtube_usage",
-                "user_id": "demo_user",
                 "metrics": ["raw_video_ids"],
                 "dimensions": ["date"],
                 "filters": {},
@@ -137,9 +214,9 @@ class StructuredQueryApiTests(unittest.TestCase):
         )
         unknown_dimension_response = client.post(
             "/api/query",
+            headers=auth_headers(),
             json={
                 "dataset": "youtube_usage",
-                "user_id": "demo_user",
                 "metrics": ["event_count"],
                 "dimensions": ["title"],
                 "filters": {},
@@ -147,9 +224,9 @@ class StructuredQueryApiTests(unittest.TestCase):
         )
         unknown_filter_response = client.post(
             "/api/query",
+            headers=auth_headers(),
             json={
                 "dataset": "youtube_usage",
-                "user_id": "demo_user",
                 "metrics": ["event_count"],
                 "dimensions": ["date"],
                 "filters": {"video_id": "private"},
@@ -157,9 +234,9 @@ class StructuredQueryApiTests(unittest.TestCase):
         )
         invalid_limit_response = client.post(
             "/api/query",
+            headers=auth_headers(),
             json={
                 "dataset": "youtube_usage",
-                "user_id": "demo_user",
                 "metrics": ["event_count"],
                 "dimensions": ["date"],
                 "filters": {},
@@ -293,9 +370,9 @@ class StructuredQueryApiTests(unittest.TestCase):
 
         response = app.test_client().post(
             "/api/query",
+            headers=auth_headers(),
             json={
                 "dataset": "youtube_usage",
-                "user_id": "demo_user",
                 "metrics": [
                     "event_count",
                     "estimated_watch_seconds",
@@ -392,9 +469,9 @@ class StructuredQueryApiTests(unittest.TestCase):
 
         response = app.test_client().post(
             "/api/query",
+            headers=auth_headers(),
             json={
                 "dataset": "youtube_usage",
-                "user_id": "demo_user",
                 "metrics": ["event_count", "estimated_watch_seconds"],
                 "dimensions": ["date", "hour"],
                 "filters": {

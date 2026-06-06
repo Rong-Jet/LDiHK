@@ -80,17 +80,17 @@ class DeploymentSmokeTests(unittest.TestCase):
         health_response = client.get("/health")
         create_response = client.post(
             "/api/imports",
+            headers={"Authorization": "Bearer smoke_user"},
             json={
-                "user_id": "smoke_user",
                 "s3_bucket": "smoke-bucket",
                 "s3_key": "uploads/smoke_user/takeout.zip",
             },
         )
         query_response = client.post(
             "/api/query",
+            headers={"Authorization": "Bearer smoke_user"},
             json={
                 "dataset": "youtube_usage",
-                "user_id": "smoke_user",
                 "metrics": ["event_count"],
                 "dimensions": ["event_type"],
                 "filters": {},
@@ -103,7 +103,11 @@ class DeploymentSmokeTests(unittest.TestCase):
         self.assertEqual(create_response.status_code, 201)
         self.assertEqual(
             create_response.get_json(),
-            {"import_id": "smoke-import-1", "status": "queued"},
+            {
+                "import_id": "smoke-import-1",
+                "ldihk_id": "smoke_user",
+                "status": "queued",
+            },
         )
         self.assertEqual(
             imports_repository.created_s3_keys,

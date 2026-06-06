@@ -147,6 +147,40 @@ def query_youtube_usage(
     }
 
 
+def query_request_for_ldihk_id(
+    request_payload: object,
+    *,
+    ldihk_id: str,
+) -> object:
+    if not isinstance(request_payload, dict):
+        return request_payload
+
+    scoped_payload = dict(request_payload)
+    scoped_payload["user_id"] = ldihk_id
+    if isinstance(scoped_payload.get("filters"), dict):
+        scoped_payload["filters"] = dict(scoped_payload["filters"])
+    return scoped_payload
+
+
+def public_query_response(payload: dict[str, object]) -> dict[str, object]:
+    public_payload = dict(payload)
+    ldihk_id = public_payload.pop("user_id", None)
+    if ldihk_id is not None:
+        public_payload["ldihk_id"] = ldihk_id
+
+    query = public_payload.get("query")
+    if isinstance(query, dict):
+        public_query = dict(query)
+        filters = public_query.get("filters")
+        if isinstance(filters, dict):
+            public_filters = dict(filters)
+            public_filters.pop("user_id", None)
+            public_query["filters"] = public_filters
+        public_payload["query"] = public_query
+
+    return public_payload
+
+
 def validate_query_request(request_payload: object) -> StructuredQuery:
     if not isinstance(request_payload, dict):
         raise QueryValidationError("invalid_request")

@@ -9,10 +9,16 @@ from typing import Protocol
 from flask import Blueprint, jsonify, request
 
 from backend import db
+from backend.http_boundary import (
+    PublicBoundaryError,
+    identity_field_error_response,
+    identity_field_errors,
+    public_boundary_error_response,
+    require_bearer_identity,
+)
 
 
 QUEUED_STATUS = "queued"
-_USER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _S3_BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
 
 
@@ -158,14 +164,23 @@ def create_imports_blueprint(
 
     @blueprint.post("/api/imports")
     def create_import():
+        try:
+            identity = require_bearer_identity()
+        except PublicBoundaryError as error:
+            return public_boundary_error_response(error)
+
         payload = request.get_json(silent=True)
-        validated = _validate_create_payload(payload)
+        identity_errors = identity_field_errors(payload)
+        if identity_errors:
+            return identity_field_error_response(identity_errors)
+
+        validated = _validate_create_payload(payload, ldihk_id=identity.ldihk_id)
         if isinstance(validated, dict) and "errors" in validated:
             return _validation_error_response(validated["errors"])
 
         try:
             job = repository.create_import(
-                user_external_id=validated.user_id,
+                user_external_id=validated.ldihk_id,
                 s3_bucket=validated.s3_bucket,
                 s3_key=validated.s3_key,
                 s3_etag=validated.s3_etag,
@@ -173,16 +188,30 @@ def create_imports_blueprint(
         except db.DatabaseConfigError as error:
             return _database_unavailable_response(error)
 
-        return jsonify({"import_id": job.import_id, "status": job.status}), 201
+        return (
+            jsonify(
+                {
+                    "import_id": job.import_id,
+                    "ldihk_id": job.user_id,
+                    "status": job.status,
+                }
+            ),
+            201,
+        )
 
     @blueprint.get("/api/imports/<import_id>")
     def get_import(import_id: str):
+        try:
+            identity = require_bearer_identity()
+        except PublicBoundaryError as error:
+            return public_boundary_error_response(error)
+
         try:
             job = repository.get_import(import_id)
         except db.DatabaseConfigError as error:
             return _database_unavailable_response(error)
 
-        if job is None:
+        if job is None or job.user_id != identity.ldihk_id:
             return jsonify({"error": "import_not_found"}), 404
         return jsonify(_status_payload(job))
 
@@ -191,7 +220,7 @@ def create_imports_blueprint(
 
 @dataclass(frozen=True)
 class _CreateImportPayload:
-    user_id: str
+    ldihk_id: str
     s3_bucket: str
     s3_key: str
     s3_etag: str | None
@@ -199,29 +228,28 @@ class _CreateImportPayload:
 
 def _validate_create_payload(
     payload: object,
+    *,
+    ldihk_id: str,
 ) -> _CreateImportPayload | dict[str, dict[str, str]]:
     if not isinstance(payload, dict):
         return {"errors": {"body": "must_be_json_object"}}
 
     errors: dict[str, str] = {}
-    user_id = _required_string(payload, "user_id", errors)
     s3_bucket = _required_string(payload, "s3_bucket", errors)
     s3_key = _required_string(payload, "s3_key", errors)
     s3_etag = _optional_string(payload, "s3_etag", errors)
 
-    if user_id is not None and not _USER_ID_RE.fullmatch(user_id):
-        errors["user_id"] = "invalid_user_id"
     if s3_bucket is not None and not _valid_s3_bucket(s3_bucket):
         errors["s3_bucket"] = "invalid_bucket"
-    if s3_key is not None and user_id is not None:
-        s3_key_error = _s3_key_error(s3_key, user_id)
+    if s3_key is not None:
+        s3_key_error = _s3_key_error(s3_key, ldihk_id)
         if s3_key_error is not None:
             errors["s3_key"] = s3_key_error
 
     if errors:
         return {"errors": errors}
     return _CreateImportPayload(
-        user_id=user_id or "",
+        ldihk_id=ldihk_id,
         s3_bucket=s3_bucket or "",
         s3_key=s3_key or "",
         s3_etag=s3_etag,
@@ -308,7 +336,7 @@ def _database_unavailable_response(error: Exception):
 def _status_payload(job: ImportJob) -> dict[str, object]:
     return {
         "import_id": job.import_id,
-        "user_id": job.user_id,
+        "ldihk_id": job.user_id,
         "status": job.status,
         "records_seen": job.records_seen,
         "records_imported": job.records_imported,

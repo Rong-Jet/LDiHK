@@ -7,9 +7,19 @@ from typing import Callable
 from flask import Flask, jsonify, request
 
 from backend.db import DatabaseConfigError, connect
+from backend.http_boundary import (
+    PublicBoundaryError,
+    configure_cors,
+    identity_field_error_response,
+    identity_field_errors,
+    public_boundary_error_response,
+    require_bearer_identity,
+)
 from backend.imports_api import ImportRepository, create_imports_blueprint
 from backend.query_api import (
     QueryValidationError as StructuredQueryValidationError,
+    public_query_response,
+    query_request_for_ldihk_id,
     query_youtube_usage as query_structured_youtube_usage,
     validate_query_request,
 )
@@ -29,6 +39,7 @@ def create_app(
     query_connection_factory: Callable[[], object] = connect,
 ) -> Flask:
     app = Flask(__name__)
+    configure_cors(app)
     processed_path = Path(processed_path)
     sqlite_path = Path(sqlite_path)
     app.register_blueprint(create_imports_blueprint(imports_repository))
@@ -92,9 +103,24 @@ def create_app(
     def youtube_usage_structured_query():
         connection = None
         try:
-            query = validate_query_request(request.get_json(silent=True))
+            identity = require_bearer_identity()
+            request_payload = request.get_json(silent=True)
+            identity_errors = identity_field_errors(request_payload)
+            if identity_errors:
+                return identity_field_error_response(identity_errors)
+
+            query = validate_query_request(
+                query_request_for_ldihk_id(
+                    request_payload,
+                    ldihk_id=identity.ldihk_id,
+                )
+            )
             connection = query_connection_factory()
-            payload = query_structured_youtube_usage(connection, query)
+            payload = public_query_response(
+                query_structured_youtube_usage(connection, query)
+            )
+        except PublicBoundaryError as error:
+            return public_boundary_error_response(error)
         except StructuredQueryValidationError as error:
             return jsonify({"error": error.code}), 400
         except DatabaseConfigError as error:
