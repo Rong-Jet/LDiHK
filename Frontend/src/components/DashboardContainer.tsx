@@ -262,7 +262,7 @@ function DashboardContent() {
   // Reset pipeline state locally & on mock server
   const handleResetPipeline = async () => {
     try {
-      await fetch(`${API_BASE}/api/upload-url`); // GET triggers state reset in mock backend
+      await fetch('/api/upload-url'); // GET triggers state reset in mock backend
       setUploadCompleted(false);
       setSelectedDate(null);
       setStartDate('2026-05-08');

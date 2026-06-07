@@ -287,7 +287,7 @@ function RiskDashboardContent() {
 
   const handleResetPipeline = async () => {
     try {
-      await fetch(`${API_BASE}/api/upload-url`); 
+      await fetch('/api/upload-url'); 
       setStartDate('2026-05-08');
       setEndDate('2026-06-06');
       

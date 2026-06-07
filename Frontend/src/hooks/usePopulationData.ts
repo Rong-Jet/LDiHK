@@ -42,7 +42,7 @@ const fetchPopulationData = async (
   customPercentile: number,
   sessionToken: string
 ): Promise<PopulationQueryResult> => {
-  const res = await fetch(`${API_BASE}/api/population`, {
+  const res = await fetch('/api/population', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

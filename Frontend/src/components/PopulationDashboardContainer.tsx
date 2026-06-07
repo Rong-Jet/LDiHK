@@ -211,7 +211,7 @@ function PopulationDashboardContent() {
   // Reset pipeline state locally & on mock server
   const handleResetPipeline = async () => {
     try {
-      await fetch(`${API_BASE}/api/upload-url`); // GET triggers state reset in mock backend
+      await fetch('/api/upload-url'); // GET triggers state reset in mock backend
       setStartDate('2026-05-08');
       setEndDate('2026-06-06');
       setTrendlinePeriod(7);
