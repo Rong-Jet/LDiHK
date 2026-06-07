@@ -22,12 +22,6 @@ docs/backend/versions/v4-youtube-takeout-s3-postgres-backend.md
 docs/backend/versions/v5-hosted-backend-workers-and-deployment.md
 ```
 
-Authoritative API contract:
-
-```text
-docs/backend/frontend-api-spec.md
-```
-
 ## Current Delivery
 
 - The backend exposes a health endpoint.
@@ -83,17 +77,6 @@ docs/backend/frontend-api-spec.md
   - top channels by event count
   - top videos by event count when identifier dimensions are enabled
 - A hosted smoke test proves Render + Supabase + S3 + YouTube API configuration.
-
-## Required API Outcomes
-
-The current API request and response shapes are defined only in the
-authoritative contract:
-
-```text
-docs/backend/frontend-api-spec.md
-```
-
-Do not restate endpoint schemas in this backend requirements document.
 
 ## Privacy And Safety Requirements
 

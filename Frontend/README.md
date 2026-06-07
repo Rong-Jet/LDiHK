@@ -31,14 +31,13 @@ http://localhost:4321
 ## Backend Integration
 
 The authoritative API shape lives in
-`../docs/backend/frontend-api-spec.md`. Do not duplicate endpoint schemas in
+`./frontend-api-spec.md`. Do not duplicate endpoint schemas in
 this README.
 
-Set `PUBLIC_BACKEND_API_URL` or `PUBLIC_API_URL` to the backend origin, for
-example:
+Set `PUBLIC_API_URL` to the backend origin, for example:
 
 ```sh
-PUBLIC_BACKEND_API_URL=http://127.0.0.1:8000
+PUBLIC_API_URL=http://127.0.0.1:8000
 ```
 
 Set `PUBLIC_MOCK_API=false` to fail clearly instead of falling back to local
@@ -46,8 +45,9 @@ mock routes when live backend or S3 upload config is missing. Set
 `PUBLIC_MOCK_API=true` only for UI-only mock development.
 
 When a backend origin is set, the Astro upload helper requires
-`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, and `S3_BUCKET`;
-otherwise it fails before registering an import with the real backend.
+`CUSTOM_AWS_ACCESS_KEY_ID`, `CUSTOM_AWS_SECRET_ACCESS_KEY`,
+`CUSTOM_AWS_REGION`, and `S3_BUCKET`; otherwise it fails before registering an
+import with the real backend.
 
 Same-origin Astro helper routes:
 
@@ -61,5 +61,5 @@ PUT /api/mock-s3-upload
 
 ## Contract Notes
 
-See `../docs/backend/frontend-api-spec.md` for identity, upload, query,
+See `./frontend-api-spec.md` for identity, upload, query,
 population, and import status contracts.

@@ -13,4 +13,4 @@ export const shouldAllowImplicitMockApiMode = publicMockApiValue === null;
 
 export const configuredBackendApiBase = isMockApiMode
   ? ''
-  : ((import.meta.env.PUBLIC_BACKEND_API_URL || import.meta.env.PUBLIC_API_URL || '') as string).replace(/\/+$/, '');
+  : ((import.meta.env.PUBLIC_API_URL || '') as string).replace(/\/+$/, '');

@@ -83,17 +83,11 @@ export const POST: APIRoute = async ({ request }) => {
 
   // AWS Configuration lookup
   const awsAccessKeyId =
-    import.meta.env.CUSTOM_AWS_ACCESS_KEY_ID || process.env.CUSTOM_AWS_ACCESS_KEY_ID ||
-    import.meta.env.AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID;
+    import.meta.env.CUSTOM_AWS_ACCESS_KEY_ID || process.env.CUSTOM_AWS_ACCESS_KEY_ID;
   const awsSecretAccessKey =
-    import.meta.env.CUSTOM_AWS_SECRET_ACCESS_KEY || process.env.CUSTOM_AWS_SECRET_ACCESS_KEY ||
-    import.meta.env.AWS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY;
-  const awsSessionToken =
-    import.meta.env.CUSTOM_AWS_SESSION_TOKEN || process.env.CUSTOM_AWS_SESSION_TOKEN ||
-    import.meta.env.AWS_SESSION_TOKEN || process.env.AWS_SESSION_TOKEN;
+    import.meta.env.CUSTOM_AWS_SECRET_ACCESS_KEY || process.env.CUSTOM_AWS_SECRET_ACCESS_KEY;
   const awsRegion =
-    import.meta.env.CUSTOM_AWS_REGION || process.env.CUSTOM_AWS_REGION ||
-    import.meta.env.AWS_REGION || process.env.AWS_REGION;
+    import.meta.env.CUSTOM_AWS_REGION || process.env.CUSTOM_AWS_REGION;
   const s3Bucket = import.meta.env.S3_BUCKET || process.env.S3_BUCKET;
   const backendApiBase = configuredBackendApiBase;
 
@@ -106,7 +100,6 @@ export const POST: APIRoute = async ({ request }) => {
         credentials: {
           accessKeyId: awsAccessKeyId,
           secretAccessKey: awsSecretAccessKey,
-          sessionToken: awsSessionToken || undefined,
         }
       });
 

@@ -13,11 +13,13 @@ requirements should link here instead of restating endpoint schemas.
 
 Frontend runtime convention:
 
-- Browser calls to backend-owned endpoints should use `PUBLIC_BACKEND_API_URL`
-  or `PUBLIC_API_URL` as the backend origin when configured.
+- Browser calls to backend-owned endpoints should use `PUBLIC_API_URL` as the
+  backend origin when configured.
 - Astro-only helper routes such as upload URL generation stay same-origin.
 - When a backend origin is configured, the frontend upload helper must have S3
-  credentials and the same `S3_BUCKET` value as the backend.
+  credentials through `CUSTOM_AWS_ACCESS_KEY_ID`,
+  `CUSTOM_AWS_SECRET_ACCESS_KEY`, `CUSTOM_AWS_REGION`, and the same `S3_BUCKET`
+  value as the backend.
 - `PUBLIC_MOCK_API=true`, `1`, `yes`, or `on` forces local mock API mode and
   ignores backend URLs.
 - `PUBLIC_MOCK_API=false` disables silent fallback to local mock routes. Local
@@ -61,6 +63,8 @@ Authorization: Bearer demo-user-123
 Backend behavior:
 
 - Finds or creates an internal user for `external_id = demo-user-123`.
+- On `POST /api/imports`, optional `age` and `sex` request fields are accepted
+  as profile attributes for that user creation path.
 - Stores the internal UUID as `user_id` in Postgres.
 - Returns `ldihk_id` in public responses where useful.
 
@@ -251,14 +255,19 @@ Fields:
 - `s3_key`: uploaded object key. Use
   `uploads/<LDiHKID>/<filename>.zip`.
 - `s3_etag`: optional S3 object ETag.
-- `age`: optional user age. Used to derive `age_bucket` and `cohort`.
-- `sex`: optional user sex. Stored lowercase and used to derive `cohort`.
+- `age`: optional user age for internal user creation. Used to derive
+  `age_bucket` and `cohort`.
+- `sex`: optional user sex for internal user creation. Stored lowercase and
+  used to derive `cohort`.
 
 Validation:
 
 - `s3_bucket` must match the backend configured bucket.
 - `s3_key` must be under `uploads/<LDiHKID>/`.
 - `s3_key` must end in `.zip`.
+- `age`, when present, must be an integer from `0` through `130`.
+- `sex`, when present, must be one of `male`, `female`, `nonbinary`,
+  `prefer_not_to_say`, or `unknown`. Values are case-normalized before storage.
 
 Response:
 

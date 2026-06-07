@@ -5,12 +5,6 @@
 Non-authoritative implementation notes for Population Benchmark backend
 integration.
 
-The authoritative API request and response shape lives in:
-
-```text
-docs/backend/frontend-api-spec.md#query-population-benchmark
-```
-
 Do not duplicate endpoint schemas in this file. Keep this document focused on
 database shape, scalability, and query compilation strategy.
 
@@ -89,8 +83,8 @@ CREATE TABLE IF NOT EXISTS population_distribution_cache (
 
 ## 3. API Contract
 
-The `/api/population` endpoint contract is defined only in
-`docs/backend/frontend-api-spec.md#query-population-benchmark`.
+The `/api/population` endpoint contract is maintained with the frontend
+integration contract.
 
 ---
 
@@ -109,5 +103,4 @@ When `/api/population` is called:
 
 ## 5. Error Codes
 
-Population endpoint error codes are part of the API contract and are defined
-only in `docs/backend/frontend-api-spec.md#query-population-benchmark`.
+Population endpoint error codes are part of the frontend integration contract.
