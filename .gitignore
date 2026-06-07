@@ -1,0 +1,16 @@
+.venv/
+.uv-cache/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+data/processed/
+data/watch-history.html
+.env
+.env.*
+!.env.example
+
+# AI agents
+CLAUDE.md
+AGENTS.md

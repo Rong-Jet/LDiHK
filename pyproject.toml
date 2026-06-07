@@ -1,0 +1,17 @@
+[project]
+name = "ldihk-backend"
+version = "0.1.0"
+description = "Local YouTube Takeout processing pipeline and read-only API"
+requires-python = ">=3.11"
+dependencies = [
+    "beautifulsoup4>=4.12.0",
+    "boto3>=1.34.0",
+    "flask>=3.0.0",
+    "gunicorn>=23.0.0",
+    "lxml>=5.0.0",
+    "psycopg[binary]>=3.2.0",
+    "python-dotenv>=1.2.2",
+]
+
+[tool.uv]
+package = false

@@ -1,0 +1,90 @@
+%PDF-1.4
+%
+1 0 obj
+<<
+/Title (LDiHK Social Media Data Analytics Platform Pitchdeck)
+/Author (LDiHK Team)
+/Creator (LDiHK Platform)
+/Producer (LDiHK Engine)
+/CreationDate (D:20260606120000Z)
+>>
+endobj
+2 0 obj
+<<
+/Type /Catalog
+/Pages 3 0 R
+>>
+endobj
+3 0 obj
+<<
+/Type /Pages
+/Kids [4 0 R]
+/Count 1
+>>
+endobj
+4 0 obj
+<<
+/Type /Page
+/Parent 3 0 R
+/MediaBox [0 0 612 792]
+/Resources <<
+/Font <<
+/F1 5 0 R
+>>
+>>
+/Contents 6 0 R
+>>
+endobj
+5 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Helvetica-Bold
+>>
+endobj
+6 0 obj
+<<
+/Length 350
+>>
+stream
+BT
+/F1 24 Tf
+72 712 Td
+(LDiHK Analytics Platform) Tj
+/F1 14 Tf
+0 -40 Td
+(High-Performance Social Media Data Analytics MVP) Tj
+0 -30 Td
+(Contact: contact@LDiHK.xyz) Tj
+0 -50 Td
+(Key Architectural Layers:) Tj
+0 -20 Td
+(- Client-Side React Analytics Engine \(Astro Island\)) Tj
+0 -20 Td
+(- Native AWS S3 Direct Binary Stream Upload Pipeline) Tj
+0 -20 Td
+(- TanStack Query State Polling & Dynamic Normalization) Tj
+0 -20 Td
+(- Real-Time Aggregated Heatmaps & Deep-Dive Analytics) Tj
+0 -60 Td
+(Visit http://contact@LDiHK.xyz to get started.) Tj
+ET
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000015 00000 n 
+0000000164 00000 n 
+0000000219 00000 n 
+0000000283 00000 n 
+0000000412 00000 n 
+0000000483 00000 n 
+trailer
+<<
+/Size 7
+/Root 2 0 R
+>>
+startxref
+901
+%%EOF
