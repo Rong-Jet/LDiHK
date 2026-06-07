@@ -1,0 +1,126 @@
+---
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+  description?: string;
+}
+
+const { 
+  title, 
+  description = "LDiHK Social Media Data Analytics Platform - High-performance multi-dimensional analytics dashboard." 
+} = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+    
+    <!-- SEO Meta Tags -->
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    
+  </head>
+  <body class="bg-default text-brand-navy font-sans min-h-screen flex flex-col antialiased selection:bg-brand-teal selection:text-white">
+    <!-- Header -->
+    <header class="border-b border-brand-navy/10 bg-white sticky top-0 z-40 backdrop-blur-md bg-white/95">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl bg-brand-teal flex items-center justify-center shadow-lg shadow-brand-teal/20 text-white font-bold text-xl">
+            L
+          </div>
+          <div>
+            <span class="font-extrabold text-xl tracking-tight text-brand-navy">LDi<span class="text-brand-teal">HK</span></span>
+            <span class="block text-[10px] uppercase tracking-widest font-semibold text-brand-navy/60 -mt-1">Analytics</span>
+          </div>
+        </div>
+        
+        <nav class="hidden md:flex items-center gap-8 font-medium">
+          <a href="/" class="text-brand-navy hover:text-brand-teal transition-colors text-sm" id="nav-overview">Overview</a>
+          <a href="/dashboard" class="text-brand-navy hover:text-brand-teal transition-colors text-sm" id="nav-dashboard">Personal Dashboard</a>
+          <a href="/population" class="text-brand-navy hover:text-brand-teal transition-colors text-sm" id="nav-population">Population Benchmark</a>
+          <a href="mailto:contact@LDiHK.xyz" class="text-brand-navy hover:text-brand-teal transition-colors text-sm" id="nav-support">Contact Support</a>
+        </nav>
+        
+        <div class="flex items-center gap-4">
+          <a 
+            href="/dashboard" 
+            class="px-5 py-2.5 rounded-xl bg-brand-teal text-white font-semibold text-sm hover:bg-brand-teal/95 transition-all shadow-md shadow-brand-teal/15 hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 duration-150"
+            id="header-cta-btn"
+          >
+            Launch Console
+          </a>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="flex-grow">
+      <slot />
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-brand-beige border-t border-brand-navy/10 py-12 text-brand-navy/80">
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+          <div>
+            <div class="flex items-center gap-2 mb-4">
+              <div class="w-8 h-8 rounded-lg bg-brand-teal flex items-center justify-center text-white font-bold text-lg">
+                L
+              </div>
+              <span class="font-bold text-lg tracking-tight text-brand-navy">LDiHK</span>
+            </div>
+            <p class="text-sm max-w-xs text-brand-navy/70 leading-relaxed">
+              High-performance, programmatic Social Media Data Analytics Platform. Built for developers, operations, and growth marketing teams.
+            </p>
+          </div>
+          
+          <div>
+            <h3 class="font-bold text-brand-navy mb-4 text-sm uppercase tracking-wider">Contact & Support</h3>
+            <ul class="space-y-2 text-sm">
+              <li>
+                <a href="mailto:contact@LDiHK.xyz" class="hover:text-brand-teal transition-colors flex items-center gap-2" id="footer-email-link">
+                  <span class="w-1.5 h-1.5 rounded-full bg-brand-teal"></span>
+                  contact@LDiHK.xyz
+                </a>
+              </li>
+              <li class="text-brand-navy/60 flex items-center gap-2">
+                <span class="w-1.5 h-1.5 rounded-full bg-brand-navy/40"></span>
+                Support Hours: 24/7 Global DevOps
+              </li>
+            </ul>
+          </div>
+          
+          <div>
+            <h3 class="font-bold text-brand-navy mb-4 text-sm uppercase tracking-wider">Platform Links</h3>
+            <div class="grid grid-cols-2 gap-2 text-sm">
+              <a href="/" class="hover:text-brand-teal transition-colors" id="footer-link-info">Platform Info</a>
+              <a href="/dashboard" class="hover:text-brand-teal transition-colors" id="footer-link-dashboard">Personal Dashboard</a>
+              <a href="/population" class="hover:text-brand-teal transition-colors" id="footer-link-population">Population Benchmark</a>
+              <a href="#pitchdeck" class="hover:text-brand-teal transition-colors" id="footer-link-pitchdeck">Download Pitchdeck</a>
+            </div>
+          </div>
+        </div>
+        
+        <div class="mt-12 pt-8 border-t border-brand-navy/10 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-brand-navy/60">
+          <span>&copy; {new Date().getFullYear()} LDiHK. All rights reserved.</span>
+          <div class="flex gap-6">
+            <a href="#" class="hover:text-brand-teal">Privacy Policy</a>
+            <a href="#" class="hover:text-brand-teal">Terms of Service</a>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>
