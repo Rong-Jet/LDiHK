@@ -28,6 +28,8 @@ SOURCE_FILE_STATUS_RUNNING = "running"
 SOURCE_FILE_STATUS_COMPLETED = "completed"
 SOURCE_FILE_STATUS_FAILED = "failed"
 DEFAULT_MAX_IMPORT_ZIP_BYTES = 1073741824
+USAGE_EVENT_INSERT_BATCH_SIZE = 500
+IMPORT_WARNING_INSERT_BATCH_SIZE = 1000
 
 
 @dataclass(frozen=True)
@@ -143,10 +145,16 @@ class ImportRepository(Protocol):
     def insert_usage_event(self, event: UsageEventWrite) -> bool:
         ...
 
+    def insert_usage_events(self, events: list[UsageEventWrite]) -> int:
+        ...
+
     def upsert_subscription(self, subscription: SubscriptionWrite) -> bool:
         ...
 
     def insert_import_warning(self, warning: ImportWarningWrite) -> None:
+        ...
+
+    def insert_import_warnings(self, warnings: list[ImportWarningWrite]) -> None:
         ...
 
     def update_import_counts(
@@ -385,32 +393,30 @@ class S3ZipImportWorker:
         source_path: str,
         parse_result: ParseResult,
     ) -> int:
-        records_imported = 0
-        for event in parse_result.events:
-            inserted = self.repository.insert_usage_event(
-                UsageEventWrite(
-                    id=str(uuid4()),
+        event_writes = [
+            UsageEventWrite(
+                id=str(uuid4()),
+                user_id=job.user_id,
+                import_id=job.id,
+                source_file_id=source_file_id,
+                platform="youtube",
+                product=event.product,
+                event_type=event.event_type,
+                occurred_at=event.occurred_at,
+                video_id=event.video_id,
+                channel_id=event.channel_id,
+                title_hash=_privacy_hash(event.title),
+                search_query_hash=_privacy_hash(event.search_query),
+                raw_status=event.raw_status,
+                event_fingerprint=event_fingerprint(
+                    event,
                     user_id=job.user_id,
-                    import_id=job.id,
-                    source_file_id=source_file_id,
-                    platform="youtube",
-                    product=event.product,
-                    event_type=event.event_type,
-                    occurred_at=event.occurred_at,
-                    video_id=event.video_id,
-                    channel_id=event.channel_id,
-                    title_hash=_privacy_hash(event.title),
-                    search_query_hash=_privacy_hash(event.search_query),
-                    raw_status=event.raw_status,
-                    event_fingerprint=event_fingerprint(
-                        event,
-                        user_id=job.user_id,
-                        source_path=source_path,
-                    ),
-                )
+                    source_path=source_path,
+                ),
             )
-            if inserted:
-                records_imported += 1
+            for event in parse_result.events
+        ]
+        records_imported = self.repository.insert_usage_events(event_writes)
 
         for subscription in parse_result.subscriptions:
             upserted = self.repository.upsert_subscription(
@@ -427,17 +433,18 @@ class S3ZipImportWorker:
             if upserted:
                 records_imported += 1
 
-        for (code, sample_hash), count in _warning_counts(parse_result).items():
-            self.repository.insert_import_warning(
-                ImportWarningWrite(
-                    id=str(uuid4()),
-                    import_id=job.id,
-                    source_file_id=source_file_id,
-                    code=code,
-                    count=count,
-                    sample_hash=sample_hash,
-                )
+        warning_writes = [
+            ImportWarningWrite(
+                id=str(uuid4()),
+                import_id=job.id,
+                source_file_id=source_file_id,
+                code=code,
+                count=count,
+                sample_hash=sample_hash,
             )
+            for (code, sample_hash), count in _warning_counts(parse_result).items()
+        ]
+        self.repository.insert_import_warnings(warning_writes)
 
         return records_imported
 
@@ -592,8 +599,45 @@ class PostgresImportRepository:
             raise
 
     def insert_usage_event(self, event: UsageEventWrite) -> bool:
+        return self.insert_usage_events([event]) == 1
+
+    def insert_usage_events(self, events: list[UsageEventWrite]) -> int:
+        records_inserted = 0
+        for event_batch in _chunks(events, USAGE_EVENT_INSERT_BATCH_SIZE):
+            records_inserted += self._insert_usage_event_batch(event_batch)
+        return records_inserted
+
+    def _insert_usage_event_batch(self, events: list[UsageEventWrite]) -> int:
+        if not events:
+            return 0
+
+        row_placeholders = ", ".join(
+            f"({', '.join(['%s'] * 14)})"
+            for _ in events
+        )
+        parameters: list[object] = []
+        for event in events:
+            parameters.extend(
+                (
+                    event.id,
+                    event.user_id,
+                    event.import_id,
+                    event.source_file_id,
+                    event.platform,
+                    event.product,
+                    event.event_type,
+                    event.occurred_at,
+                    event.video_id,
+                    event.channel_id,
+                    event.title_hash,
+                    event.search_query_hash,
+                    event.raw_status,
+                    event.event_fingerprint,
+                )
+            )
+
         try:
-            row = self.connection.execute(
+            rows = self.connection.execute(
                 """
                 INSERT INTO usage_events (
                     id,
@@ -611,29 +655,14 @@ class PostgresImportRepository:
                     raw_status,
                     event_fingerprint
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES """ + row_placeholders + """
                 ON CONFLICT (user_id, event_fingerprint) DO NOTHING
                 RETURNING id
                 """,
-                (
-                    event.id,
-                    event.user_id,
-                    event.import_id,
-                    event.source_file_id,
-                    event.platform,
-                    event.product,
-                    event.event_type,
-                    event.occurred_at,
-                    event.video_id,
-                    event.channel_id,
-                    event.title_hash,
-                    event.search_query_hash,
-                    event.raw_status,
-                    event.event_fingerprint,
-                ),
-            ).fetchone()
+                parameters,
+            ).fetchall()
             self._commit_unless_in_transaction()
-            return row is not None
+            return len(rows)
         except Exception:
             self._rollback_unless_in_transaction()
             raise
@@ -677,6 +706,33 @@ class PostgresImportRepository:
             raise
 
     def insert_import_warning(self, warning: ImportWarningWrite) -> None:
+        self.insert_import_warnings([warning])
+
+    def insert_import_warnings(self, warnings: list[ImportWarningWrite]) -> None:
+        for warning_batch in _chunks(warnings, IMPORT_WARNING_INSERT_BATCH_SIZE):
+            self._insert_import_warning_batch(warning_batch)
+
+    def _insert_import_warning_batch(self, warnings: list[ImportWarningWrite]) -> None:
+        if not warnings:
+            return
+
+        row_placeholders = ", ".join(
+            f"({', '.join(['%s'] * 6)})"
+            for _ in warnings
+        )
+        parameters: list[object] = []
+        for warning in warnings:
+            parameters.extend(
+                (
+                    warning.id,
+                    warning.import_id,
+                    warning.source_file_id,
+                    warning.code,
+                    warning.count,
+                    warning.sample_hash,
+                )
+            )
+
         try:
             self.connection.execute(
                 """
@@ -688,16 +744,9 @@ class PostgresImportRepository:
                     count,
                     sample_hash
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES """ + row_placeholders + """
                 """,
-                (
-                    warning.id,
-                    warning.import_id,
-                    warning.source_file_id,
-                    warning.code,
-                    warning.count,
-                    warning.sample_hash,
-                ),
+                parameters,
             )
             self._commit_unless_in_transaction()
         except Exception:
@@ -898,6 +947,10 @@ def _warning_counts(parse_result: ParseResult) -> Counter[tuple[str, str | None]
         (warning.code, _privacy_hash(warning.sample))
         for warning in parse_result.warnings
     )
+
+
+def _chunks(values: list, size: int) -> list[list]:
+    return [values[index : index + size] for index in range(0, len(values), size)]
 
 
 def _error_message(error: Exception) -> str:

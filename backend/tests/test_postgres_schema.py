@@ -22,6 +22,7 @@ REQUIRED_TABLES = {
     "youtube_channels",
     "enrichment_jobs",
     "import_warnings",
+    "synthetic_seed_runs",
 }
 
 
@@ -33,7 +34,10 @@ class PostgresSchemaContractTests(unittest.TestCase):
     def test_migration_contract_defines_core_tables_constraints_and_indexes(self):
         migrations = list_migrations()
 
-        self.assertEqual([migration.version for migration in migrations], ["001"])
+        self.assertEqual(
+            [migration.version for migration in migrations],
+            ["001", "002", "003", "004"],
+        )
         sql = compact_sql("\n".join(migration.sql for migration in migrations))
 
         for table in REQUIRED_TABLES:
@@ -41,6 +45,10 @@ class PostgresSchemaContractTests(unittest.TestCase):
 
         self.assertIn("unique (user_id, event_fingerprint)", sql)
         self.assertIn("unique (user_id, channel_id)", sql)
+        self.assertIn("add column if not exists is_synthetic", sql)
+        self.assertIn("add column if not exists duration_seconds", sql)
+        self.assertIn("age = coalesce(age, 23)", sql)
+        self.assertIn("sex = coalesce(sex, 'male')", sql)
         self.assertIn(
             "create index if not exists idx_imports_status "
             "on imports (status, created_at)",
@@ -49,6 +57,24 @@ class PostgresSchemaContractTests(unittest.TestCase):
         self.assertIn(
             "create index if not exists idx_enrichment_jobs_status "
             "on enrichment_jobs (status, run_after)",
+            sql,
+        )
+        self.assertIn(
+            "create index if not exists idx_usage_events_synthetic_platform_time "
+            "on usage_events (is_synthetic, platform, occurred_at)",
+            sql,
+        )
+        self.assertIn(
+            "create index if not exists idx_usage_events_import_id "
+            "on usage_events (import_id)",
+            sql,
+        )
+        self.assertIn(
+            "alter table public.usage_events enable row level security",
+            sql,
+        )
+        self.assertIn(
+            "alter table public.synthetic_seed_runs enable row level security",
             sql,
         )
 
@@ -111,11 +137,18 @@ class PostgresSchemaContractTests(unittest.TestCase):
                 WHERE schemaname = 'public'
                   AND indexname IN (
                     'idx_imports_status',
-                    'idx_enrichment_jobs_status'
+                    'idx_enrichment_jobs_status',
+                    'idx_usage_events_synthetic_platform_time',
+                    'idx_usage_events_import_id'
                   )
                 """
             ).fetchall()
             self.assertEqual(
                 {row[0] for row in index_rows},
-                {"idx_imports_status", "idx_enrichment_jobs_status"},
+                {
+                    "idx_imports_status",
+                    "idx_enrichment_jobs_status",
+                    "idx_usage_events_synthetic_platform_time",
+                    "idx_usage_events_import_id",
+                },
             )

@@ -5,9 +5,9 @@
 Draft for v5 frontend handoff.
 
 This is the API contract the frontend should integrate against for the hosted
-YouTube-only demo. It follows the current backend architecture: frontend uploads
-the ZIP to S3, tells the backend where the uploaded object is, polls import
-status, and queries analytics through a structured query endpoint.
+demo. The import pipeline currently accepts YouTube Takeout ZIPs, while the
+structured query endpoint can also compare real usage against seeded synthetic
+multi-platform population data.
 
 Frontend runtime convention:
 
@@ -51,21 +51,24 @@ This is demo identity, not production authentication.
 
 ## Platform Scope
 
-Only YouTube Takeout is supported in v5.
+Only YouTube Takeout is supported for user uploads in v5. The query API also
+supports seeded synthetic population rows for these normalized platforms:
 
-Supported dataset:
+Supported datasets:
 
 ```text
+usage_analytics
 youtube_usage
 ```
 
-Unsupported for now:
+Seeded synthetic platforms:
 
 ```text
-instagram_usage
-tiktok_usage
-twitter_usage
-linkedin_usage
+youtube
+tiktok
+instagram
+spotify
+linkedin
 ```
 
 ## Upload And Import Flow
@@ -120,7 +123,9 @@ Request body:
 {
   "s3_bucket": "existing-bucket",
   "s3_key": "uploads/demo-user-123/youtube_takeout_2026.zip",
-  "s3_etag": "optional-etag"
+  "s3_etag": "optional-etag",
+  "age": 23,
+  "sex": "male"
 }
 ```
 
@@ -130,6 +135,8 @@ Fields:
 - `s3_key`: uploaded object key. Use
   `uploads/<LDiHKID>/<filename>.zip`.
 - `s3_etag`: optional S3 object ETag.
+- `age`: optional user age. Used to derive `age_bucket` and `cohort`.
+- `sex`: optional user sex. Stored lowercase and used to derive `cohort`.
 
 Validation:
 
@@ -190,7 +197,7 @@ working before enrichment completes and expose duration confidence through
 Polling recommendation: poll every 2-5 seconds while status is `queued` or
 `running`; stop on `completed` or `failed`.
 
-### Query YouTube Usage
+### Query Usage Analytics
 
 ```text
 POST /api/query
@@ -207,13 +214,13 @@ Request body:
 
 ```json
 {
-  "dataset": "youtube_usage",
-  "metrics": ["event_count", "estimated_watch_seconds"],
-  "dimensions": ["date"],
+  "dataset": "usage_analytics",
+  "metrics": ["event_count", "estimated_usage_seconds"],
+  "dimensions": ["date", "platform"],
   "filters": {
     "start_date": "2026-06-01",
     "end_date": "2026-06-30",
-    "event_type": "watch"
+    "platform": ["youtube", "tiktok", "instagram", "spotify", "linkedin"]
   },
   "options": {
     "include_zero_buckets": true,
@@ -227,21 +234,29 @@ Response:
 ```json
 {
   "schema_version": "youtube_usage.structured_query.v1",
-  "dataset": "youtube_usage",
+  "dataset": "usage_analytics",
   "ldihk_id": "demo-user-123",
   "duration_strategy": {
-    "kind": "api_user_average_global_default",
+    "kind": "event_duration_api_user_average_platform_default",
     "api_duration_source": "youtube_data_api",
     "user_average_source": "event_weighted_user_average",
-    "global_default_seconds": 600
+    "global_default_seconds": 600,
+    "platform_defaults_seconds": {
+      "youtube_long": 600,
+      "youtube_shorts": 60,
+      "tiktok": 60,
+      "instagram": 60,
+      "spotify": 120,
+      "linkedin": 120
+    }
   },
   "query": {
-    "metrics": ["event_count", "estimated_watch_seconds"],
-    "dimensions": ["date"],
+    "metrics": ["event_count", "estimated_usage_seconds"],
+    "dimensions": ["date", "platform"],
     "filters": {
       "start_date": "2026-06-01",
       "end_date": "2026-06-30",
-      "event_type": "watch"
+      "platform": ["youtube", "tiktok", "instagram", "spotify", "linkedin"]
     },
     "options": {
       "include_zero_buckets": true,
@@ -259,8 +274,9 @@ Response:
   "rows": [
     {
       "date": "2026-06-01",
+      "platform": "tiktok",
       "event_count": 24,
-      "estimated_watch_seconds": 7200
+      "estimated_usage_seconds": 1440
     }
   ]
 }
@@ -270,7 +286,10 @@ Response:
 
 ### `dataset`
 
-Required string. Only `youtube_usage` is supported.
+Required string. Supported values:
+
+- `usage_analytics`: multi-platform usage analytics.
+- `youtube_usage`: legacy alias retained for existing frontend callers.
 
 ### `metrics`
 
@@ -280,8 +299,11 @@ Allowed values:
 
 - `event_count`: count of normalized usage events.
 - `estimated_watch_seconds`: estimated watch duration for `watch` events. Uses
-  YouTube API duration when available, then event-weighted user average, then
-  global default of 600 seconds.
+  explicit event duration when present, YouTube API duration when available,
+  event-weighted user average for real YouTube rows, then platform defaults.
+- `estimated_usage_seconds`: estimated duration across all matching event types.
+  Uses explicit event duration when present, then the same fallback strategy as
+  `estimated_watch_seconds`.
 - `api_watch_seconds`: watch duration using only API-enriched durations.
 - `estimated_event_count`: count of watch events using estimated duration rather
   than API duration.
@@ -306,7 +328,17 @@ Allowed values:
 - `weekday`: groups by ISO weekday, `1` Monday through `7` Sunday.
 - `month`: groups by `YYYY-MM`.
 - `event_type`: groups by normalized event type.
-- `product`: groups by `youtube` or `youtube_music` where distinguishable.
+- `platform`: groups by normalized platform, such as `youtube`, `tiktok`,
+  `instagram`, `spotify`, or `linkedin`.
+- `product`: groups by product/surface, such as `long`, `shorts`, `feed`,
+  `audio`, `youtube`, or `youtube_music`.
+- `is_synthetic`: groups real bearer-scoped data against the synthetic
+  population. Synthetic user IDs are never returned.
+- `age`: groups by stored user age.
+- `age_bucket`: groups by derived user age bucket: `adolescent`, `adult`, or
+  `older`.
+- `sex`: groups by stored user sex.
+- `cohort`: groups by derived age-bucket/sex cohort, such as `adult_male`.
 - `channel_id`: groups by YouTube channel ID when identifier dimensions are
   enabled.
 - `video_id`: groups by YouTube video ID when identifier dimensions are enabled.
@@ -324,6 +356,8 @@ Supported event types:
 - `playlist_add`
 - `watch_later_add`
 - `subscription_snapshot`
+- `listen`
+- `activity`
 
 ### `filters`
 
@@ -334,10 +368,20 @@ Allowed fields:
 - `start_date`: inclusive date lower bound in `YYYY-MM-DD`.
 - `end_date`: inclusive date upper bound in `YYYY-MM-DD`.
 - `event_type`: string or string array of normalized event types.
-- `product`: string or string array. Usually `youtube` or `youtube_music`.
+- `platform`: string or string array of normalized platforms.
+- `product`: string or string array.
+- `is_synthetic`: boolean. `false` or omitted scopes to the bearer user's real
+  data. `true` queries the synthetic population. If `is_synthetic` is used as a
+  dimension without this filter, the response compares bearer data against the
+  synthetic population.
+- `age`: integer or integer array.
+- `age_bucket`: string or string array.
+- `sex`: string or string array.
+- `cohort`: string or string array.
 
-Identity filters are not allowed. The backend always scopes results by the
-bearer token.
+Identity filters are not allowed. Real-user results are always scoped by the
+bearer token; synthetic population results are aggregate-only and never expose
+individual synthetic profiles.
 
 ### `options`
 

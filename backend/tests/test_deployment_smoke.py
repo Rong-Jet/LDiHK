@@ -517,6 +517,8 @@ class SmokeApiImportRepository:
         s3_bucket: str,
         s3_key: str,
         s3_etag: str | None,
+        age: int | None = None,
+        sex: str | None = None,
     ) -> ApiImportJob:
         self.created_s3_keys.append(s3_key)
         return ApiImportJob(
@@ -633,12 +635,21 @@ class SmokeWorkerRepository:
         self.usage_events.append(event)
         return True
 
+    def insert_usage_events(self, events: list[UsageEventWrite]) -> int:
+        for event in events:
+            self.insert_usage_event(event)
+        return len(events)
+
     def upsert_subscription(self, subscription: SubscriptionWrite) -> bool:
         self.subscriptions.append(subscription)
         return True
 
     def insert_import_warning(self, warning: ImportWarningWrite) -> None:
         self.import_warnings.append(warning)
+
+    def insert_import_warnings(self, warnings: list[ImportWarningWrite]) -> None:
+        for warning in warnings:
+            self.insert_import_warning(warning)
 
     def update_import_counts(
         self,
@@ -672,7 +683,6 @@ class SmokeWorkerRepository:
                 for event in self.usage_events
                 if event.import_id == import_id
                 and event.platform == "youtube"
-                and event.product == "youtube"
                 and event.event_type == "watch"
                 and event.video_id is not None
             }

@@ -34,6 +34,21 @@ const PLATFORM_COLORS: Record<string, string> = {
 };
 
 const REFERENCE_DATE = '2026-06-06';
+const isPendingEnrichment = (importStatus: any) => (
+  importStatus?.status === 'completed'
+  && (importStatus?.enrichment_status === 'queued' || importStatus?.enrichment_status === 'running')
+);
+
+const isResolvedImportStatus = (importStatus: any) => (
+  importStatus?.status === 'failed'
+  || (importStatus?.status === 'completed' && !isPendingEnrichment(importStatus))
+);
+
+const shouldPollImportStatus = (importStatus: any) => (
+  importStatus?.status === 'queued'
+  || importStatus?.status === 'running'
+  || isPendingEnrichment(importStatus)
+);
 
 function PopulationDashboardContent() {
   const queryClient = useQueryClient();
@@ -51,7 +66,12 @@ function PopulationDashboardContent() {
   const [showSMA, setShowSMA] = useState(true);
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [activePlatforms, setActivePlatforms] = useState<string[]>(['youtube']);
-  const [currentImportId, setCurrentImportId] = useState<string | null>(null);
+  const [currentImportId, setCurrentImportId] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('ldihk_current_import_id') || null;
+    }
+    return null;
+  });
 
   const [sessionToken, setSessionToken] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
@@ -81,8 +101,10 @@ function PopulationDashboardContent() {
 
   const handleLogout = () => {
     localStorage.removeItem('ldihk_session_token');
+    localStorage.removeItem('ldihk_current_import_id');
     setSessionToken(null);
     setLoginIdInput('');
+    setCurrentImportId(null);
     queryClient.clear(); // Clear TanStack Query cache
   };
 
@@ -138,22 +160,34 @@ function PopulationDashboardContent() {
     },
     enabled: !!currentImportId && !!sessionToken,
     refetchInterval: (query) => {
-      const status = query.state.data?.status;
-      return (status === 'queued' || status === 'running') ? 1000 : false;
+      return shouldPollImportStatus(query.state.data) ? 1000 : false;
     },
   });
 
   // Effect to resolve queue progress and update probe results
   useEffect(() => {
-    if (importStatusData?.status === 'completed') {
+    if (isResolvedImportStatus(importStatusData)) {
+      localStorage.removeItem('ldihk_current_import_id');
+      queryClient.invalidateQueries({ queryKey: ['population'] });
       refetchProbe();
       setCurrentImportId(null);
     }
-  }, [importStatusData?.status, refetchProbe]);
+  }, [
+    importStatusData?.status,
+    importStatusData?.enrichment_status,
+    queryClient,
+    refetchProbe,
+  ]);
 
-  const currentStatus = currentImportId 
+  const isPipelineProcessing = currentImportId && !isResolvedImportStatus(importStatusData);
+  const currentStatus = isPipelineProcessing
     ? 'PROCESSING' 
     : (probeData?.rows && probeData.rows.length > 0 ? 'READY' : 'NOT_UPLOADED');
+  const processingTitle = importStatusData?.status === 'queued'
+    ? 'Worker Queueing Import...'
+    : isPendingEnrichment(importStatusData)
+      ? 'Enriching Video Durations...'
+      : 'Extracting and Normalizing Takeout...';
 
   const readyPlatforms = React.useMemo(() => {
     return currentStatus === 'READY' ? ['youtube'] : [];
@@ -189,6 +223,7 @@ function PopulationDashboardContent() {
       });
       if (!res.ok) throw new Error('Failed to register import');
       const data = await res.json();
+      localStorage.setItem('ldihk_current_import_id', data.import_id);
       setCurrentImportId(data.import_id);
     } catch (err) {
       console.error('Error starting import:', err);
@@ -211,6 +246,7 @@ function PopulationDashboardContent() {
       // Wipe queries from cache
       queryClient.setQueryData(['probe', sessionToken], null);
       queryClient.setQueryData(['population'], null);
+      localStorage.removeItem('ldihk_current_import_id');
       setCurrentImportId(null);
       
       // Force status refetch to align
@@ -604,7 +640,7 @@ function PopulationDashboardContent() {
           </div>
           <div>
             <h2 className="text-xl font-bold text-brand-navy">
-              {importStatusData?.status === 'queued' ? 'Worker Queueing Import...' : 'Extracting and Normalizing Takeout...'}
+              {processingTitle}
             </h2>
             <p className="text-xs text-brand-navy/60 mt-2 max-w-md mx-auto leading-relaxed">
               Our background ingestion worker is processing your YouTube archive. Comparative distribution matrices will build automatically.

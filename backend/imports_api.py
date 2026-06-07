@@ -21,6 +21,9 @@ from backend.http_boundary import (
 
 QUEUED_STATUS = "queued"
 _S3_BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
+_ALLOWED_SEX_VALUES = frozenset(
+    {"male", "female", "nonbinary", "prefer_not_to_say", "unknown"}
+)
 
 
 @dataclass(frozen=True)
@@ -35,6 +38,9 @@ class ImportJob:
     created_at: datetime | str | None
     started_at: datetime | str | None
     finished_at: datetime | str | None
+    enrichment_status: str | None = None
+    enrichment_started_at: datetime | str | None = None
+    enrichment_finished_at: datetime | str | None = None
 
 
 class ImportRepository(Protocol):
@@ -45,6 +51,8 @@ class ImportRepository(Protocol):
         s3_bucket: str,
         s3_key: str,
         s3_etag: str | None,
+        age: int | None = None,
+        sex: str | None = None,
     ) -> ImportJob:
         ...
 
@@ -60,10 +68,17 @@ class PostgresImportRepository:
         s3_bucket: str,
         s3_key: str,
         s3_etag: str | None,
+        age: int | None = None,
+        sex: str | None = None,
     ) -> ImportJob:
         connection = db.connect()
         try:
-            user_id = self._find_or_create_user(connection, user_external_id)
+            user_id = self._find_or_create_user(
+                connection,
+                user_external_id,
+                age=age,
+                sex=sex,
+            )
             import_id = uuid.uuid4()
             row = connection.execute(
                 """
@@ -124,9 +139,23 @@ class PostgresImportRepository:
                     imports.error_message,
                     imports.created_at,
                     imports.started_at,
-                    imports.finished_at
+                    imports.finished_at,
+                    enrichment.status,
+                    enrichment.started_at,
+                    enrichment.finished_at
                 FROM imports
                 JOIN users ON users.id = imports.user_id
+                LEFT JOIN LATERAL (
+                    SELECT
+                        enrichment_jobs.status,
+                        enrichment_jobs.started_at,
+                        enrichment_jobs.finished_at
+                    FROM enrichment_jobs
+                    WHERE enrichment_jobs.job_type = 'youtube_video_durations'
+                      AND enrichment_jobs.payload_json ->> 'import_id' = imports.id::text
+                    ORDER BY enrichment_jobs.created_at DESC
+                    LIMIT 1
+                ) enrichment ON TRUE
                 WHERE imports.id = %s
                 """,
                 (import_uuid,),
@@ -138,12 +167,29 @@ class PostgresImportRepository:
         finally:
             connection.close()
 
-    def _find_or_create_user(self, connection, external_id: str):
+    def _find_or_create_user(
+        self,
+        connection,
+        external_id: str,
+        *,
+        age: int | None,
+        sex: str | None,
+    ):
+        age_bucket = _age_bucket(age) if age is not None else None
+        cohort = f"{age_bucket}_{sex}" if age_bucket is not None and sex else None
         row = connection.execute(
             """
             WITH inserted AS (
-                INSERT INTO users (id, external_id)
-                VALUES (%s, %s)
+                INSERT INTO users (
+                    id,
+                    external_id,
+                    age,
+                    sex,
+                    age_bucket,
+                    cohort,
+                    is_synthetic
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, false)
                 ON CONFLICT (external_id) DO NOTHING
                 RETURNING id
             )
@@ -152,8 +198,21 @@ class PostgresImportRepository:
             SELECT id FROM users WHERE external_id = %s
             LIMIT 1
             """,
-            (uuid.uuid4(), external_id, external_id),
+            (uuid.uuid4(), external_id, age, sex, age_bucket, cohort, external_id),
         ).fetchone()
+        if age is not None and sex is not None:
+            connection.execute(
+                """
+                UPDATE users
+                SET
+                    age = COALESCE(age, %s),
+                    sex = COALESCE(sex, %s),
+                    age_bucket = COALESCE(age_bucket, %s),
+                    cohort = COALESCE(cohort, %s)
+                WHERE external_id = %s
+                """,
+                (age, sex, age_bucket, cohort, external_id),
+            )
         return row[0]
 
 
@@ -195,6 +254,8 @@ def create_imports_blueprint(
                 s3_bucket=validated.s3_bucket,
                 s3_key=validated.s3_key,
                 s3_etag=validated.s3_etag,
+                age=validated.age,
+                sex=validated.sex,
             )
         except db.DatabaseConfigError as error:
             return _database_unavailable_response(error)
@@ -235,6 +296,8 @@ class _CreateImportPayload:
     s3_bucket: str
     s3_key: str
     s3_etag: str | None
+    age: int | None
+    sex: str | None
 
 
 def _validate_create_payload(
@@ -250,6 +313,8 @@ def _validate_create_payload(
     s3_bucket = _required_string(payload, "s3_bucket", errors)
     s3_key = _required_string(payload, "s3_key", errors)
     s3_etag = _optional_string(payload, "s3_etag", errors)
+    age = _optional_age(payload, "age", errors)
+    sex = _optional_sex(payload, "sex", errors)
 
     if s3_bucket is not None:
         if not _valid_s3_bucket(s3_bucket):
@@ -268,6 +333,8 @@ def _validate_create_payload(
         s3_bucket=s3_bucket or "",
         s3_key=s3_key or "",
         s3_etag=s3_etag,
+        age=age,
+        sex=sex,
     )
 
 
@@ -302,6 +369,49 @@ def _optional_string(
         errors[field] = "must_be_string"
         return None
     return value.strip() or None
+
+
+def _optional_age(
+    payload: dict[object, object],
+    field: str,
+    errors: dict[str, str],
+) -> int | None:
+    if field not in payload or payload[field] is None:
+        return None
+    value = payload[field]
+    if isinstance(value, bool) or not isinstance(value, int):
+        errors[field] = "must_be_integer"
+        return None
+    if value < 0 or value > 130:
+        errors[field] = "out_of_range"
+        return None
+    return value
+
+
+def _optional_sex(
+    payload: dict[object, object],
+    field: str,
+    errors: dict[str, str],
+) -> str | None:
+    if field not in payload or payload[field] is None:
+        return None
+    value = payload[field]
+    if not isinstance(value, str):
+        errors[field] = "must_be_string"
+        return None
+    normalized = value.strip().lower()
+    if normalized not in _ALLOWED_SEX_VALUES:
+        errors[field] = "invalid_value"
+        return None
+    return normalized
+
+
+def _age_bucket(age: int) -> str:
+    if age < 18:
+        return "adolescent"
+    if age < 50:
+        return "adult"
+    return "older"
 
 
 def _valid_s3_bucket(bucket: str) -> bool:
@@ -369,6 +479,9 @@ def _status_payload(job: ImportJob) -> dict[str, object]:
         "created_at": _serialize_timestamp(job.created_at),
         "started_at": _serialize_timestamp(job.started_at),
         "finished_at": _serialize_timestamp(job.finished_at),
+        "enrichment_status": job.enrichment_status,
+        "enrichment_started_at": _serialize_timestamp(job.enrichment_started_at),
+        "enrichment_finished_at": _serialize_timestamp(job.enrichment_finished_at),
     }
 
 
@@ -392,6 +505,9 @@ def _job_from_import_row(row, *, user_external_id: str) -> ImportJob:
         created_at=row[6],
         started_at=row[7],
         finished_at=row[8],
+        enrichment_status=None,
+        enrichment_started_at=None,
+        enrichment_finished_at=None,
     )
 
 
@@ -407,4 +523,7 @@ def _job_from_status_row(row) -> ImportJob:
         created_at=row[7],
         started_at=row[8],
         finished_at=row[9],
+        enrichment_status=row[10],
+        enrichment_started_at=row[11],
+        enrichment_finished_at=row[12],
     )

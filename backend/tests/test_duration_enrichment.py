@@ -53,8 +53,9 @@ class DurationEnrichmentWorkerTests(unittest.TestCase):
         self.assertEqual(summary.failed_video_count, 0)
         self.assertEqual(summary.api_call_count, 2)
         self.assertEqual(len(rows), 51)
+        rows_by_video_id = {row[0]: row for row in rows}
         self.assertEqual(
-            rows[0],
+            rows_by_video_id["video-00"],
             (
                 "video-00",
                 933,
@@ -244,4 +245,3 @@ def _insert_usage_event(connection, video_id):
 
 if __name__ == "__main__":
     unittest.main()
-

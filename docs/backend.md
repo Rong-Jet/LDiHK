@@ -50,7 +50,8 @@ docs/backend/frontend-api-spec.md
 - The backend does not store raw ZIP contents, raw watched titles, raw search
   terms, raw comments, or raw Takeout HTML by default.
 - The backend exposes `POST /api/query` for structured, allowlisted,
-  parameterized dashboard queries.
+  parameterized dashboard queries across real YouTube imports and seeded
+  synthetic multi-platform population data.
 - The frontend must not submit raw SQL.
 - Duration enrichment primitives exist for YouTube Data API duration and
   availability lookup, but hosted asynchronous enrichment wiring is a v5
@@ -73,8 +74,10 @@ docs/backend/frontend-api-spec.md
 - The query endpoint can power:
   - daily watch counts
   - estimated watch seconds
+  - estimated usage seconds across platforms
   - hourly heatmap data
   - event counts by type
+  - platform, profile, and synthetic-population comparisons
   - subscription count
   - top channels by event count
   - top videos by event count when identifier dimensions are enabled
@@ -100,7 +103,9 @@ Request:
 {
   "s3_bucket": "existing-bucket",
   "s3_key": "uploads/demo-user-123/takeout.zip",
-  "s3_etag": "optional-etag"
+  "s3_etag": "optional-etag",
+  "age": 23,
+  "sex": "male"
 }
 ```
 
@@ -130,13 +135,13 @@ Request:
 
 ```json
 {
-  "dataset": "youtube_usage",
-  "metrics": ["event_count", "estimated_watch_seconds"],
-  "dimensions": ["date", "hour"],
+  "dataset": "usage_analytics",
+  "metrics": ["event_count", "estimated_usage_seconds"],
+  "dimensions": ["date", "hour", "platform"],
   "filters": {
     "start_date": "2026-06-01",
     "end_date": "2026-06-07",
-    "event_type": "watch"
+    "platform": ["youtube", "tiktok", "instagram", "spotify", "linkedin"]
   },
   "options": {
     "include_zero_buckets": true,

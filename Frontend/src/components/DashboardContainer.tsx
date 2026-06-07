@@ -20,6 +20,22 @@ const queryClient = new QueryClient({
   },
 });
 
+const isPendingEnrichment = (importStatus: any) => (
+  importStatus?.status === 'completed'
+  && (importStatus?.enrichment_status === 'queued' || importStatus?.enrichment_status === 'running')
+);
+
+const isResolvedImportStatus = (importStatus: any) => (
+  importStatus?.status === 'failed'
+  || (importStatus?.status === 'completed' && !isPendingEnrichment(importStatus))
+);
+
+const shouldPollImportStatus = (importStatus: any) => (
+  importStatus?.status === 'queued'
+  || importStatus?.status === 'running'
+  || isPendingEnrichment(importStatus)
+);
+
 function DashboardContent() {
   const queryClient = useQueryClient();
   const [uploadCompleted, setUploadCompleted] = useState(false);
@@ -29,6 +45,12 @@ function DashboardContent() {
   const [sessionToken, setSessionToken] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('ldihk_session_token') || null;
+    }
+    return null;
+  });
+  const [currentImportId, setCurrentImportId] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('ldihk_current_import_id') || null;
     }
     return null;
   });
@@ -59,6 +81,7 @@ function DashboardContent() {
     setLoginIdInput('');
     setUploadCompleted(false);
     setSelectedDate(null);
+    setCurrentImportId(null);
     queryClient.clear(); // Clear TanStack Query cache
   };
 
@@ -78,13 +101,6 @@ function DashboardContent() {
 
   // Trendline Moving Average Period (days)
   const [trendlinePeriod, setTrendlinePeriod] = useState(7);
-
-  const [currentImportId, setCurrentImportId] = useState<string | null>(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('ldihk_current_import_id') || null;
-    }
-    return null;
-  });
 
   // Session Probe Query: check if youtube_usage data is ready on mount/login
   const { data: probeData, refetch: refetchProbe } = useQuery({
@@ -130,23 +146,46 @@ function DashboardContent() {
     },
     enabled: !!currentImportId && !!sessionToken,
     refetchInterval: (query) => {
-      const status = query.state.data?.status;
-      return (status === 'queued' || status === 'running') ? 1000 : false;
+      return shouldPollImportStatus(query.state.data) ? 1000 : false;
     },
   });
 
   // Effect to resolve queue progress and update probe results
   useEffect(() => {
-    if (importStatusData?.status === 'completed' || importStatusData?.status === 'failed') {
+    if (isResolvedImportStatus(importStatusData)) {
       localStorage.removeItem('ldihk_current_import_id');
+      queryClient.invalidateQueries({ queryKey: ['insights'] });
       refetchProbe();
       setCurrentImportId(null);
     }
-  }, [importStatusData?.status, refetchProbe]);
+  }, [
+    importStatusData?.status,
+    importStatusData?.enrichment_status,
+    queryClient,
+    refetchProbe,
+  ]);
 
-  const currentStatus = currentImportId 
+  const isPipelineProcessing = currentImportId && !isResolvedImportStatus(importStatusData);
+  const currentStatus = isPipelineProcessing
     ? 'PROCESSING' 
     : (probeData?.rows && probeData.rows.length > 0 ? 'READY' : 'NOT_UPLOADED');
+  const processingTitle = importStatusData?.status === 'queued'
+    ? 'Worker Queueing Import...'
+    : isPendingEnrichment(importStatusData)
+      ? 'Enriching Video Durations...'
+      : 'Extracting and Normalizing Takeout...';
+  const processingDescription = isPendingEnrichment(importStatusData)
+    ? 'The archive import is complete. The duration worker is fetching video metadata before final analytics are shown.'
+    : 'Our background ingestion worker is processing your YouTube archive. This will flatten daily history logs, map hourly watch boundaries, and build trendlines.';
+  const recordsSeen = importStatusData?.records_seen || 0;
+  const recordsImported = importStatusData?.records_imported || 0;
+  const progressPercent = importStatusData?.status === 'queued'
+    ? 10
+    : isPendingEnrichment(importStatusData)
+      ? 95
+      : recordsSeen > 0
+        ? Math.min(95, (recordsImported / recordsSeen) * 100)
+        : 20;
 
   // Discovered Date Bounds
   const discoveredBounds = React.useMemo(() => {
@@ -536,22 +575,24 @@ function DashboardContent() {
           </div>
           <div>
             <h2 className="text-xl font-bold text-brand-navy">
-              {importStatusData?.status === 'queued' ? 'Worker Queueing Import...' : 'Extracting and Normalizing Takeout...'}
+              {processingTitle}
             </h2>
             <p className="text-xs text-brand-navy/60 mt-2 max-w-md mx-auto leading-relaxed">
-              Our background ingestion worker is processing your YouTube archive. This will flatten daily history logs, map hourly watch boundaries, and build trendlines.
+              {processingDescription}
             </p>
           </div>
 
           <div className="grid grid-cols-3 gap-4 bg-white/50 p-4 rounded-2xl border border-brand-navy/5 max-w-md mx-auto text-left">
             <div>
               <span className="text-[9px] uppercase tracking-wider font-extrabold text-brand-navy/50 block">Status</span>
-              <span className="text-xs font-black text-brand-teal capitalize">{importStatusData?.status || 'queued'}</span>
+              <span className="text-xs font-black text-brand-teal capitalize">
+                {isPendingEnrichment(importStatusData) ? 'enriching' : importStatusData?.status || 'queued'}
+              </span>
             </div>
             <div>
               <span className="text-[9px] uppercase tracking-wider font-extrabold text-brand-navy/50 block">Records Ingested</span>
               <span className="text-xs font-black text-brand-navy">
-                {importStatusData?.records_imported || 0} / {importStatusData?.records_seen || 0}
+                {recordsImported} / {recordsSeen}
               </span>
             </div>
             <div>
@@ -570,11 +611,7 @@ function DashboardContent() {
             <div className="w-full bg-brand-navy/10 h-1.5 rounded-full overflow-hidden">
               <div 
                 className="bg-brand-teal h-full rounded-full transition-all duration-300"
-                style={{ 
-                  width: importStatusData?.status === 'queued' 
-                    ? '10%' 
-                    : `${Math.min(95, ( (importStatusData?.records_imported || 0) / 238 ) * 100)}%` 
-                }}
+                style={{ width: `${progressPercent}%` }}
               ></div>
             </div>
           </div>

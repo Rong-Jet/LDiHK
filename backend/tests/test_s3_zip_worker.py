@@ -168,6 +168,13 @@ class FakeImportRepository:
             return self.event_insert_results.pop(0)
         return True
 
+    def insert_usage_events(self, events: list[UsageEventWrite]) -> int:
+        records_inserted = 0
+        for event in events:
+            if self.insert_usage_event(event):
+                records_inserted += 1
+        return records_inserted
+
     def upsert_subscription(self, subscription: SubscriptionWrite) -> bool:
         self.subscriptions.append(subscription)
         if self.subscription_upsert_results:
@@ -178,6 +185,10 @@ class FakeImportRepository:
         if self.fail_on_import_warning:
             raise RuntimeError("warning insert failed")
         self.import_warnings.append(warning)
+
+    def insert_import_warnings(self, warnings: list[ImportWarningWrite]) -> None:
+        for warning in warnings:
+            self.insert_import_warning(warning)
 
     def update_import_counts(
         self,
@@ -751,6 +762,9 @@ class FakeCursor:
 
     def fetchone(self):
         return self.row
+
+    def fetchall(self):
+        return [self.row]
 
 
 def fake_dispatch_member(source_path: str) -> DispatchResult:
