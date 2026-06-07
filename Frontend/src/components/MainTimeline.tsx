@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { 
-  AreaChart, Area, Line, XAxis, YAxis, CartesianGrid, 
+  AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer 
 } from 'recharts';
 import { Calendar, Filter, Layers, CheckSquare, Square, ChevronDown, ChevronUp } from 'lucide-react';
@@ -17,10 +17,6 @@ interface MainTimelineProps {
   startDate: string;
   endDate: string;
   setDateRange: (start: string, end: string) => void;
-
-  // Dynamic Trendline Period (number of days)
-  trendlinePeriod: number;
-  setTrendlinePeriod: (period: number) => void;
 
   datasets?: Record<string, { status: string; min_date?: string; max_date?: string }>;
   dateBounds?: { minDate: string; maxDate: string };
@@ -45,7 +41,6 @@ const PLATFORM_LABELS: Record<string, string> = {
   twitterHours: 'Twitter/X',
   linkedinHours: 'LinkedIn',
   totalHours: 'Total Active Time',
-  smaHours: 'Dynamic SMA',
 };
 
 const REFERENCE_DATE = '2026-06-06';
@@ -59,12 +54,9 @@ export default function MainTimeline({
   startDate,
   endDate,
   setDateRange,
-  trendlinePeriod,
-  setTrendlinePeriod,
   datasets,
   dateBounds,
 }: MainTimelineProps) {
-  const [showSMA, setShowSMA] = useState(true);
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
 
   // Determine active preset label based on startDate
@@ -177,18 +169,6 @@ export default function MainTimeline({
             {showAdvancedFilters ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
           </button>
 
-          {/* SMA Toggle */}
-          <button
-            onClick={() => setShowSMA(!showSMA)}
-            className={`px-4 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-2 ${
-              showSMA
-                ? 'bg-brand-peach/10 border-brand-peach/30 text-brand-navy'
-                : 'bg-white border-brand-navy/10 text-brand-navy/60 hover:border-brand-navy/20'
-            }`}
-          >
-            <span className={`w-2 h-2 rounded-full ${showSMA ? 'bg-brand-peach' : 'bg-brand-navy/30'}`}></span>
-            Trendline
-          </button>
         </div>
       </div>
 
@@ -223,25 +203,6 @@ export default function MainTimeline({
             <span className="text-[9px] text-brand-navy/40 block">Queries backend to update chart & matrix scope.</span>
           </div>
 
-          {/* Custom Trendline Period Selector */}
-          <div className="space-y-2">
-            <label className="text-[10px] uppercase tracking-wider font-extrabold text-brand-navy/60 flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-brand-peach"></span>
-              Moving Average Trendline Period
-            </label>
-            <div className="flex items-center gap-3">
-              <input
-                type="number"
-                min="1"
-                max="120"
-                value={trendlinePeriod}
-                onChange={(e) => setTrendlinePeriod(Math.max(1, parseInt(e.target.value) || 7))}
-                className="bg-white border border-brand-navy/15 rounded-xl px-3 py-2 text-xs font-bold text-brand-navy focus:outline-none focus:ring-1 focus:ring-brand-teal w-24 text-center"
-              />
-              <span className="text-xs font-bold text-brand-navy/70">Days Moving Average</span>
-            </div>
-            <span className="text-[9px] text-brand-navy/40 block">Configure the interval size used for the dynamic trendline computation.</span>
-          </div>
         </div>
       )}
 
@@ -425,9 +386,6 @@ export default function MainTimeline({
                 labelClassName="font-extrabold text-brand-navy text-xs mb-2 block border-b border-brand-navy/5 pb-1"
                 formatter={(value: any, name: string) => {
                   if (value === null || value === undefined) return null;
-                  if (name === 'smaHours') {
-                    return [`${value} hrs`, `${trendlinePeriod}-Day SMA`];
-                  }
                   if (PLATFORM_LABELS[name]) {
                     return [`${value} hrs`, PLATFORM_LABELS[name]];
                   }
@@ -438,7 +396,7 @@ export default function MainTimeline({
               {/* Stacked Areas in hours */}
               {activePlatforms.includes('youtube') && (
                 <Area
-                  type="monotone"
+                  type="linear"
                   dataKey="youtubeHours"
                   stackId="1"
                   stroke="#537D96"
@@ -448,7 +406,7 @@ export default function MainTimeline({
               )}
               {activePlatforms.includes('instagram') && (
                 <Area
-                  type="monotone"
+                  type="linear"
                   dataKey="instagramHours"
                   stackId="1"
                   stroke="#EC8F8D"
@@ -458,7 +416,7 @@ export default function MainTimeline({
               )}
               {activePlatforms.includes('tiktok') && (
                 <Area
-                  type="monotone"
+                  type="linear"
                   dataKey="tiktokHours"
                   stackId="1"
                   stroke="#44A194"
@@ -468,7 +426,7 @@ export default function MainTimeline({
               )}
               {activePlatforms.includes('spotify') && (
                 <Area
-                  type="monotone"
+                  type="linear"
                   dataKey="spotifyHours"
                   stackId="1"
                   stroke="#5EAF81"
@@ -478,7 +436,7 @@ export default function MainTimeline({
               )}
               {activePlatforms.includes('twitter') && (
                 <Area
-                  type="monotone"
+                  type="linear"
                   dataKey="twitterHours"
                   stackId="1"
                   stroke="#8ba6b8"
@@ -488,7 +446,7 @@ export default function MainTimeline({
               )}
               {activePlatforms.includes('linkedin') && (
                 <Area
-                  type="monotone"
+                  type="linear"
                   dataKey="linkedinHours"
                   stackId="1"
                   stroke="#66b8ad"
@@ -497,18 +455,6 @@ export default function MainTimeline({
                 />
               )}
 
-              {/* Overlay SMA trendline of total active watch hours if toggled */}
-              {showSMA && (
-                <Line
-                  type="monotone"
-                  dataKey="smaHours"
-                  stroke="#537D96"
-                  strokeWidth={2}
-                  strokeDasharray="4 4"
-                  dot={false}
-                  activeDot={false}
-                />
-              )}
             </AreaChart>
           </ResponsiveContainer>
         )}
@@ -519,14 +465,8 @@ export default function MainTimeline({
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-1.5">
             <span className="w-3.5 h-3.5 bg-brand-teal/80 border border-brand-teal/40 rounded"></span>
-            <span>Stacked Platform Allocations (Smoothed)</span>
+            <span>Stacked Platform Allocations</span>
           </div>
-          {showSMA && (
-            <div className="flex items-center gap-1.5">
-              <span className="w-3.5 h-1 border-t-2 border-dashed border-brand-navy"></span>
-              <span>{trendlinePeriod}-Day SMA of Total Hours</span>
-            </div>
-          )}
         </div>
         {selectedDate && (
           <div className="text-brand-teal font-extrabold">

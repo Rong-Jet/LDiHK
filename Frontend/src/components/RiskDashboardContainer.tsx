@@ -168,13 +168,6 @@ function RiskDashboardContent() {
       ? 'PROCESSING'
       : (probeData?.rows && probeData.rows.length > 0 ? 'READY' : 'NOT_UPLOADED'));
 
-  const paddedStartDate = useMemo(() => {
-    if (!startDate) return '';
-    const dateObj = new Date(startDate);
-    dateObj.setDate(dateObj.getDate() - 90);
-    return dateObj.toISOString().split('T')[0];
-  }, [startDate]);
-
   const readyPlatforms = isMockApiMode
     ? ['youtube', 'instagram', 'tiktok', 'spotify']
     : (currentStatus === 'READY' ? ['youtube'] : []);
@@ -221,7 +214,7 @@ function RiskDashboardContent() {
 
   // Main custom query to retrieve granular hourly-daily watch records for wellness analysis
   const { data: detailedUsageData, isLoading: isDetailedLoading, error: detailedError } = useQuery<{ rows: QueryRow[] }>({
-    queryKey: ['detailedUsage', readyPlatforms.join(','), paddedStartDate, endDate, sessionToken],
+    queryKey: ['detailedUsage', readyPlatforms.join(','), startDate, endDate, sessionToken],
     queryFn: async () => {
       if (readyPlatforms.length === 0) return { rows: [] };
 
@@ -237,7 +230,7 @@ function RiskDashboardContent() {
             metrics: ['event_count', 'estimated_watch_seconds'],
             dimensions: ['date', 'hour'],
             filters: {
-              start_date: paddedStartDate,
+              start_date: startDate,
               end_date: endDate,
             },
             options: {
@@ -494,34 +487,8 @@ function RiskDashboardContent() {
     const avgLateNight = currentPeriodData.reduce((sum, d) => sum + d.lateNightHours, 0) / (currentPeriodData.length || 1);
     const avgFragmentation = currentPeriodData.reduce((sum, d) => sum + d.fragmentation, 0) / (currentPeriodData.length || 1);
 
-    const smoothWindow = visibleTotalDays > 1825 ? 60 : (visibleTotalDays > 365 ? 30 : (visibleTotalDays > 30 ? 7 : 1));
-    const smoothedTimelineData = timelineData.map((record, index) => {
-      if (smoothWindow <= 1) return record;
-      const start = Math.max(0, index - smoothWindow + 1);
-      const count = index - start + 1;
-      let riskSum = 0;
-      let volSum = 0;
-      let lateSum = 0;
-      let fragSum = 0;
-      for (let j = start; j <= index; j++) {
-        riskSum += timelineData[j].riskScore;
-        volSum += timelineData[j].volume;
-        lateSum += timelineData[j].lateNightHours;
-        fragSum += timelineData[j].fragmentation;
-      }
-      return {
-        date: record.date,
-        riskScore: parseFloat((riskSum / count).toFixed(1)),
-        volume: parseFloat((volSum / count).toFixed(2)),
-        lateNightHours: parseFloat((lateSum / count).toFixed(2)),
-        fragmentation: Math.round(fragSum / count),
-      };
-    });
-
-    const filteredSmoothedTimelineData = smoothedTimelineData.filter(d => d.date >= startDate && d.date <= endDate);
-
     return {
-      timelineData: filteredSmoothedTimelineData,
+      timelineData: visibleTimelineData,
       currentRiskScore: avgCurrentRisk,
       previousRiskScore: avgPreviousRisk,
       trendType,
@@ -1191,7 +1158,7 @@ function RiskDashboardContent() {
                       }}
                     />
                     <Area
-                      type="monotone"
+                      type="linear"
                       dataKey="riskScore"
                       stroke="#EC8F8D"
                       strokeWidth={2.5}

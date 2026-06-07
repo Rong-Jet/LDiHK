@@ -45,7 +45,6 @@ export interface FlattenedTimelineRecord {
   linkedinEvents: number;
   totalHours: number;
   totalEvents: number;
-  smaHours: number;
 }
 
 // Fetch helper that runs POST queries in parallel for active platforms with date range filters
@@ -59,7 +58,7 @@ const fetchCombinedPlatforms = async (
     return { dailyResults: [], hourlyResults: [] };
   }
 
-  // 1. Fetch daily records
+  // 1. Fetch daily records for the visible interval only.
   const dailyPromises = platforms.map(async (platform) => {
     const res = await fetch(apiRoutes.query(), {
       method: 'POST',
@@ -82,7 +81,7 @@ const fetchCombinedPlatforms = async (
     return { platform, rows: data.rows as DailyRow[] };
   });
 
-  // 2. Fetch hourly aggregates
+  // 2. Fetch hourly aggregates for the visible interval.
   const hourlyPromises = platforms.map(async (platform) => {
     const res = await fetch(apiRoutes.query(), {
       method: 'POST',
@@ -117,26 +116,17 @@ export function useAnalyticsData(
   activePlatforms: string[],
   startDate: string,
   endDate: string,
-  trendlinePeriod: number,
   isReady: boolean,
   sessionToken: string = 'mock-session-ldihkid-12345'
 ) {
-  // Pad the startDate by 90 days to eliminate the timeline boundary edge effect (peak at start of graph)
-  const paddedStartDate = useMemo(() => {
-    if (!startDate) return '';
-    const dateObj = new Date(startDate);
-    dateObj.setDate(dateObj.getDate() - 90);
-    return dateObj.toISOString().split('T')[0];
-  }, [startDate]);
-
   // Query to fetch data only when uploader is completed and API is READY
   const { data, isLoading, error, refetch } = useQuery<CombinedQueryResult>({
-    queryKey: ['insights', activePlatforms.join(','), paddedStartDate, endDate, sessionToken],
-    queryFn: () => fetchCombinedPlatforms(activePlatforms, paddedStartDate, endDate, sessionToken),
-    enabled: isReady && activePlatforms.length > 0 && !!paddedStartDate && !!endDate,
+    queryKey: ['insights', activePlatforms.join(','), startDate, endDate, sessionToken],
+    queryFn: () => fetchCombinedPlatforms(activePlatforms, startDate, endDate, sessionToken),
+    enabled: isReady && activePlatforms.length > 0 && !!startDate && !!endDate,
   });
 
-  // Merge daily records, apply timeline-duration-scaled smoothing, and calculate SMA
+  // Merge daily records without smoothing so temporal graphs show the raw selected interval.
   const chartData = useMemo<FlattenedTimelineRecord[]>(() => {
     if (!data?.dailyResults || data.dailyResults.length === 0) return [];
 
@@ -165,7 +155,6 @@ export function useAnalyticsData(
         linkedinEvents: 0,
         totalHours: 0,
         totalEvents: 0,
-        smaHours: 0,
       };
 
       data.dailyResults.forEach((res) => {
@@ -203,92 +192,8 @@ export function useAnalyticsData(
       return record;
     });
 
-    // Determine a sensible smoothing rolling window based on the VISIBLE range length (not padded range)
-    const [y1, m1, d1] = startDate.split('-').map(Number);
-    const [y2, m2, d2] = endDate.split('-').map(Number);
-    const startUTC = Date.UTC(y1, m1 - 1, d1);
-    const endUTC = Date.UTC(y2, m2 - 1, d2);
-    const visibleDaysCount = Math.max(1, Math.round((endUTC - startUTC) / (1000 * 3600 * 24)) + 1);
-
-    let smoothWindow = 1; // raw (no smoothing) by default
-    if (visibleDaysCount > 1825) {
-      smoothWindow = 60; // 60-day rolling average for 5Y+
-    } else if (visibleDaysCount > 365) {
-      smoothWindow = 30; // 30-day rolling average for 1Y+
-    } else if (visibleDaysCount > 30) {
-      smoothWindow = 7;  // 7-day rolling average for >30 Days
-    }
-
-    // Apply rolling average smoothing to raw platform curves
-    const smoothed = rawMapped.map((record, index) => {
-      if (smoothWindow <= 1) return record;
-
-      const start = Math.max(0, index - smoothWindow + 1);
-      const count = index - start + 1;
-      
-      let ytSum = 0, igSum = 0, tkSum = 0, spSum = 0, twSum = 0, liSum = 0;
-      let ytEv = 0, igEv = 0, tkEv = 0, spEv = 0, twEv = 0, liEv = 0;
-
-      for (let j = start; j <= index; j++) {
-        ytSum += rawMapped[j].youtubeHours;
-        igSum += rawMapped[j].instagramHours;
-        tkSum += rawMapped[j].tiktokHours;
-        spSum += rawMapped[j].spotifyHours;
-        twSum += rawMapped[j].twitterHours;
-        liSum += rawMapped[j].linkedinHours;
-
-        ytEv += rawMapped[j].youtubeEvents;
-        igEv += rawMapped[j].instagramEvents;
-        tkEv += rawMapped[j].tiktokEvents;
-        spEv += rawMapped[j].spotifyEvents;
-        twEv += rawMapped[j].twitterEvents;
-        liEv += rawMapped[j].linkedinEvents;
-      }
-
-      return {
-        date: record.date,
-        youtubeHours: parseFloat((ytSum / count).toFixed(2)),
-        instagramHours: parseFloat((igSum / count).toFixed(2)),
-        tiktokHours: parseFloat((tkSum / count).toFixed(2)),
-        spotifyHours: parseFloat((spSum / count).toFixed(2)),
-        twitterHours: parseFloat((twSum / count).toFixed(2)),
-        linkedinHours: parseFloat((liSum / count).toFixed(2)),
-        youtubeEvents: Math.round(ytEv / count),
-        instagramEvents: Math.round(igEv / count),
-        tiktokEvents: Math.round(tkEv / count),
-        spotifyEvents: Math.round(spEv / count),
-        twitterEvents: Math.round(twEv / count),
-        linkedinEvents: Math.round(liEv / count),
-        totalHours: parseFloat(((ytSum + igSum + tkSum + spSum + twSum + liSum) / count).toFixed(2)),
-        totalEvents: Math.round((ytEv + igEv + tkEv + spEv + twEv + liEv) / count),
-        smaHours: 0,
-      };
-    });
-
-    // 3. Compute the Simple Moving Average (SMA) of total watch hours using dynamic trendlinePeriod
-    const allSMA = smoothed.map((record, index) => {
-      let sum = 0;
-      let count = 0;
-
-      const windowSize = trendlinePeriod;
-      const start = Math.max(0, index - windowSize + 1);
-      
-      for (let i = start; i <= index; i++) {
-        sum += smoothed[i].totalHours;
-        count++;
-      }
-
-      const smaHours = count > 0 ? parseFloat((sum / count).toFixed(2)) : 0;
-
-      return {
-        ...record,
-        smaHours,
-      };
-    });
-
-    // 4. Filter only visible dates to return to the graphs
-    return allSMA.filter((record) => record.date >= startDate && record.date <= endDate);
-  }, [data, trendlinePeriod, startDate, endDate]);
+    return rawMapped.filter((record) => record.date >= startDate && record.date <= endDate);
+  }, [data, startDate, endDate]);
 
   // Timezone-independent day count (based on visible dates)
   const dayCount = useMemo(() => {
@@ -307,7 +212,7 @@ export function useAnalyticsData(
     return chartData.reduce((sum, record) => sum + record.totalHours, 0);
   }, [chartData]);
 
-  // Aggregate hourly watch time and divide by number of days to get average daily watchtime per hour (based on visible dates)
+  // Aggregate hourly watch time and divide by number of days to get average daily watchtime per hour (based on visible range)
   const hourlyHeatmapData = useMemo(() => {
     const hourlyAggregateSecs = new Array(24).fill(0);
 

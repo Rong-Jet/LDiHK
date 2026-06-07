@@ -99,9 +99,6 @@ function DashboardContent() {
   const [startDate, setStartDate] = useState('2026-05-08');
   const [endDate, setEndDate] = useState('2026-06-06');
 
-  // Trendline Moving Average Period (days)
-  const [trendlinePeriod, setTrendlinePeriod] = useState(7);
-
   // Session Probe Query: check if youtube_usage data is ready on mount/login
   const { data: probeData, refetch: refetchProbe } = useQuery({
     queryKey: ['probe', sessionToken],
@@ -176,7 +173,7 @@ function DashboardContent() {
       : 'Extracting and Normalizing Takeout...';
   const processingDescription = isPendingEnrichment(importStatusData)
     ? 'The archive import is complete. The duration worker is fetching video metadata before final analytics are shown.'
-    : 'Our background ingestion worker is processing your YouTube archive. This will flatten daily history logs, map hourly watch boundaries, and build trendlines.';
+    : 'Our background ingestion worker is processing your YouTube archive. This will flatten daily history logs, map hourly watch boundaries, and build timeline analytics.';
   const recordsSeen = importStatusData?.records_seen || 0;
   const recordsImported = importStatusData?.records_imported || 0;
   const progressPercent = importStatusData?.status === 'queued'
@@ -272,7 +269,7 @@ function DashboardContent() {
     isLoading: isInsightsLoading, 
     error: insightsError, 
     refetch: refetchInsights 
-  } = useAnalyticsData(platformsToQuery, startDate, endDate, trendlinePeriod, readyPlatforms.length > 0, sessionToken);
+  } = useAnalyticsData(platformsToQuery, startDate, endDate, readyPlatforms.length > 0, sessionToken);
 
   const handleUploadComplete = async (s3Key: string, s3Bucket: string, activeSessionToken: string) => {
     try {
@@ -305,7 +302,6 @@ function DashboardContent() {
       setSelectedDate(null);
       setStartDate('2026-05-08');
       setEndDate('2026-06-06');
-      setTrendlinePeriod(7);
       
       // Wipe queries from cache
       queryClient.setQueryData(['probe', sessionToken], null);
@@ -705,8 +701,6 @@ function DashboardContent() {
                       setStartDate(start);
                       setEndDate(end);
                     }}
-                    trendlinePeriod={trendlinePeriod}
-                    setTrendlinePeriod={setTrendlinePeriod}
                     datasets={datasets}
                     dateBounds={dateBounds}
                   />
