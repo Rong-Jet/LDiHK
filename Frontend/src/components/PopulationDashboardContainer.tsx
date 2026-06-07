@@ -1,21 +1,21 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
-import { 
+import {
   RefreshCw, Users, Database, ShieldAlert, UploadCloud,
   Key, Copy, Check, LogOut, Eye, EyeOff, ShieldCheck, Lock,
   TrendingUp, Activity, Calendar, Filter, Layers, CheckSquare, Square,
   ChevronDown, ChevronUp, Clock, Info
 } from 'lucide-react';
-import { 
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, 
+import {
+  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
   ReferenceLine, ComposedChart, Line, Legend, CartesianGrid,
   BarChart, Bar, Cell
 } from 'recharts';
 import UploadZone from './UploadZone';
 import { usePopulationData } from '../hooks/usePopulationData';
+import { apiRoutes, authHeaders, isMockApiMode, jsonHeaders } from '../lib/api';
 
-const IS_MOCK_MODE = import.meta.env.PUBLIC_MOCK_API === 'true';
-
+const IS_MOCK_MODE = isMockApiMode;
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -38,24 +38,42 @@ const PLATFORM_COLORS: Record<string, string> = {
 };
 
 const REFERENCE_DATE = '2026-06-06';
+const isPendingEnrichment = (importStatus: any) => (
+  importStatus?.status === 'completed'
+  && (importStatus?.enrichment_status === 'queued' || importStatus?.enrichment_status === 'running')
+);
+
+const isResolvedImportStatus = (importStatus: any) => (
+  importStatus?.status === 'failed'
+  || (importStatus?.status === 'completed' && !isPendingEnrichment(importStatus))
+);
+
+const shouldPollImportStatus = (importStatus: any) => (
+  importStatus?.status === 'queued'
+  || importStatus?.status === 'running'
+  || isPendingEnrichment(importStatus)
+);
 
 function PopulationDashboardContent() {
   const queryClient = useQueryClient();
   const [showUploadZone, setShowUploadZone] = useState(false);
-  const [useSyntheticData, setUseSyntheticData] = useState(true);
-  
+  const [includeSynthetic, setIncludeSynthetic] = useState(true);
+
   // Custom Percentile Line parameters
   const [showCustomPercentile, setShowCustomPercentile] = useState(false);
   const [customPercentile, setCustomPercentile] = useState(90);
 
-  // Timeframe and SMA filters matching MainTimeline
+  // Timeframe filters matching MainTimeline
   const [startDate, setStartDate] = useState('2026-05-08');
   const [endDate, setEndDate] = useState('2026-06-06');
-  const [trendlinePeriod, setTrendlinePeriod] = useState(7);
-  const [showSMA, setShowSMA] = useState(true);
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [activePlatforms, setActivePlatforms] = useState<string[]>(['youtube']);
-  const [currentImportId, setCurrentImportId] = useState<string | null>(null);
+  const [currentImportId, setCurrentImportId] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('ldihk_current_import_id') || null;
+    }
+    return null;
+  });
 
   const [sessionToken, setSessionToken] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
@@ -85,8 +103,10 @@ function PopulationDashboardContent() {
 
   const handleLogout = () => {
     localStorage.removeItem('ldihk_session_token');
+    localStorage.removeItem('ldihk_current_import_id');
     setSessionToken(null);
     setLoginIdInput('');
+    setCurrentImportId(null);
     queryClient.clear(); // Clear TanStack Query cache
   };
 
@@ -103,11 +123,11 @@ function PopulationDashboardContent() {
     queryKey: ['probe', sessionToken],
     queryFn: async () => {
       if (!sessionToken) return null;
-      const res = await fetch(`/api/query`, {
+      const res = await fetch(apiRoutes.query(), {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${sessionToken}`
+          ...jsonHeaders,
+          ...authHeaders(sessionToken),
         },
         body: JSON.stringify({
           dataset: 'youtube_usage',
@@ -132,9 +152,9 @@ function PopulationDashboardContent() {
   const { data: importStatusData } = useQuery({
     queryKey: ['importStatus', currentImportId, sessionToken],
     queryFn: async () => {
-      const res = await fetch(`/api/imports/${currentImportId}`, {
+      const res = await fetch(apiRoutes.importStatus(currentImportId || ''), {
         headers: {
-          'Authorization': `Bearer ${sessionToken}`
+          ...authHeaders(sessionToken),
         }
       });
       if (!res.ok) throw new Error('Import status query failed');
@@ -142,34 +162,39 @@ function PopulationDashboardContent() {
     },
     enabled: !!currentImportId && !!sessionToken,
     refetchInterval: (query) => {
-      const status = query.state.data?.status;
-      return (status === 'queued' || status === 'running') ? 1000 : false;
+      return shouldPollImportStatus(query.state.data) ? 1000 : false;
     },
   });
 
   // Effect to resolve queue progress and update probe results
   useEffect(() => {
-    if (importStatusData?.status === 'completed') {
+    if (isResolvedImportStatus(importStatusData)) {
+      localStorage.removeItem('ldihk_current_import_id');
+      queryClient.invalidateQueries({ queryKey: ['population'] });
       refetchProbe();
       setCurrentImportId(null);
     }
-  }, [importStatusData?.status, refetchProbe]);
+  }, [
+    importStatusData?.status,
+    importStatusData?.enrichment_status,
+    queryClient,
+    refetchProbe,
+  ]);
 
-  const currentStatus = currentImportId 
-    ? 'PROCESSING' 
+  const isPipelineProcessing = currentImportId && !isResolvedImportStatus(importStatusData);
+  const currentStatus = isPipelineProcessing
+    ? 'PROCESSING'
     : (probeData?.rows && probeData.rows.length > 0 ? 'READY' : 'NOT_UPLOADED');
-
-  const paddedStartDate = useMemo(() => {
-    if (!startDate) return '';
-    const dateObj = new Date(startDate);
-    dateObj.setDate(dateObj.getDate() - 90);
-    return dateObj.toISOString().split('T')[0];
-  }, [startDate]);
+  const processingTitle = importStatusData?.status === 'queued'
+    ? 'Worker Queueing Import...'
+    : isPendingEnrichment(importStatusData)
+      ? 'Enriching Video Durations...'
+      : 'Extracting and Normalizing Takeout...';
 
   const readyPlatforms = React.useMemo(() => {
-    if (IS_MOCK_MODE) return ['youtube', 'instagram', 'tiktok', 'spotify'];
+    if (isMockApiMode) return ['youtube', 'instagram', 'tiktok', 'spotify'];
     return currentStatus === 'READY' ? ['youtube'] : [];
-  }, [IS_MOCK_MODE, currentStatus]);
+  }, [currentStatus]);
 
   // Fetch Population Analytics
   const {
@@ -179,22 +204,22 @@ function PopulationDashboardContent() {
     refetch: refetchPop
   } = usePopulationData(
     activePlatforms.filter(p => readyPlatforms.includes(p)),
-    paddedStartDate, 
-    endDate, 
-    useSyntheticData, 
+    startDate,
+    endDate,
+    includeSynthetic,
     customPercentile,
-    readyPlatforms.length > 0 && activePlatforms.some(p => readyPlatforms.includes(p)), 
+    readyPlatforms.length > 0 && activePlatforms.some(p => readyPlatforms.includes(p)),
     sessionToken,
     startDate
   );
 
-  const handleUploadComplete = async (s3Key: string, s3Bucket: string) => {
+  const handleUploadComplete = async (s3Key: string, s3Bucket: string, activeSessionToken: string) => {
     try {
-      const res = await fetch(`/api/imports`, {
+      const res = await fetch(apiRoutes.imports(), {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${sessionToken}`
+          ...jsonHeaders,
+          ...authHeaders(activeSessionToken),
         },
         body: JSON.stringify({
           s3_bucket: s3Bucket,
@@ -203,29 +228,30 @@ function PopulationDashboardContent() {
       });
       if (!res.ok) throw new Error('Failed to register import');
       const data = await res.json();
+      localStorage.setItem('ldihk_current_import_id', data.import_id);
       setCurrentImportId(data.import_id);
     } catch (err) {
       console.error('Error starting import:', err);
+      throw err;
     }
   };
 
   // Reset pipeline state locally & on mock server
   const handleResetPipeline = async () => {
     try {
-      await fetch('/api/upload-url'); // GET triggers state reset in mock backend
+      await fetch(apiRoutes.uploadUrl()); // GET triggers state reset in mock backend
       setStartDate('2026-05-08');
       setEndDate('2026-06-06');
-      setTrendlinePeriod(7);
-      setShowSMA(true);
       setShowAdvancedFilters(false);
       setCustomPercentile(90);
       setShowCustomPercentile(false);
-      
+
       // Wipe queries from cache
       queryClient.setQueryData(['probe', sessionToken], null);
       queryClient.setQueryData(['population'], null);
+      localStorage.removeItem('ldihk_current_import_id');
       setCurrentImportId(null);
-      
+
       // Force status refetch to align
       queryClient.invalidateQueries({ queryKey: ['probe'] });
     } catch (err) {
@@ -236,7 +262,7 @@ function PopulationDashboardContent() {
   // Active preset matching MainTimeline
   const activePreset = useMemo(() => {
     if (endDate !== REFERENCE_DATE) return 'custom';
-    
+
     if (startDate === REFERENCE_DATE) return '1D';
     if (startDate === '2026-05-31') return '7D';
     if (startDate === '2026-05-23') return '15D';
@@ -244,7 +270,7 @@ function PopulationDashboardContent() {
     if (startDate === '2025-06-07') return '1Y';
     if (startDate === '2021-06-07') return '5Y';
     if (startDate === '2016-06-06') return 'all';
-    
+
     return 'custom';
   }, [startDate, endDate]);
 
@@ -293,78 +319,12 @@ function PopulationDashboardContent() {
     }
   };
 
-  // 1. Calculate dynamic smoothing window based on selected timeframe total days
-  const totalDays = useMemo(() => {
-    if (!popData?.deciles) return 0;
-    return popData.deciles.length;
-  }, [popData?.deciles]);
-
-  const smoothWindow = useMemo(() => {
-    return 1;                        // raw (no smoothing) by default
-  }, []);
-
-  // 2. Set moving average default to a multiple (2x) of the smoothing window when it changes
-  useEffect(() => {
-    const defaultMA = smoothWindow > 1 ? smoothWindow * 2 : 7;
-    setTrendlinePeriod(defaultMA);
-  }, [smoothWindow]);
-
-  // 3. Smooth all curves in deciles timeline using the dynamic rolling average window
-  const smoothedDeciles = useMemo(() => {
+  const visibleDeciles = useMemo(() => {
     if (!popData?.deciles) return [];
-    if (smoothWindow <= 1) return popData.deciles;
+    return popData.deciles.filter(record => record.date >= startDate && record.date <= endDate);
+  }, [popData?.deciles, startDate, endDate]);
 
-    return popData.deciles.map((record, index) => {
-      const start = Math.max(0, index - smoothWindow + 1);
-      const count = index - start + 1;
-
-      let userSum = 0;
-      let medianSum = 0;
-      let top10Sum = 0;
-      let bottom10Sum = 0;
-      let customPercentileSum = 0;
-
-      for (let j = start; j <= index; j++) {
-        userSum += popData.deciles[j].user;
-        medianSum += popData.deciles[j].median;
-        top10Sum += popData.deciles[j].top10;
-        bottom10Sum += popData.deciles[j].bottom10;
-        customPercentileSum += popData.deciles[j].customPercentileHours;
-      }
-
-      return {
-        date: record.date,
-        user: parseFloat((userSum / count).toFixed(2)),
-        median: parseFloat((medianSum / count).toFixed(2)),
-        top10: parseFloat((top10Sum / count).toFixed(2)),
-        bottom10: parseFloat((bottom10Sum / count).toFixed(2)),
-        customPercentileHours: parseFloat((customPercentileSum / count).toFixed(2)),
-      };
-    });
-  }, [popData?.deciles, smoothWindow]);
-
-  // 4. Compute User SMA Trendline over the smoothed curves
-  const decilesWithSMA = useMemo(() => {
-    if (smoothedDeciles.length === 0) return [];
-    const allSMA = smoothedDeciles.map((record, index) => {
-      let sum = 0;
-      let count = 0;
-      const start = Math.max(0, index - trendlinePeriod + 1);
-      for (let i = start; i <= index; i++) {
-        sum += smoothedDeciles[i].user;
-        count++;
-      }
-      const smaHours = count > 0 ? parseFloat((sum / count).toFixed(2)) : 0;
-      return {
-        ...record,
-        smaHours
-      };
-    });
-    // Filter to keep only the visible dates
-    return allSMA.filter(record => record.date >= startDate && record.date <= endDate);
-  }, [smoothedDeciles, trendlinePeriod, startDate, endDate]);
-
-  // 5. Group distribution data into 1-hour interval bins (0-24h)
+  // Group distribution data into 1-hour interval bins (0-24h)
   const binData = useMemo(() => {
     if (!popData?.distribution) return [];
 
@@ -391,7 +351,7 @@ function PopulationDashboardContent() {
 
     // Identify user's bin
     const userAvg = popData.userDailyAverageHours;
-    const userBinIdx = Math.min(23, Math.floor(userAvg));
+    const userBinIdx = userAvg === null ? -1 : Math.min(23, Math.floor(userAvg));
     if (userBinIdx >= 0 && userBinIdx < 24) {
       bins[userBinIdx].isUserBin = true;
     }
@@ -414,7 +374,8 @@ function PopulationDashboardContent() {
   const percentileNuance = useMemo(() => {
     if (!popData) return null;
     const p = popData.userPercentile;
-    
+    if (p === null) return null;
+
     if (p >= 75) {
       return {
         title: <>Your daily usage exceeds <span className="text-brand-peach">{p}%</span> of the population</>,
@@ -453,7 +414,7 @@ function PopulationDashboardContent() {
 
         <div className="bg-white border border-brand-navy/15 rounded-[32px] overflow-hidden shadow-2xl relative">
           <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-brand-teal via-brand-peach to-brand-teal"></div>
-          
+
           <div className="grid grid-cols-1 md:grid-cols-2">
             <div className="p-8 sm:p-12 border-b md:border-b-0 md:border-r border-brand-navy/10 flex flex-col justify-between space-y-8 bg-brand-beige/10">
               <div className="space-y-4">
@@ -469,15 +430,15 @@ function PopulationDashboardContent() {
               </div>
 
               <form onSubmit={handleLoginSubmit} className="space-y-4">
-                <input 
-                  type="text" 
-                  name="username" 
-                  value="LDiHK User" 
-                  readOnly 
-                  style={{ display: 'none' }} 
-                  autoComplete="username" 
+                <input
+                  type="text"
+                  name="username"
+                  value="LDiHK User"
+                  readOnly
+                  style={{ display: 'none' }}
+                  autoComplete="username"
                 />
-                
+
                 <div className="space-y-1.5">
                   <label className="text-[10px] uppercase tracking-wider font-extrabold text-brand-navy/50 block">
                     Your LDiHK-ID
@@ -531,8 +492,8 @@ function PopulationDashboardContent() {
               </div>
 
               <div className="w-full">
-                <UploadZone 
-                  sessionToken={null} 
+                <UploadZone
+                  sessionToken={null}
                   onSessionGenerated={handleSessionGenerated}
                   onUploadComplete={handleUploadComplete}
                 />
@@ -601,7 +562,7 @@ function PopulationDashboardContent() {
             <button
               onClick={() => setShowUploadZone(!showUploadZone)}
               className={`px-4 py-2.5 rounded-xl border transition-all text-xs font-bold flex items-center gap-2 duration-150 cursor-pointer ${
-                showUploadZone 
+                showUploadZone
                   ? 'bg-brand-navy text-white border-brand-navy shadow-md'
                   : 'border-brand-teal/30 hover:border-brand-teal/60 bg-brand-teal/10 text-brand-navy hover:shadow-md'
               }`}
@@ -634,21 +595,21 @@ function PopulationDashboardContent() {
 
       {/* View Switcher Sub-Navigation Tabs */}
       <div className="mb-8 border-b border-brand-navy/10 flex gap-4 text-left">
-        <a 
+        <a
           href="/dashboard"
           className="px-4 py-3 text-sm font-bold border-b-2 border-transparent text-brand-navy/50 hover:text-brand-navy transition-all"
           id="tab-personal-insights"
         >
           Personal Insights
         </a>
-        <a 
+        <a
           href="/population"
           className="px-4 py-3 text-sm font-extrabold border-b-2 border-brand-teal text-brand-teal transition-all"
           id="tab-population-benchmark"
         >
           Population Benchmark
         </a>
-        <a 
+        <a
           href="/risk"
           className="px-4 py-3 text-sm font-bold border-b-2 border-transparent text-brand-navy/50 hover:text-brand-navy transition-all"
           id="tab-mental-health-risk"
@@ -666,7 +627,7 @@ function PopulationDashboardContent() {
               <h3 className="font-bold text-brand-navy text-sm">Ingest Additional Platform History</h3>
               <p className="text-[10px] text-brand-navy/50">Upload a zip export to automatically extract, authorize, and integrate a new data source.</p>
             </div>
-            <button 
+            <button
               onClick={() => setShowUploadZone(false)}
               className="text-xs font-bold text-brand-peach hover:underline cursor-pointer"
             >
@@ -681,7 +642,7 @@ function PopulationDashboardContent() {
       {readyPlatforms.length === 0 && currentStatus !== 'PROCESSING' && (
         <div className="space-y-12">
           <UploadZone sessionToken={sessionToken} onSessionGenerated={handleSessionGenerated} onUploadComplete={handleUploadComplete} />
-          
+
           <div className="border border-brand-navy/10 rounded-3xl p-8 bg-brand-beige/20 text-center max-w-xl mx-auto space-y-3">
             <Database className="w-8 h-8 text-brand-navy/30 mx-auto" />
             <h3 className="font-bold text-brand-navy text-sm">Awaiting Ingress Stream</h3>
@@ -700,7 +661,7 @@ function PopulationDashboardContent() {
           </div>
           <div>
             <h2 className="text-xl font-bold text-brand-navy">
-              {importStatusData?.status === 'queued' ? 'Worker Queueing Import...' : 'Extracting and Normalizing Takeout...'}
+              {processingTitle}
             </h2>
             <p className="text-xs text-brand-navy/60 mt-2 max-w-md mx-auto leading-relaxed">
               Our background ingestion worker is processing your YouTube archive. Comparative distribution matrices will build automatically.
@@ -716,7 +677,7 @@ function PopulationDashboardContent() {
           <div className="bg-gradient-to-r from-brand-navy to-brand-navy/90 text-white rounded-[32px] p-6 sm:p-8 relative overflow-hidden shadow-lg border border-brand-navy/25">
             <div className="absolute right-0 bottom-0 w-64 h-64 bg-brand-teal/20 rounded-full blur-3xl pointer-events-none"></div>
             <div className="absolute left-1/3 top-0 w-48 h-48 bg-brand-peach/15 rounded-full blur-2xl pointer-events-none"></div>
-            
+
             <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
               <div className="space-y-2 flex-grow">
                 <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 border border-white/15 text-[10px] font-extrabold uppercase tracking-wider">
@@ -770,26 +731,26 @@ function PopulationDashboardContent() {
               <h3 className="font-extrabold text-brand-navy text-xs uppercase tracking-wider">Workspace Database Settings</h3>
               <p className="text-[10px] text-brand-navy/50">Modify the data source context for comparison statistics.</p>
             </div>
-            
+
             <div className="flex items-center gap-3 bg-brand-beige/20 border border-brand-navy/10 rounded-2xl p-2.5 px-4 select-none w-full sm:w-auto justify-between">
               <div>
                 <span className="text-xs font-black text-brand-navy block">Synthetic Population Data</span>
                 <span className="text-[9px] text-brand-navy/50 block -mt-0.5">Use large realistic curves vs small local dataset</span>
               </div>
               <button
-                onClick={() => setUseSyntheticData(!useSyntheticData)}
+                onClick={() => setIncludeSynthetic(!includeSynthetic)}
                 className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                  useSyntheticData ? 'bg-brand-teal' : 'bg-brand-navy/20'
+                  includeSynthetic ? 'bg-brand-teal' : 'bg-brand-navy/20'
                 }`}
                 role="switch"
-                aria-checked={useSyntheticData}
+                aria-checked={includeSynthetic}
                 id="toggle-synthetic-data"
                 title="Toggle Synthetic Population Data"
               >
                 <span
                   aria-hidden="true"
                   className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                    useSyntheticData ? 'translate-x-5' : 'translate-x-0'
+                    includeSynthetic ? 'translate-x-5' : 'translate-x-0'
                   }`}
                 />
               </button>
@@ -811,11 +772,11 @@ function PopulationDashboardContent() {
             </div>
           ) : (
             <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-              
+
               {/* Timeline Chart (2/3 width on xl) */}
               <div className="xl:col-span-2">
                 <div className="bg-white border border-brand-navy/10 rounded-3xl p-6 shadow-sm space-y-6">
-                  
+
                   {/* Timeline Header Row (emulating MainTimeline controls) */}
                   <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4 pb-4 border-b border-brand-navy/5">
                     <div className="flex items-center gap-3">
@@ -825,11 +786,6 @@ function PopulationDashboardContent() {
                       <div>
                         <div className="flex items-center gap-2">
                           <h3 className="font-bold text-brand-navy text-lg">Population Cohort Timeline</h3>
-                          {smoothWindow > 1 && (
-                            <span className="text-[9px] bg-brand-teal/10 text-brand-teal px-2 py-0.5 rounded-full font-extrabold uppercase">
-                              {smoothWindow}-Day Smoothed
-                            </span>
-                          )}
                         </div>
                         <p className="text-xs text-brand-navy/50">Your daily hours compared to Median and Top 10% ranges.</p>
                       </div>
@@ -867,18 +823,6 @@ function PopulationDashboardContent() {
                         {showAdvancedFilters ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                       </button>
 
-                      {/* SMA Toggle */}
-                      <button
-                        onClick={() => setShowSMA(!showSMA)}
-                        className={`px-4 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-2 cursor-pointer ${
-                          showSMA
-                            ? 'bg-brand-peach/10 border-brand-peach/30 text-brand-navy'
-                            : 'bg-white border-brand-navy/10 text-brand-navy/60 hover:border-brand-navy/20'
-                        }`}
-                      >
-                        <span className={`w-2 h-2 rounded-full ${showSMA ? 'bg-brand-peach' : 'bg-brand-navy/30'}`}></span>
-                        Trendline
-                      </button>
                     </div>
                   </div>
 
@@ -912,26 +856,7 @@ function PopulationDashboardContent() {
                         </div>
                       </div>
 
-                      {/* 2. Moving Average SMA Period slider */}
-                      <div className="space-y-2">
-                        <label className="text-[10px] uppercase tracking-wider font-extrabold text-brand-navy/60 flex items-center gap-1.5">
-                          <span className="w-2.5 h-2.5 rounded-full bg-brand-peach"></span>
-                          Moving Average (SMA) Period
-                        </label>
-                        <div className="flex items-center gap-3">
-                          <input
-                            type="number"
-                            min="1"
-                            max="120"
-                            value={trendlinePeriod}
-                            onChange={(e) => setTrendlinePeriod(Math.max(1, parseInt(e.target.value) || 7))}
-                            className="bg-white border border-brand-navy/15 rounded-xl px-3 py-2 text-xs font-bold text-brand-navy focus:outline-none w-20 text-center"
-                          />
-                          <span className="text-xs font-bold text-brand-navy/70">Days</span>
-                        </div>
-                      </div>
-
-                      {/* 3. Custom Percentile Line Controls */}
+                      {/* 2. Custom Percentile Line Controls */}
                       {IS_MOCK_MODE && (
                         <div className="space-y-2">
                           <label className="text-[10px] uppercase tracking-wider font-extrabold text-brand-navy/60 flex items-center gap-1.5 justify-between">
@@ -939,7 +864,7 @@ function PopulationDashboardContent() {
                               <span className="w-2.5 h-2.5 rounded-full bg-brand-teal"></span>
                               Custom Percentile Line
                             </span>
-                            <input 
+                            <input
                               type="checkbox"
                               checked={showCustomPercentile}
                               onChange={(e) => setShowCustomPercentile(e.target.checked)}
@@ -981,8 +906,8 @@ function PopulationDashboardContent() {
                               className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold border border-transparent bg-brand-navy/5 text-brand-navy/35 cursor-not-allowed"
                               title={`${platform} is unsupported in this version`}
                             >
-                              <span 
-                                className="w-2.5 h-2.5 rounded-full" 
+                              <span
+                                className="w-2.5 h-2.5 rounded-full"
                                 style={{ backgroundColor: '#CBD5E1' }}
                               ></span>
                               <span>{platform}</span>
@@ -992,7 +917,7 @@ function PopulationDashboardContent() {
                             </button>
                           );
                         }
-                        
+
                         const datasetInfo = { status: readyPlatforms.includes(key) ? 'READY' : 'NOT_UPLOADED' };
                         const isReady = datasetInfo.status === 'READY';
                         const isActive = activePlatforms.includes(key) && isReady;
@@ -1010,8 +935,8 @@ function PopulationDashboardContent() {
                                 : 'bg-brand-navy/5 border-transparent text-brand-navy/35 cursor-not-allowed'
                             }`}
                           >
-                            <span 
-                              className="w-2.5 h-2.5 rounded-full" 
+                            <span
+                              className="w-2.5 h-2.5 rounded-full"
                               style={{ backgroundColor: isReady ? PLATFORM_COLORS[key] : '#CBD5E1' }}
                             ></span>
                             <span>{platform}</span>
@@ -1049,17 +974,17 @@ function PopulationDashboardContent() {
                     ) : (
                       <ResponsiveContainer width="100%" height="100%">
                         <ComposedChart
-                          data={decilesWithSMA}
+                          data={visibleDeciles}
                           margin={{ top: 10, right: 15, left: -20, bottom: 0 }}
                         >
                           <CartesianGrid strokeDasharray="3 3" stroke="#537D96" strokeOpacity={0.07} />
-                          <XAxis 
-                            dataKey="date" 
+                          <XAxis
+                            dataKey="date"
                             tickFormatter={(str) => {
                               const parts = str.split('-');
                               if (parts.length === 3) {
                                 const dateObj = new Date(str);
-                                const diffDays = decilesWithSMA.length;
+                                const diffDays = visibleDeciles.length;
                                 if (diffDays > 730) return dateObj.toLocaleDateString('en-US', { year: 'numeric' });
                                 if (diffDays > 30) return dateObj.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
                                 return `${parts[1]}/${parts[2]}`;
@@ -1070,7 +995,7 @@ function PopulationDashboardContent() {
                             axisLine={{ stroke: '#537D96', strokeOpacity: 0.15 }}
                             tickLine={false}
                           />
-                          <YAxis 
+                          <YAxis
                             tickFormatter={(val) => `${val}h`}
                             tick={{ fill: '#537D96', fontSize: 10, fontWeight: 600 }}
                             axisLine={{ stroke: '#537D96', strokeOpacity: 0.15 }}
@@ -1092,40 +1017,39 @@ function PopulationDashboardContent() {
                               if (name === 'top10') return [`${value} hrs`, 'Top 10% Power Users'];
                               if (name === 'bottom10') return [`${value} hrs`, 'Bottom 10% Users'];
                               if (name === 'customPercentileHours') return [`${value} hrs`, `Custom ${customPercentile}th Percentile`];
-                              if (name === 'smaHours') return [`${value} hrs`, `${trendlinePeriod}-Day SMA`];
                               return [`${value} hrs`, name];
                             }}
                           />
-                          
+
                           {/* Shaded Areas representing Cohort Bands (Mock mode only) */}
                           {IS_MOCK_MODE && (
                             <>
-                              <Area 
-                                name="top10" 
-                                type="monotone" 
-                                dataKey="top10" 
-                                fill="#44A194" 
-                                fillOpacity={0.06} 
-                                stroke="transparent" 
+                              <Area
+                                name="top10"
+                                type="linear"
+                                dataKey="top10"
+                                fill="#44A194"
+                                fillOpacity={0.06}
+                                stroke="transparent"
                               />
-                              <Area 
-                                name="median" 
-                                type="monotone" 
-                                dataKey="median" 
-                                fill="#537D96" 
-                                fillOpacity={0.09} 
-                                stroke="transparent" 
+                              <Area
+                                name="median"
+                                type="linear"
+                                dataKey="median"
+                                fill="#537D96"
+                                fillOpacity={0.09}
+                                stroke="transparent"
                               />
                             </>
                           )}
 
                           {/* Solid line representing User Watch hours */}
-                          <Line 
-                            name="user" 
-                            type="monotone" 
-                            dataKey="user" 
-                            stroke="#EC8F8D" 
-                            strokeWidth={3} 
+                          <Line
+                            name="user"
+                            type="linear"
+                            dataKey="user"
+                            stroke="#EC8F8D"
+                            strokeWidth={3}
                             dot={false}
                             activeDot={{ r: 6, stroke: '#FFFFFF', strokeWidth: 2 }}
                           />
@@ -1134,25 +1058,11 @@ function PopulationDashboardContent() {
                           {IS_MOCK_MODE && showCustomPercentile && (
                             <Line
                               name="customPercentileHours"
-                              type="monotone"
+                              type="linear"
                               dataKey="customPercentileHours"
                               stroke="#44A194"
                               strokeWidth={2}
                               strokeDasharray="4 4"
-                              dot={false}
-                              activeDot={false}
-                            />
-                          )}
-
-                          {/* Dynamic SMA Trendline of User's hours */}
-                          {showSMA && (
-                            <Line
-                              name="smaHours"
-                              type="monotone"
-                              dataKey="smaHours"
-                              stroke="#537D96"
-                              strokeWidth={2}
-                              strokeDasharray="3 3"
                               dot={false}
                               activeDot={false}
                             />
@@ -1179,12 +1089,6 @@ function PopulationDashboardContent() {
                         <div className="flex items-center gap-1.5">
                           <span className="w-3.5 h-1 border-t-2 border-dashed border-brand-teal"></span>
                           <span>{customPercentile}th Percentile Benchmark</span>
-                        </div>
-                      )}
-                      {showSMA && (
-                        <div className="flex items-center gap-1.5">
-                          <span className="w-3.5 h-1 border-t-2 border-dashed border-brand-navy"></span>
-                          <span>{trendlinePeriod}-Day SMA (Trendline)</span>
                         </div>
                       )}
                     </div>
@@ -1224,27 +1128,27 @@ function PopulationDashboardContent() {
                         margin={{ top: 5, right: 15, left: -15, bottom: 5 }}
                       >
                         <CartesianGrid strokeDasharray="3 3" stroke="#537D96" strokeOpacity={0.07} />
-                        <XAxis 
+                        <XAxis
                           type="number"
-                          stroke="#537D96" 
-                          fontSize={9} 
+                          stroke="#537D96"
+                          fontSize={9}
                           fontWeight="bold"
                           tickLine={false}
                           axisLine={false}
                           tickFormatter={(val) => `${val}%`}
                           label={{ value: 'Percentage of Cohort (%)', position: 'insideBottom', offset: -5, fontSize: 9, fill: '#537D96', fontWeight: 'bold' }}
                         />
-                        <YAxis 
+                        <YAxis
                           dataKey="range"
                           type="category"
-                          stroke="#537D96" 
-                          fontSize={9} 
+                          stroke="#537D96"
+                          fontSize={9}
                           fontWeight="bold"
                           tickLine={false}
                           axisLine={false}
                           width={75}
                         />
-                        <Tooltip 
+                        <Tooltip
                           content={({ active, payload }) => {
                             if (active && payload && payload.length) {
                               const data = payload[0].payload;
@@ -1260,7 +1164,7 @@ function PopulationDashboardContent() {
                                   <p className="flex justify-between gap-4 text-brand-navy/60 text-[10px]">
                                     <span>User Count:</span>
                                     <span className="font-mono">
-                                      {popData.useSyntheticData ? `${data.density} active users` : `${data.density} actual user(s)`}
+                                      {popData.includeSynthetic ? `${data.density} active users` : `${data.density} actual user(s)`}
                                     </span>
                                   </p>
                                   {data.isUserBin && (
@@ -1275,14 +1179,14 @@ function PopulationDashboardContent() {
                             return null;
                           }}
                         />
-                        <Bar 
-                          dataKey="percentage" 
+                        <Bar
+                          dataKey="percentage"
                           radius={[0, 4, 4, 0]}
                           barSize={10}
                         >
                           {binData.map((entry, index) => (
-                            <Cell 
-                              key={`cell-${index}`} 
+                            <Cell
+                              key={`cell-${index}`}
                               fill={entry.isUserBin ? '#EC8F8D' : '#44A194'}
                               fillOpacity={entry.isUserBin ? 0.95 : 0.75}
                             />
@@ -1300,7 +1204,7 @@ function PopulationDashboardContent() {
           {/* 24-Hour Difference Heatmap (Divergence Anomaly Grid) */}
           {hasSelectedPlatforms && !isPopLoading && popData && (
             <div className="bg-white border border-brand-navy/10 rounded-3xl p-6 shadow-sm space-y-6">
-              
+
               {/* Heatmap Header (identical to BehavioralHeatmap header) */}
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-brand-navy/5">
                 <div className="flex items-center gap-3">
@@ -1336,7 +1240,7 @@ function PopulationDashboardContent() {
                     const popHrs = row.populationAvg;
                     const diff = userHrs - popHrs;
                     const cappedDiff = Math.max(-0.8, Math.min(0.8, diff));
-                    
+
                     let colorClass = 'bg-brand-navy/5 border-brand-navy/5 text-brand-navy/30';
                     let labelColor = 'text-brand-navy/70';
 
@@ -1347,7 +1251,7 @@ function PopulationDashboardContent() {
                       else if (ratio < 0.6) colorClass = 'bg-brand-peach/30 border-brand-peach/20 text-brand-peach';
                       else if (ratio < 0.85) colorClass = 'bg-brand-peach/60 border-brand-peach/30 text-white';
                       else colorClass = 'bg-brand-peach border-brand-peach/50 text-white font-black';
-                      
+
                       labelColor = ratio >= 0.6 ? 'text-white' : 'text-brand-peach font-black';
                     } else if (cappedDiff < -0.05) {
                       // Less active than average = lower screentime (Teal/Green intensity shades)
@@ -1356,7 +1260,7 @@ function PopulationDashboardContent() {
                       else if (ratio < 0.6) colorClass = 'bg-brand-teal/30 border-brand-teal/20 text-brand-teal';
                       else if (ratio < 0.85) colorClass = 'bg-brand-teal/60 border-brand-teal/30 text-white';
                       else colorClass = 'bg-brand-teal border-brand-teal/50 text-white font-black';
-                      
+
                       labelColor = ratio >= 0.6 ? 'text-white' : 'text-brand-teal font-black';
                     } else {
                       // Neutral / matching average

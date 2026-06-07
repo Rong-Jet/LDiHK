@@ -84,6 +84,16 @@ class ParserDispatchTests(unittest.TestCase):
             "backend.ingestion.parsers.search_history:parse_search_history",
         )
 
+    def test_routes_tiktok_user_data_json_to_tiktok_watch_parser(self):
+        result = dispatch_member_path("TikTok/user_data_tiktok.json")
+
+        self.assertFalse(result.ignored)
+        self.assertEqual(result.parser_name, "tiktok_watch_history")
+        self.assertEqual(
+            result.callable_path,
+            "backend.ingestion.parsers.tiktok_watch_history:parse_tiktok_watch_history",
+        )
+
     def test_unmatched_files_are_ignored(self):
         result = dispatch_member_path(
             "Takeout/YouTube and YouTube Music/history/not-watch-history.txt"

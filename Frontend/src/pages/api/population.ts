@@ -2,16 +2,15 @@ import type { APIRoute } from 'astro';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
+import { configuredBackendApiBase, isMockApiMode, shouldAllowImplicitMockApiMode } from '../../lib/env';
 
 export const prerender = false;
-
-const IS_MOCK_MODE = import.meta.env.PUBLIC_MOCK_API === 'true';
 
 // Rational approximation of the inverse CDF of the normal distribution (Z-score from percentile)
 const getZScore = (p: number): number => {
   const pVal = Math.max(0.01, Math.min(0.99, p / 100));
   const t = Math.sqrt(-2.0 * Math.log(pVal < 0.5 ? pVal : 1.0 - pVal));
-  const z = t - ((2.515517 + 0.802853 * t + 0.010328 * t * t) / 
+  const z = t - ((2.515517 + 0.802853 * t + 0.010328 * t * t) /
                 (1.0 + 1.432788 * t + 0.189269 * t * t + 0.001308 * t * t * t));
   return pVal < 0.5 ? -z : z;
 };
@@ -20,11 +19,11 @@ function getHourlyMockRecord(platform: string, dateStr: string, hour: number) {
   const yearStr = dateStr.substring(0, 4);
   const monthStr = dateStr.substring(5, 7);
   const dayStr = dateStr.substring(8, 10);
-  
+
   const year = parseInt(yearStr) || 2026;
   const month = parseInt(monthStr) || 6;
   const day = parseInt(dayStr) || 6;
-  
+
   let platformOffset = 0;
   if (platform === 'instagram') platformOffset = 50;
   else if (platform === 'tiktok') platformOffset = 100;
@@ -33,7 +32,7 @@ function getHourlyMockRecord(platform: string, dateStr: string, hour: number) {
   else if (platform === 'linkedin') platformOffset = 200;
 
   const seed = (year * 367) + (month * 31) + day + hour * 17 + platformOffset;
-  const rand = Math.abs(Math.sin(seed + 12.34)) * 0.8 + 0.2; 
+  const rand = Math.abs(Math.sin(seed + 12.34)) * 0.8 + 0.2;
 
   const dObj = new Date(year, month - 1, day);
   const dayOfWeek = dObj.getDay();
@@ -41,8 +40,8 @@ function getHourlyMockRecord(platform: string, dateStr: string, hour: number) {
   const weekendMult = isWeekend ? 1.45 : 0.95;
 
   const epochDays = Math.round((dObj.getTime() - new Date('2016-01-01').getTime()) / (1000 * 3600 * 24));
-  const seasonalTrend = 1.0 + Math.sin(epochDays / 120) * 0.25; 
-  const longTermTrend = 1.0 + (epochDays / 3652.5) * 0.35; 
+  const seasonalTrend = 1.0 + Math.sin(epochDays / 120) * 0.25;
+  const longTermTrend = 1.0 + (epochDays / 3652.5) * 0.35;
 
   let hourWeight = 1.0;
   let baseSeconds = 850;
@@ -50,7 +49,7 @@ function getHourlyMockRecord(platform: string, dateStr: string, hour: number) {
 
   if (platform === 'youtube') {
     if (hour >= 23 || hour <= 4) {
-      hourWeight = isWeekend 
+      hourWeight = isWeekend
         ? (hour === 23 || hour === 0 ? 1.9 : 0.9)
         : (hour === 23 || hour === 0 ? 0.7 : 0.15);
     } else if (hour >= 5 && hour <= 8) {
@@ -60,7 +59,7 @@ function getHourlyMockRecord(platform: string, dateStr: string, hour: number) {
     } else if (hour >= 13 && hour <= 17) {
       hourWeight = 1.1;
     } else if (hour >= 18 && hour <= 22) {
-      hourWeight = 2.4; 
+      hourWeight = 2.4;
     }
     baseSeconds = 850;
     eventDivisor = 270;
@@ -143,7 +142,7 @@ function getPopulationHourlySeconds(platform: string, hour: number, isWeekend: b
     } else if (hour >= 13 && hour <= 17) {
       hourWeight = 1.1;
     } else if (hour >= 18 && hour <= 22) {
-      hourWeight = 2.4; 
+      hourWeight = 2.4;
     }
     const baseSeconds = 850;
     return baseSeconds * hourWeight * 0.6;
@@ -196,6 +195,70 @@ function getPopulationHourlySeconds(platform: string, hour: number, isWeekend: b
   }
 }
 
+function isYoutubeOnlyPopulationRequest(platforms: unknown) {
+  if (platforms === undefined || platforms === null) return true;
+  if (!Array.isArray(platforms) || platforms.length === 0) return false;
+
+  const normalizedPlatforms = new Set(
+    platforms
+      .filter((platform): platform is string => typeof platform === 'string')
+      .map((platform) => platform.trim().toLowerCase())
+      .filter(Boolean)
+  );
+
+  return normalizedPlatforms.size === 1 && normalizedPlatforms.has('youtube');
+}
+
+async function tryBackendPopulation(body: any, authHeader: string): Promise<Response | null> {
+  if (!configuredBackendApiBase || !isYoutubeOnlyPopulationRequest(body?.platforms)) {
+    return null;
+  }
+
+  try {
+    const backendResponse = await fetch(`${configuredBackendApiBase}/api/population`, {
+      method: 'POST',
+      headers: {
+        Authorization: authHeader,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        ...body,
+        platforms: ['youtube'],
+      }),
+    });
+
+    if (backendResponse.status === 404 || backendResponse.status === 405) {
+      return null;
+    }
+
+    const contentType = backendResponse.headers.get('Content-Type') || 'application/json';
+    const responseBody = await backendResponse.text();
+    let normalizedBody = responseBody;
+    if (contentType.includes('application/json')) {
+      try {
+        const parsedBody = JSON.parse(responseBody);
+        normalizedBody = JSON.stringify({
+          ...parsedBody,
+          includeSynthetic: parsedBody.includeSynthetic ?? body?.includeSynthetic ?? true,
+          hasPopulationData: true,
+        });
+      } catch (err) {
+        normalizedBody = responseBody;
+      }
+    }
+
+    return new Response(normalizedBody, {
+      status: backendResponse.status,
+      headers: {
+        'Content-Type': contentType,
+        'Access-Control-Allow-Origin': '*',
+      },
+    });
+  } catch (err) {
+    return null;
+  }
+}
+
 // Handle OPTIONS preflight requests for CORS compatibility
 export const OPTIONS: APIRoute = async () => {
   return new Response(null, {
@@ -227,6 +290,25 @@ export const POST: APIRoute = async ({ request }) => {
       });
     }
 
+    const body = await request.json();
+    const backendPopulation = await tryBackendPopulation(body, authHeader);
+    if (backendPopulation) {
+      return backendPopulation;
+    }
+
+    if (!isMockApiMode && !shouldAllowImplicitMockApiMode && !configuredBackendApiBase) {
+      return new Response(
+        JSON.stringify({
+          error: 'population_backend_not_configured',
+          message: 'Population mock data is disabled. Configure a backend population API or set PUBLIC_MOCK_API=true.',
+        }),
+        {
+          status: 503,
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        }
+      );
+    }
+
     // Check if the dataset is ready in mock database
     const statePath = path.join(os.tmpdir(), 'ldihk_state.json');
     let state: any = { datasets: {} };
@@ -237,7 +319,7 @@ export const POST: APIRoute = async ({ request }) => {
       // Fallback if file doesn't exist
     }
 
-    const isReady = IS_MOCK_MODE || state.datasets?.youtube?.status === 'READY';
+    const isReady = isMockApiMode || !!configuredBackendApiBase || state.datasets?.youtube?.status === 'READY';
     if (!isReady) {
       return new Response(
         JSON.stringify({
@@ -251,20 +333,19 @@ export const POST: APIRoute = async ({ request }) => {
       );
     }
 
-    const body = await request.json();
-    const { 
+    const {
       platforms = ['youtube'],
-      startDate = '2026-05-08', 
-      endDate = '2026-06-06', 
-      useSyntheticData = true,
+      startDate = '2026-05-08',
+      endDate = '2026-06-06',
       customPercentile = 90,
       visibleStartDate
     } = body;
+    const includeSynthetic = body.includeSynthetic ?? true;
 
     const actualVisibleStartDate = visibleStartDate || startDate;
 
-    if (!IS_MOCK_MODE) {
-      const backendUrl = import.meta.env.PUBLIC_API_URL || 'https://ldihk-api.onrender.com';
+    if (!isMockApiMode && configuredBackendApiBase) {
+      const backendUrl = configuredBackendApiBase;
       try {
         const backendRes = await fetch(`${backendUrl}/api/population`, {
           method: 'POST',
@@ -279,6 +360,7 @@ export const POST: APIRoute = async ({ request }) => {
           const backendData = await backendRes.json();
           return new Response(JSON.stringify({
             ...backendData,
+            includeSynthetic: backendData.includeSynthetic ?? includeSynthetic,
             hasPopulationData: true,
           }), {
             status: 200,
@@ -366,16 +448,16 @@ export const POST: APIRoute = async ({ request }) => {
         const deciles = dateList.map(dateStr => ({
           date: dateStr,
           user: parseFloat(userDailyWatchHours[dateStr].toFixed(2)),
-          median: null as unknown as number,
-          top10: null as unknown as number,
-          bottom10: null as unknown as number,
-          customPercentileHours: null as unknown as number,
+          median: null,
+          top10: null,
+          bottom10: null,
+          customPercentileHours: null,
         }));
 
         // Build hourlyAverages with user data only (no population baseline)
         const hourlyAverages = Array.from({ length: 24 }, (_, hour) => ({
           hour: `${hour.toString().padStart(2, '0')}:00`,
-          populationAvg: null as unknown as number,
+          populationAvg: null,
           userAvg: parseFloat((userHourlyAverages[hour] / 3600).toFixed(3)),
         }));
 
@@ -384,7 +466,7 @@ export const POST: APIRoute = async ({ request }) => {
           hasPopulationData: false,
           userPercentile: null,
           userDailyAverageHours: parseFloat(userDailyAverageHours.toFixed(2)),
-          useSyntheticData: false,
+          includeSynthetic: false,
           customPercentile,
           distribution: [],
           deciles,
@@ -401,7 +483,7 @@ export const POST: APIRoute = async ({ request }) => {
           hasPopulationData: false,
           userPercentile: null,
           userDailyAverageHours: null,
-          useSyntheticData: false,
+          includeSynthetic: false,
           customPercentile,
           distribution: [],
           deciles: [],
@@ -436,7 +518,7 @@ export const POST: APIRoute = async ({ request }) => {
       dateInit.setDate(dateInit.getDate() + 1);
     }
 
-    if (IS_MOCK_MODE) {
+    if (isMockApiMode || !configuredBackendApiBase) {
       const current = new Date(start);
       while (current <= end) {
         const dateString = current.toISOString().split('T')[0];
@@ -461,13 +543,13 @@ export const POST: APIRoute = async ({ request }) => {
       }
     } else {
       // Query the real backend API for the user's actual data!
-      const backendUrl = import.meta.env.PUBLIC_API_URL || 'https://ldihk-api.onrender.com';
-      
+      const backendUrl = configuredBackendApiBase;
+
       // We query each platform, but since the Python backend only supports 'youtube_usage', we filter.
       for (const platform of platforms) {
         if (platform !== 'youtube') continue; // Skip non-supported platforms in backend database
 
-        // 1. Fetch daily watch seconds (padded range)
+        // 1. Fetch daily watch seconds.
         const dailyRes = await fetch(`${backendUrl}/api/query`, {
           method: 'POST',
           headers: {
@@ -495,7 +577,7 @@ export const POST: APIRoute = async ({ request }) => {
             const dateStr = row.date;
             const secs = row.estimated_watch_seconds || 0;
             userDailyWatchHours[dateStr] = (userDailyWatchHours[dateStr] || 0) + (secs / 3600);
-            
+
             if (dateStr >= actualVisibleStartDate) {
               totalUserSeconds += secs;
             }
@@ -572,7 +654,7 @@ export const POST: APIRoute = async ({ request }) => {
     let hourlyAverages = [];
     let userPercentile = 50;
 
-    if (useSyntheticData) {
+    if (includeSynthetic) {
       // SYNTHETIC MODE - Scale visual range based on mean
       const binWidth = Math.max(0.1, parseFloat((combinedMean * 3.5 / 40).toFixed(2)));
       for (let i = 0; i <= 40; i++) {
@@ -597,7 +679,7 @@ export const POST: APIRoute = async ({ request }) => {
       const dateList = Object.keys(userDailyWatchHours).sort();
       deciles = dateList.map(dateStr => {
         const uHours = userDailyWatchHours[dateStr];
-        
+
         const dObj = new Date(dateStr);
         const dayOfWeek = dObj.getDay();
         const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
@@ -631,7 +713,7 @@ export const POST: APIRoute = async ({ request }) => {
         platforms.forEach((platform: string) => {
           popSecs += getPopulationHourlySeconds(platform, hour, false);
         });
-        
+
         hourlyAverages.push({
           hour: `${hour.toString().padStart(2, '0')}:00`,
           populationAvg: parseFloat((popSecs / 3600).toFixed(3)),
@@ -661,14 +743,14 @@ export const POST: APIRoute = async ({ request }) => {
       const dateList = Object.keys(userDailyWatchHours).sort();
       deciles = dateList.map(dateStr => {
         const uHours = userDailyWatchHours[dateStr];
-        
+
         const d = new Date(dateStr);
         const dayOfWeek = d.getDay();
         const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
         const baseHoursMultiplier = isWeekend ? 1.5 : 1.0;
         const dateNum = d.getDate();
         const trend = 1 + (dateNum / 30) * 0.2;
-        
+
         const pseudo1 = Math.sin(d.getTime() + 5) * 0.2 + 1;
         const pseudo2 = Math.sin(d.getTime() + 20) * 0.15 + 1;
         const pseudo3 = Math.sin(d.getTime() + 45) * 0.3 + 1;
@@ -710,7 +792,7 @@ export const POST: APIRoute = async ({ request }) => {
         const u1AvgHrs = (popSecs / 3600) * 0.45;
         const u2AvgHrs = (popSecs / 3600) * 0.85;
         const u3AvgHrs = (popSecs / 3600) * 2.1;
-        
+
         const populationAvgHrs = (u1AvgHrs + u2AvgHrs + u3AvgHrs + userAvgHrs) / 4;
 
         hourlyAverages.push({
@@ -723,10 +805,13 @@ export const POST: APIRoute = async ({ request }) => {
 
     return new Response(
       JSON.stringify({
+        schema_version: 'youtube_usage.population.mock.v1',
         ready: true,
+        dataset: 'youtube_usage',
+        platforms,
         userPercentile,
         userDailyAverageHours: parseFloat(userDailyAverageHours.toFixed(2)),
-        useSyntheticData,
+        includeSynthetic,
         customPercentile,
         distribution,
         deciles,

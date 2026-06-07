@@ -16,6 +16,10 @@ from backend.http_boundary import (
     require_bearer_identity,
 )
 from backend.imports_api import ImportRepository, create_imports_blueprint
+from backend.population_api import (
+    PopulationValidationError,
+    query_youtube_population,
+)
 from backend.query_api import (
     QueryValidationError as StructuredQueryValidationError,
     public_query_response,
@@ -122,6 +126,33 @@ def create_app(
         except PublicBoundaryError as error:
             return public_boundary_error_response(error)
         except StructuredQueryValidationError as error:
+            return jsonify({"error": error.code}), 400
+        except DatabaseConfigError as error:
+            return jsonify({"error": "database_unavailable", "message": str(error)}), 503
+        finally:
+            if connection is not None:
+                connection.close()
+        return jsonify(payload)
+
+    @app.post("/api/population")
+    def youtube_population_query():
+        connection = None
+        try:
+            identity = require_bearer_identity()
+            request_payload = request.get_json(silent=True)
+            identity_errors = identity_field_errors(request_payload)
+            if identity_errors:
+                return identity_field_error_response(identity_errors)
+
+            connection = query_connection_factory()
+            payload = query_youtube_population(
+                connection,
+                request_payload,
+                ldihk_id=identity.ldihk_id,
+            )
+        except PublicBoundaryError as error:
+            return public_boundary_error_response(error)
+        except PopulationValidationError as error:
             return jsonify({"error": error.code}), 400
         except DatabaseConfigError as error:
             return jsonify({"error": "database_unavailable", "message": str(error)}), 503

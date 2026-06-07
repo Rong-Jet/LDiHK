@@ -41,23 +41,22 @@ class HttpBoundaryTests(unittest.TestCase):
         self.assertIn("POST", response.headers["Access-Control-Allow-Methods"])
         self.assertIn("Authorization", response.headers["Access-Control-Allow-Headers"])
 
-    def test_cors_allows_explicit_dev_origin(self):
-        with patch.dict(os.environ, {"FRONTEND_ALLOWED_ORIGINS": ""}):
-            app = create_app()
+    def test_cors_allows_explicit_dev_origins(self):
+        for origin in ("http://localhost:4321", "http://localhost:5173"):
+            with self.subTest(origin=origin):
+                with patch.dict(os.environ, {"FRONTEND_ALLOWED_ORIGINS": ""}):
+                    app = create_app()
 
-        response = app.test_client().options(
-            "/api/query",
-            headers={
-                "Origin": "http://localhost:5173",
-                "Access-Control-Request-Method": "POST",
-            },
-        )
+                response = app.test_client().options(
+                    "/api/query",
+                    headers={
+                        "Origin": origin,
+                        "Access-Control-Request-Method": "POST",
+                    },
+                )
 
-        self.assertEqual(response.status_code, 204)
-        self.assertEqual(
-            response.headers["Access-Control-Allow-Origin"],
-            "http://localhost:5173",
-        )
+                self.assertEqual(response.status_code, 204)
+                self.assertEqual(response.headers["Access-Control-Allow-Origin"], origin)
 
     def test_cors_rejects_unlisted_origin_preflight(self):
         with patch.dict(

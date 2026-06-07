@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import unittest
+from unittest.mock import patch
 
+from backend.ingestion.parsers import watch_history
 from backend.ingestion.parsers.watch_history import parse_watch_history
 
 
@@ -138,6 +140,74 @@ class WatchHistoryParserTests(unittest.TestCase):
         )
 
         self.assertEqual([event.video_id for event in result.events], ["abc-123_456", "shortUrl123"])
+
+    def test_html_parser_handles_activity_cards_split_across_chunks(self):
+        html = export_html(
+            activity_card(
+                "YouTube",
+                """
+                Watched&nbsp;<a href="https://www.youtube.com/watch?v=split123">Split Chunk Video</a><br>
+                6 Jun 2026, 08:53:12 CEST<br>
+                """,
+            )
+            + activity_card(
+                "YouTube Music",
+                """
+                Watched&nbsp;<a href="https://music.youtube.com/watch?v=split456">Split Chunk Song</a><br>
+                6 Jun 2026, 09:53:12 CEST<br>
+                """,
+            )
+        )
+
+        with patch.object(watch_history, "HTML_PARSE_CHUNK_BYTES", 17):
+            result = parse_watch_history(
+                html,
+                source_path=(
+                    "Takeout/YouTube and YouTube Music/history/watch-history.html"
+                ),
+        )
+
+        self.assertEqual(result.records_seen, 2)
+        self.assertEqual(
+            [event.video_id for event in result.events],
+            ["split123", "split456"],
+        )
+
+    def test_html_parser_does_not_build_full_document_beautifulsoup_tree(self):
+        html = export_html(
+            activity_card(
+                "YouTube",
+                """
+                Watched&nbsp;<a href="https://www.youtube.com/watch?v=first123">First Video</a><br>
+                6 Jun 2026, 08:53:12 CEST<br>
+                """,
+            )
+            + activity_card(
+                "YouTube",
+                """
+                Watched&nbsp;<a href="https://www.youtube.com/watch?v=second456">Second Video</a><br>
+                6 Jun 2026, 09:53:12 CEST<br>
+                """,
+            )
+        )
+        original_beautiful_soup = watch_history.BeautifulSoup
+        parsed_markup_sizes: list[int] = []
+
+        def tracking_beautiful_soup(markup, *args, **kwargs):
+            parsed_markup_sizes.append(len(markup))
+            return original_beautiful_soup(markup, *args, **kwargs)
+
+        with patch.object(watch_history, "BeautifulSoup", tracking_beautiful_soup):
+            result = parse_watch_history(
+                html,
+                source_path=(
+                    "Takeout/YouTube and YouTube Music/history/watch-history.html"
+                ),
+            )
+
+        self.assertEqual(result.records_seen, 2)
+        self.assertEqual(len(parsed_markup_sizes), 2)
+        self.assertTrue(all(size < len(html) for size in parsed_markup_sizes))
 
     def test_json_watch_history_is_supported(self):
         payload = [

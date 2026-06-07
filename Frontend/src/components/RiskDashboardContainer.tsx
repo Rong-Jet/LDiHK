@@ -1,19 +1,34 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
-import { 
+import {
   RefreshCw, BarChart3, Database, ShieldAlert, UploadCloud,
   Key, Copy, Check, LogOut, Eye, EyeOff, ShieldCheck, Lock,
-  Clock, Activity, Info, Sparkles, AlertCircle, Bed, BookOpen, 
+  Clock, Activity, Info, Sparkles, AlertCircle, Bed, BookOpen,
   ChevronRight, Heart, AlertTriangle, Filter, ChevronDown, ChevronUp,
   Calendar
 } from 'lucide-react';
-import { 
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, 
+import {
+  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
   CartesianGrid, ReferenceLine
 } from 'recharts';
 import UploadZone from './UploadZone';
+import { apiRoutes, authHeaders, isMockApiMode, jsonHeaders } from '../lib/api';
 
-const IS_MOCK_MODE = import.meta.env.PUBLIC_MOCK_API === 'true';
+const isPendingEnrichment = (importStatus: any) => (
+  importStatus?.status === 'completed'
+  && (importStatus?.enrichment_status === 'queued' || importStatus?.enrichment_status === 'running')
+);
+
+const isResolvedImportStatus = (importStatus: any) => (
+  importStatus?.status === 'failed'
+  || (importStatus?.status === 'completed' && !isPendingEnrichment(importStatus))
+);
+
+const shouldPollImportStatus = (importStatus: any) => (
+  importStatus?.status === 'queued'
+  || importStatus?.status === 'running'
+  || isPendingEnrichment(importStatus)
+);
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -37,7 +52,7 @@ function RiskDashboardContent() {
   const queryClient = useQueryClient();
   const [showUploadZone, setShowUploadZone] = useState(false);
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
-  
+
   // Date range filters matching the timeline selection
   const [startDate, setStartDate] = useState('2026-05-08');
   const [endDate, setEndDate] = useState('2026-06-06');
@@ -96,11 +111,11 @@ function RiskDashboardContent() {
     queryKey: ['probe', sessionToken],
     queryFn: async () => {
       if (!sessionToken) return null;
-      const res = await fetch(`/api/query`, {
+      const res = await fetch(apiRoutes.query(), {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${sessionToken}`
+          ...jsonHeaders,
+          ...authHeaders(sessionToken),
         },
         body: JSON.stringify({
           dataset: 'youtube_usage',
@@ -118,56 +133,48 @@ function RiskDashboardContent() {
       if (!res.ok) return { rows: [] };
       return res.json();
     },
-    enabled: !IS_MOCK_MODE && !!sessionToken && !currentImportId,
+    enabled: !isMockApiMode && !!sessionToken && !currentImportId,
   });
 
   // Import Polling Query
   const { data: importStatusData } = useQuery({
     queryKey: ['importStatus', currentImportId, sessionToken],
     queryFn: async () => {
-      const res = await fetch(`/api/imports/${currentImportId}`, {
+      const res = await fetch(apiRoutes.importStatus(currentImportId || ''), {
         headers: {
-          'Authorization': `Bearer ${sessionToken}`
+          ...authHeaders(sessionToken),
         }
       });
       if (!res.ok) throw new Error('Import status query failed');
       return res.json();
     },
-    enabled: !IS_MOCK_MODE && !!currentImportId && !!sessionToken,
+    enabled: !isMockApiMode && !!currentImportId && !!sessionToken,
     refetchInterval: (query) => {
-      const status = query.state.data?.status;
-      return (status === 'queued' || status === 'running') ? 1000 : false;
+      return shouldPollImportStatus(query.state.data) ? 1000 : false;
     },
   });
 
   useEffect(() => {
-    if (importStatusData?.status === 'completed' || importStatusData?.status === 'failed') {
+    if (isResolvedImportStatus(importStatusData)) {
       localStorage.removeItem('ldihk_current_import_id');
       refetchProbe();
       setCurrentImportId(null);
     }
-  }, [importStatusData?.status, refetchProbe]);
+  }, [importStatusData?.status, importStatusData?.enrichment_status, refetchProbe]);
 
-  const currentStatus = IS_MOCK_MODE 
+  const currentStatus = isMockApiMode
     ? 'READY'
-    : (currentImportId 
-      ? 'PROCESSING' 
+    : (currentImportId && !isResolvedImportStatus(importStatusData)
+      ? 'PROCESSING'
       : (probeData?.rows && probeData.rows.length > 0 ? 'READY' : 'NOT_UPLOADED'));
 
-  const paddedStartDate = useMemo(() => {
-    if (!startDate) return '';
-    const dateObj = new Date(startDate);
-    dateObj.setDate(dateObj.getDate() - 90);
-    return dateObj.toISOString().split('T')[0];
-  }, [startDate]);
-
-  const readyPlatforms = IS_MOCK_MODE 
-    ? ['youtube', 'instagram', 'tiktok', 'spotify'] 
+  const readyPlatforms = isMockApiMode
+    ? ['youtube', 'instagram', 'tiktok', 'spotify']
     : (currentStatus === 'READY' ? ['youtube'] : []);
 
   // Discovered Date Bounds
   const discoveredBounds = React.useMemo(() => {
-    if (IS_MOCK_MODE) {
+    if (isMockApiMode) {
       const tenYearsAgo = new Date();
       tenYearsAgo.setFullYear(tenYearsAgo.getFullYear() - 10);
       return {
@@ -187,7 +194,7 @@ function RiskDashboardContent() {
 
   // Automatically update start and end dates when date bounds are discovered (Only in Live Mode)
   React.useEffect(() => {
-    if (!IS_MOCK_MODE && discoveredBounds.minDate && discoveredBounds.maxDate) {
+    if (!isMockApiMode && discoveredBounds.minDate && discoveredBounds.maxDate) {
       const [y, m, d] = discoveredBounds.maxDate.split('-').map(Number);
       const maxDateObj = new Date(Date.UTC(y, m - 1, d));
       const minDateObj = new Date(discoveredBounds.minDate);
@@ -207,23 +214,23 @@ function RiskDashboardContent() {
 
   // Main custom query to retrieve granular hourly-daily watch records for wellness analysis
   const { data: detailedUsageData, isLoading: isDetailedLoading, error: detailedError } = useQuery<{ rows: QueryRow[] }>({
-    queryKey: ['detailedUsage', readyPlatforms.join(','), paddedStartDate, endDate, sessionToken],
+    queryKey: ['detailedUsage', readyPlatforms.join(','), startDate, endDate, sessionToken],
     queryFn: async () => {
       if (readyPlatforms.length === 0) return { rows: [] };
-      
+
       const promises = readyPlatforms.map(async (platform) => {
-        const res = await fetch(`/api/query`, {
+        const res = await fetch(apiRoutes.query(), {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${sessionToken}`
+            ...jsonHeaders,
+            ...authHeaders(sessionToken),
           },
           body: JSON.stringify({
             dataset: `${platform}_usage`,
             metrics: ['event_count', 'estimated_watch_seconds'],
             dimensions: ['date', 'hour'],
             filters: {
-              start_date: paddedStartDate,
+              start_date: startDate,
               end_date: endDate,
             },
             options: {
@@ -238,7 +245,7 @@ function RiskDashboardContent() {
       });
 
       const results = await Promise.all(promises);
-      
+
       // Combine results by grouping by date and hour
       const combinedMap: { [key: string]: QueryRow } = {};
       results.forEach(rows => {
@@ -259,16 +266,16 @@ function RiskDashboardContent() {
 
       return { rows: Object.values(combinedMap) };
     },
-    enabled: (IS_MOCK_MODE || currentStatus === 'READY') && !!sessionToken && readyPlatforms.length > 0,
+    enabled: (isMockApiMode || currentStatus === 'READY') && !!sessionToken && readyPlatforms.length > 0,
   });
 
-  const handleUploadComplete = async (s3Key: string, s3Bucket: string) => {
+  const handleUploadComplete = async (s3Key: string, s3Bucket: string, activeSessionToken: string) => {
     try {
-      const res = await fetch(`/api/imports`, {
+      const res = await fetch(apiRoutes.imports(), {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${sessionToken}`
+          ...jsonHeaders,
+          ...authHeaders(activeSessionToken),
         },
         body: JSON.stringify({
           s3_bucket: s3Bucket,
@@ -281,15 +288,16 @@ function RiskDashboardContent() {
       setCurrentImportId(data.import_id);
     } catch (err) {
       console.error('Error starting import:', err);
+      throw err;
     }
   };
 
   const handleResetPipeline = async () => {
     try {
-      await fetch('/api/upload-url'); 
+      await fetch(apiRoutes.uploadUrl());
       setStartDate('2026-05-08');
       setEndDate('2026-06-06');
-      
+
       queryClient.setQueryData(['probe', sessionToken], null);
       queryClient.setQueryData(['detailedUsage'], null);
       localStorage.removeItem('ldihk_current_import_id');
@@ -302,35 +310,35 @@ function RiskDashboardContent() {
 
   // Preset Date range selection logic
   const activePreset = useMemo(() => {
-    const REFERENCE_DATE = !IS_MOCK_MODE ? (discoveredBounds.maxDate || '2026-06-06') : '2026-06-06';
+    const REFERENCE_DATE = !isMockApiMode ? (discoveredBounds.maxDate || '2026-06-06') : '2026-06-06';
     if (endDate !== REFERENCE_DATE) return 'custom';
-    
+
     if (startDate === REFERENCE_DATE) return '1D';
-    
+
     const refDateObj = new Date(REFERENCE_DATE);
-    
+
     const d7 = new Date(refDateObj);
     d7.setDate(d7.getDate() - 6);
     if (startDate === d7.toISOString().split('T')[0]) return '7D';
-    
+
     const d15 = new Date(refDateObj);
     d15.setDate(d15.getDate() - 14);
     if (startDate === d15.toISOString().split('T')[0]) return '15D';
-    
+
     const d30 = new Date(refDateObj);
     d30.setDate(d30.getDate() - 29);
     if (startDate === d30.toISOString().split('T')[0]) return '30D';
-    
+
     const d1y = new Date(refDateObj);
     d1y.setFullYear(d1y.getFullYear() - 1);
     d1y.setDate(d1y.getDate() + 1);
     if (startDate === d1y.toISOString().split('T')[0]) return '1Y';
-    
+
     const d5y = new Date(refDateObj);
     d5y.setFullYear(d5y.getFullYear() - 5);
     d5y.setDate(d5y.getDate() + 1);
     if (startDate === d5y.toISOString().split('T')[0]) return '5Y';
-    
+
     const dall = new Date(refDateObj);
     dall.setFullYear(dall.getFullYear() - 10);
     if (startDate === dall.toISOString().split('T')[0]) return 'all';
@@ -339,7 +347,7 @@ function RiskDashboardContent() {
   }, [startDate, endDate, discoveredBounds.maxDate]);
 
   const applyPreset = (preset: string) => {
-    const end = !IS_MOCK_MODE ? (discoveredBounds.maxDate || '2026-06-06') : '2026-06-06';
+    const end = !isMockApiMode ? (discoveredBounds.maxDate || '2026-06-06') : '2026-06-06';
     let start = end;
     const refDateObj = new Date(end);
 
@@ -388,7 +396,7 @@ function RiskDashboardContent() {
         avgVolume: 0,
         avgLateNight: 0,
         avgFragmentation: 0,
-        isEmptyLive: true 
+        isEmptyLive: true
       };
     }
 
@@ -405,9 +413,9 @@ function RiskDashboardContent() {
 
     const timelineData = dates.map((dateStr, dayIdx) => {
       const hoursData = dailyMap[dateStr];
-      
+
       let ytSeconds = 0;
-      let ytLateNightSeconds = 0; 
+      let ytLateNightSeconds = 0;
       let activeHoursCount = 0;
 
       hoursData.forEach(h => {
@@ -415,14 +423,14 @@ function RiskDashboardContent() {
         if (h.hour >= 23 || h.hour <= 4) {
           ytLateNightSeconds += h.estimated_watch_seconds;
         }
-        if (h.estimated_watch_seconds >= 300) { 
+        if (h.estimated_watch_seconds >= 300) {
           activeHoursCount++;
         }
       });
 
       const ytHours = ytSeconds / 3600;
       const ytLateNightHours = ytLateNightSeconds / 3600;
-      
+
       const fragmentationIndex = activeHoursCount / 24;
       const z = -2.1 + (0.35 * ytHours) + (0.80 * fragmentationIndex) + (1.20 * ytLateNightHours);
 
@@ -434,7 +442,7 @@ function RiskDashboardContent() {
         riskScore: riskScorePercent,
         volume: parseFloat(ytHours.toFixed(2)),
         lateNightHours: parseFloat(ytLateNightHours.toFixed(2)),
-        fragmentation: Math.round(fragmentationIndex * 100), 
+        fragmentation: Math.round(fragmentationIndex * 100),
       };
     });
 
@@ -449,7 +457,7 @@ function RiskDashboardContent() {
 
     const avgPreviousRisk = previousPeriodData.length > 0
       ? previousPeriodData.reduce((sum, d) => sum + d.riskScore, 0) / previousPeriodData.length
-      : avgCurrentRisk; 
+      : avgCurrentRisk;
 
     const diff = avgCurrentRisk - avgPreviousRisk;
 
@@ -479,34 +487,8 @@ function RiskDashboardContent() {
     const avgLateNight = currentPeriodData.reduce((sum, d) => sum + d.lateNightHours, 0) / (currentPeriodData.length || 1);
     const avgFragmentation = currentPeriodData.reduce((sum, d) => sum + d.fragmentation, 0) / (currentPeriodData.length || 1);
 
-    const smoothWindow = 1;
-    const smoothedTimelineData = timelineData.map((record, index) => {
-      if (smoothWindow <= 1) return record;
-      const start = Math.max(0, index - smoothWindow + 1);
-      const count = index - start + 1;
-      let riskSum = 0;
-      let volSum = 0;
-      let lateSum = 0;
-      let fragSum = 0;
-      for (let j = start; j <= index; j++) {
-        riskSum += timelineData[j].riskScore;
-        volSum += timelineData[j].volume;
-        lateSum += timelineData[j].lateNightHours;
-        fragSum += timelineData[j].fragmentation;
-      }
-      return {
-        date: record.date,
-        riskScore: parseFloat((riskSum / count).toFixed(1)),
-        volume: parseFloat((volSum / count).toFixed(2)),
-        lateNightHours: parseFloat((lateSum / count).toFixed(2)),
-        fragmentation: Math.round(fragSum / count),
-      };
-    });
-
-    const filteredSmoothedTimelineData = smoothedTimelineData.filter(d => d.date >= startDate && d.date <= endDate);
-
     return {
-      timelineData: filteredSmoothedTimelineData,
+      timelineData: visibleTimelineData,
       currentRiskScore: avgCurrentRisk,
       previousRiskScore: avgPreviousRisk,
       trendType,
@@ -530,8 +512,8 @@ function RiskDashboardContent() {
     let recommendationTitle = '';
     let recommendationText = '';
     let studyCitation = '';
-    
-    const professionalNotice = currentRiskScore >= 60 
+
+    const professionalNotice = currentRiskScore >= 60
       ? 'Note: Because your wellness index is higher, we highly recommend consulting a trained medical or healthcare professional for supportive, expert guidance.'
       : '';
 
@@ -540,19 +522,19 @@ function RiskDashboardContent() {
       recommendationTitle = 'Late-Night Activity Shift';
       recommendationText = `Your watch patterns show significant late-night usage (${avgLateNight.toFixed(1)} hrs/night). High-stimulus screen time past 11:00 PM is known to delay biological sleep phase baselines. ${professionalNotice}`;
       studyCitation = 'Kelly et al. (2018) indicates that sleep quality and late-night digital activities are primary variables correlating screen usage with mood fluctuations.';
-    } 
+    }
     else if (avgVolume >= 3.0) {
       primaryFactor = 'volume';
       recommendationTitle = 'Elevated Daily Duration';
       recommendationText = `Your daily screen exposure averages ${avgVolume.toFixed(1)} hours. Consuming high volumes of digital media can displace offline focus and recovery blocks. ${professionalNotice}`;
       studyCitation = 'Riehm et al. (2019) demonstrated that spending over 3 hours daily on social platforms correlates with higher stress and mood regulation challenges.';
-    } 
-    else if (avgFragmentation >= 35) { 
+    }
+    else if (avgFragmentation >= 35) {
       primaryFactor = 'fragmented';
       recommendationTitle = 'Frequent Usage Checks';
       recommendationText = 'Your watch sessions are highly fragmented throughout the day, suggesting frequent checking cycles. This pattern can contribute to mental fatigue and attention switching. ' + professionalNotice;
       studyCitation = 'Godard & Holtzman (2023) meta-analysis suggests that highly fragmented checking behaviors correlate with higher self-reported anxiety scores.';
-    } 
+    }
     else {
       primaryFactor = 'stable';
       recommendationTitle = 'Balanced Usage Parameters';
@@ -578,7 +560,7 @@ function RiskDashboardContent() {
 
         <div className="bg-white border border-brand-navy/15 rounded-[32px] overflow-hidden shadow-2xl relative">
           <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-brand-teal via-brand-peach to-brand-teal"></div>
-          
+
           <div className="grid grid-cols-1 md:grid-cols-2">
             <div className="p-8 sm:p-12 border-b md:border-b-0 md:border-r border-brand-navy/10 flex flex-col justify-between space-y-8 bg-brand-beige/10">
               <div className="space-y-4">
@@ -594,15 +576,15 @@ function RiskDashboardContent() {
               </div>
 
               <form onSubmit={handleLoginSubmit} className="space-y-4">
-                <input 
-                  type="text" 
-                  name="username" 
-                  value="LDiHK User" 
-                  readOnly 
-                  style={{ display: 'none' }} 
-                  autoComplete="username" 
+                <input
+                  type="text"
+                  name="username"
+                  value="LDiHK User"
+                  readOnly
+                  style={{ display: 'none' }}
+                  autoComplete="username"
                 />
-                
+
                 <div className="space-y-1.5">
                   <label className="text-[10px] uppercase tracking-wider font-extrabold text-brand-navy/50 block">
                     Your LDiHK-ID
@@ -656,8 +638,8 @@ function RiskDashboardContent() {
               </div>
 
               <div className="w-full">
-                <UploadZone 
-                  sessionToken={null} 
+                <UploadZone
+                  sessionToken={null}
                   onSessionGenerated={handleSessionGenerated}
                   onUploadComplete={handleUploadComplete}
                 />
@@ -718,10 +700,10 @@ function RiskDashboardContent() {
             ></span>
             Pipeline Status:{' '}
             <span className={`uppercase font-extrabold ${currentStatus === 'READY' ? 'text-brand-teal' : currentStatus === 'PROCESSING' ? 'text-brand-peach' : 'text-brand-navy/40'}`}>
-              {currentStatus === 'PROCESSING' 
-                ? 'Processing Data...' 
-                : currentStatus === 'READY' 
-                ? 'Active' 
+              {currentStatus === 'PROCESSING'
+                ? 'Processing Data...'
+                : currentStatus === 'READY'
+                ? 'Active'
                 : 'Awaiting Upload'}
             </span>
           </div>
@@ -730,7 +712,7 @@ function RiskDashboardContent() {
             <button
               onClick={() => setShowUploadZone(!showUploadZone)}
               className={`px-4 py-2.5 rounded-xl border transition-all text-xs font-bold flex items-center gap-2 duration-150 cursor-pointer ${
-                showUploadZone 
+                showUploadZone
                   ? 'bg-brand-navy text-white border-brand-navy shadow-md'
                   : 'border-brand-teal/30 hover:border-brand-teal/60 bg-brand-teal/10 text-brand-navy hover:shadow-md'
               }`}
@@ -763,21 +745,21 @@ function RiskDashboardContent() {
 
       {/* View Switcher Sub-Navigation Tabs */}
       <div className="mb-8 border-b border-brand-navy/10 flex gap-4 text-left font-sans">
-        <a 
+        <a
           href="/dashboard"
           className="px-4 py-3 text-sm font-bold border-b-2 border-transparent text-brand-navy/50 hover:text-brand-navy transition-all"
           id="tab-personal-insights"
         >
           Personal Insights
         </a>
-        <a 
+        <a
           href="/population"
           className="px-4 py-3 text-sm font-bold border-b-2 border-transparent text-brand-navy/50 hover:text-brand-navy transition-all"
           id="tab-population-benchmark"
         >
           Population Benchmark
         </a>
-        <a 
+        <a
           href="/risk"
           className="px-4 py-3 text-sm font-extrabold border-b-2 border-brand-teal text-brand-teal transition-all"
           id="tab-mental-health-risk"
@@ -794,7 +776,7 @@ function RiskDashboardContent() {
               <h3 className="font-bold text-brand-navy text-sm">Ingest Additional Platform History</h3>
               <p className="text-[10px] text-brand-navy/50">Upload a zip export to automatically extract, authorize, and integrate a new data source.</p>
             </div>
-            <button 
+            <button
               onClick={() => setShowUploadZone(false)}
               className="text-xs font-bold text-brand-peach hover:underline cursor-pointer"
             >
@@ -827,7 +809,11 @@ function RiskDashboardContent() {
           </div>
           <div>
             <h2 className="text-xl font-bold text-brand-navy">
-              {importStatusData?.status === 'queued' ? 'Worker Queueing Import...' : 'Extracting and Normalizing Takeout...'}
+              {importStatusData?.status === 'queued'
+                ? 'Worker Queueing Import...'
+                : isPendingEnrichment(importStatusData)
+                  ? 'Enriching Video Durations...'
+                  : 'Extracting and Normalizing Takeout...'}
             </h2>
             <p className="text-xs text-brand-navy/60 mt-2 max-w-md mx-auto leading-relaxed">
               Our background ingestion worker is processing your YouTube archive. This will align daily logs and compile parameters.
@@ -839,7 +825,7 @@ function RiskDashboardContent() {
       {/* State 3: Risk Assessment Active */}
       {readyPlatforms.length > 0 && (
         <div className="space-y-6 text-left">
-          
+
           {/* Medical Disclaimer Banner */}
           <div className="bg-amber-50 border border-amber-200 rounded-3xl p-5 text-amber-900 text-xs leading-relaxed flex gap-3 relative overflow-hidden">
             <div className="absolute left-0 top-0 bottom-0 w-1 bg-amber-500"></div>
@@ -851,7 +837,7 @@ function RiskDashboardContent() {
           </div>
 
           {/* Empty Live warning if user runs live mode but database query returns empty */}
-          {!IS_MOCK_MODE && riskAnalysisResult?.isEmptyLive && (
+          {!isMockApiMode && riskAnalysisResult?.isEmptyLive && (
             <div className="bg-brand-peach/10 border border-brand-peach/25 rounded-3xl p-5 text-brand-navy text-xs leading-relaxed flex gap-3">
               <AlertTriangle className="w-5 h-5 text-brand-peach shrink-0 mt-0.5" />
               <div>
@@ -865,12 +851,12 @@ function RiskDashboardContent() {
           <div className="bg-gradient-to-r from-brand-navy to-brand-navy/90 text-white rounded-[32px] p-6 sm:p-8 relative overflow-hidden shadow-lg border border-brand-navy/25">
             <div className="absolute right-0 bottom-0 w-64 h-64 bg-brand-teal/20 rounded-full blur-3xl pointer-events-none"></div>
             <div className="absolute left-1/3 top-0 w-48 h-48 bg-brand-peach/15 rounded-full blur-2xl pointer-events-none"></div>
-            
+
             <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
               <div className="space-y-2 flex-grow">
                 <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 border border-white/15 text-[10px] font-extrabold uppercase tracking-wider">
                   <Heart className="w-3.5 h-3.5 text-brand-peach fill-brand-peach animate-pulse" />
-                  Self-Reflection Wellness Model {IS_MOCK_MODE && '(Simulated)'}
+                  Self-Reflection Wellness Model {isMockApiMode && '(Simulated)'}
                 </div>
                 <h2 className="text-2xl sm:text-3xl font-black tracking-tight leading-tight">
                   Screen Habit Wellness Assessment
@@ -884,28 +870,28 @@ function RiskDashboardContent() {
 
           {/* Risk KPI Metrics Grid */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            
+
             {/* Card 1: Core Stress/Wellness Index */}
             <div className="bg-white p-6 rounded-3xl border border-brand-navy/10 shadow-sm flex flex-col justify-between relative overflow-hidden min-h-[180px]">
               <div className="absolute top-0 right-0 p-4 opacity-10">
                 <Heart className="w-24 h-24 text-brand-teal" />
               </div>
-              
+
               <div className="space-y-1 relative z-10">
                 <span className="text-[10px] uppercase tracking-wider font-extrabold text-brand-navy/50 block">Current Scoring</span>
                 <h4 className="text-sm font-extrabold text-brand-navy">Wellness Stress Index</h4>
               </div>
 
               <div className="py-2 flex items-baseline gap-2 relative z-10">
-                {isDetailedLoading && !IS_MOCK_MODE ? (
+                {isDetailedLoading && !isMockApiMode ? (
                   <span className="text-5xl font-black text-brand-navy/30 animate-pulse">--%</span>
                 ) : riskAnalysisResult && !riskAnalysisResult.isEmptyLive ? (
                   <>
                     <span className={`text-6xl font-black tracking-tight ${
-                      riskAnalysisResult.currentRiskScore >= 60 
-                        ? 'text-brand-peach' 
-                        : riskAnalysisResult.currentRiskScore >= 30 
-                        ? 'text-amber-500' 
+                      riskAnalysisResult.currentRiskScore >= 60
+                        ? 'text-brand-peach'
+                        : riskAnalysisResult.currentRiskScore >= 30
+                        ? 'text-amber-500'
                         : 'text-brand-teal'
                     }`}>
                       {Math.round(riskAnalysisResult.currentRiskScore)}%
@@ -921,16 +907,16 @@ function RiskDashboardContent() {
                 <span className="font-semibold text-brand-navy/60">Wellness Rating:</span>
                 {riskAnalysisResult && !riskAnalysisResult.isEmptyLive && (
                   <span className={`font-black uppercase tracking-wider text-[10px] px-2 py-0.5 rounded ${
-                    riskAnalysisResult.currentRiskScore >= 60 
-                      ? 'bg-brand-peach/10 text-brand-peach' 
-                      : riskAnalysisResult.currentRiskScore >= 30 
-                      ? 'bg-amber-100 text-amber-600' 
+                    riskAnalysisResult.currentRiskScore >= 60
+                      ? 'bg-brand-peach/10 text-brand-peach'
+                      : riskAnalysisResult.currentRiskScore >= 30
+                      ? 'bg-amber-100 text-amber-600'
                       : 'bg-brand-teal/10 text-brand-teal'
                   }`}>
-                    {riskAnalysisResult.currentRiskScore >= 60 
-                      ? 'Elevated Stress' 
-                      : riskAnalysisResult.currentRiskScore >= 30 
-                      ? 'Moderate baseline' 
+                    {riskAnalysisResult.currentRiskScore >= 60
+                      ? 'Elevated Stress'
+                      : riskAnalysisResult.currentRiskScore >= 30
+                      ? 'Moderate baseline'
                       : 'Balanced baseline'}
                   </span>
                 )}
@@ -945,7 +931,7 @@ function RiskDashboardContent() {
               </div>
 
               <div className="py-2 relative z-10 flex flex-col justify-center">
-                {isDetailedLoading && !IS_MOCK_MODE ? (
+                {isDetailedLoading && !isMockApiMode ? (
                   <span className="text-xl font-black text-brand-navy/30 animate-pulse">Analyzing...</span>
                 ) : riskAnalysisResult && !riskAnalysisResult.isEmptyLive ? (
                   <div className="space-y-1">
@@ -973,7 +959,7 @@ function RiskDashboardContent() {
               <div className="pt-3 border-t border-brand-navy/5 flex justify-between items-center text-xs">
                 <span className="font-semibold text-brand-navy/60">Primary Source:</span>
                 <span className="font-extrabold text-brand-teal uppercase text-[10px]">
-                  {IS_MOCK_MODE ? 'Simulated Data' : 'YouTube Logs'}
+                  {isMockApiMode ? 'Simulated Data' : 'YouTube Logs'}
                 </span>
               </div>
             </div>
@@ -1016,19 +1002,19 @@ function RiskDashboardContent() {
           </div>
 
           {/* Timeline Chart Box */}
-          {!IS_MOCK_MODE && detailedError ? (
+          {!isMockApiMode && detailedError ? (
             <div className="bg-brand-peach/10 border border-brand-peach/30 rounded-3xl p-6 text-center text-brand-navy flex flex-col items-center gap-3">
               <ShieldAlert className="w-10 h-10 text-brand-peach" />
               <h4 className="font-bold">Failed to load wellness timeline data</h4>
               <p className="text-xs text-brand-navy/70">An error occurred while running the wellness timeline query.</p>
             </div>
-          ) : !IS_MOCK_MODE && isDetailedLoading ? (
+          ) : !isMockApiMode && isDetailedLoading ? (
             <div className="h-[400px] flex items-center justify-center bg-white border border-brand-navy/10 rounded-3xl">
               <RefreshCw className="w-8 h-8 animate-spin text-brand-teal" />
             </div>
           ) : riskAnalysisResult && !riskAnalysisResult.isEmptyLive ? (
             <div className="bg-white border border-brand-navy/10 rounded-3xl p-6 shadow-sm space-y-6 animate-scale-up">
-              
+
               {/* Timeline Chart Header */}
               <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-brand-navy/5">
                 <div className="flex items-center gap-3">
@@ -1110,7 +1096,7 @@ function RiskDashboardContent() {
               {/* Area Chart representation */}
               <div className="h-[300px] w-full font-sans select-none">
                 <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart 
+                  <AreaChart
                     data={riskAnalysisResult.timelineData}
                     margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
                   >
@@ -1121,16 +1107,16 @@ function RiskDashboardContent() {
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#537D96" strokeOpacity={0.08} />
-                    <XAxis 
-                      dataKey="date" 
-                      tickLine={false} 
-                      axisLine={false} 
+                    <XAxis
+                      dataKey="date"
+                      tickLine={false}
+                      axisLine={false}
                       tickFormatter={(str) => {
                         const parts = str.split('-');
                         if (parts.length === 3) {
                           const dateObj = new Date(str);
                           const diffDays = riskAnalysisResult.timelineData.length;
-                          
+
                           if (diffDays > 730) {
                             return dateObj.toLocaleDateString('en-US', { year: 'numeric' });
                           }
@@ -1143,14 +1129,14 @@ function RiskDashboardContent() {
                       }}
                       tick={{ fill: '#537D96', fontSize: 10, fontWeight: 700, opacity: 0.7 }}
                     />
-                    <YAxis 
+                    <YAxis
                       domain={[0, 100]}
                       tickLine={false}
                       axisLine={false}
                       tickFormatter={(v) => `${v}%`}
                       tick={{ fill: '#537D96', fontSize: 10, fontWeight: 700, opacity: 0.7 }}
                     />
-                    <Tooltip 
+                    <Tooltip
                       content={({ active, payload }) => {
                         if (active && payload && payload.length) {
                           const data = payload[0].payload;
@@ -1171,13 +1157,13 @@ function RiskDashboardContent() {
                         return null;
                       }}
                     />
-                    <Area 
-                      type="monotone" 
-                      dataKey="riskScore" 
-                      stroke="#EC8F8D" 
+                    <Area
+                      type="linear"
+                      dataKey="riskScore"
+                      stroke="#EC8F8D"
                       strokeWidth={2.5}
-                      fillOpacity={1} 
-                      fill="url(#riskGrad)" 
+                      fillOpacity={1}
+                      fill="url(#riskGrad)"
                     />
                     <ReferenceLine y={60} stroke="#EC8F8D" strokeDasharray="3 3" label={{ value: 'Elevated Stress Threshold (60%)', fill: '#EC8F8D', fontSize: 10, position: 'top', fontWeight: 700, opacity: 0.8 }} strokeOpacity={0.5} />
                     <ReferenceLine y={30} stroke="#537D96" strokeDasharray="3 3" label={{ value: 'Balanced Threshold (30%)', fill: '#537D96', fontSize: 10, position: 'top', fontWeight: 700, opacity: 0.8 }} strokeOpacity={0.4} />
@@ -1191,7 +1177,7 @@ function RiskDashboardContent() {
           {/* Recommendations & Scientific Bibliography */}
           {riskAnalysisResult && !riskAnalysisResult.isEmptyLive && (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-scale-up">
-              
+
               {/* Personalized Recommendations Box */}
               <div className="bg-white p-6 rounded-3xl border border-brand-navy/10 shadow-sm space-y-4">
                 <div className="flex items-center gap-2 pb-2 border-b border-brand-navy/10">
@@ -1285,7 +1271,7 @@ function RiskDashboardContent() {
                 </div>
 
                 <div className="h-[280px] overflow-y-auto pr-2 space-y-3.5 text-xs text-brand-navy/75 scrollbar-thin scrollbar-thumb-brand-navy/20">
-                  
+
                   <div className="space-y-1">
                     <p className="font-extrabold text-brand-navy">Kelly, Y., Zilanawala, A., Booker, C., & Sacker, A. (2018)</p>
                     <p className="italic text-[11px] leading-relaxed">

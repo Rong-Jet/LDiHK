@@ -1,43 +1,65 @@
-# Astro Starter Kit: Minimal
+# LDiHK Frontend
+
+Astro + React dashboard for the hosted YouTube Takeout demo.
+
+## Quick Start
+
+Install dependencies:
 
 ```sh
-npm create astro@latest -- --template minimal
+npm install
 ```
 
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
+Configure local environment:
 
-## 🚀 Project Structure
+```sh
+cp .env.example .env
+```
 
-Inside of your Astro project, you'll see the following folders and files:
+Run the Astro dev server:
+
+```sh
+npm run dev
+```
+
+Astro serves the app at:
 
 ```text
-/
-├── public/
-├── src/
-│   └── pages/
-│       └── index.astro
-└── package.json
+http://localhost:4321
 ```
 
-Astro looks for `.astro` or `.md` files in the `src/pages/` directory. Each page is exposed as a route based on its file name.
+## Backend Integration
 
-There's nothing special about `src/components/`, but that's where we like to put any Astro/React/Vue/Svelte/Preact components.
+The authoritative API shape lives in
+`./frontend-api-spec.md`. Do not duplicate endpoint schemas in
+this README.
 
-Any static assets, like images, can be placed in the `public/` directory.
+Set `PUBLIC_API_URL` to the backend origin, for example:
 
-## 🧞 Commands
+```sh
+PUBLIC_API_URL=http://127.0.0.1:8000
+```
 
-All commands are run from the root of the project, from a terminal:
+Set `PUBLIC_MOCK_API=false` to fail clearly instead of falling back to local
+mock routes when live backend or S3 upload config is missing. Set
+`PUBLIC_MOCK_API=true` only for UI-only mock development.
 
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `npm install`             | Installs dependencies                            |
-| `npm run dev`             | Starts local dev server at `localhost:4321`      |
-| `npm run build`           | Build your production site to `./dist/`          |
-| `npm run preview`         | Preview your build locally, before deploying     |
-| `npm run astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `npm run astro -- --help` | Get help using the Astro CLI                     |
+When a backend origin is set, the Astro upload helper requires
+`CUSTOM_AWS_ACCESS_KEY_ID`, `CUSTOM_AWS_SECRET_ACCESS_KEY`,
+`CUSTOM_AWS_REGION`, and `S3_BUCKET`; otherwise it fails before registering an
+import with the real backend.
 
-## 👀 Want to learn more?
+Same-origin Astro helper routes:
 
-Feel free to check [our documentation](https://docs.astro.build) or jump into our [Discord server](https://astro.build/chat).
+```text
+GET /api/uploader-info
+POST /api/upload-url
+PUT /api/mock-s3-upload
+```
+
+`PUT /api/mock-s3-upload` is mock-only and must not be used for live imports.
+
+## Contract Notes
+
+See `./frontend-api-spec.md` for identity, upload, query,
+population, and import status contracts.

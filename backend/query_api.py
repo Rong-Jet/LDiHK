@@ -9,17 +9,29 @@ from typing import Any
 
 QUERY_SCHEMA_VERSION = "youtube_usage.structured_query.v1"
 DEFAULT_GLOBAL_DURATION_SECONDS = 600
+DEFAULT_PLATFORM_DURATION_SECONDS = {
+    ("youtube", "shorts"): 60,
+    ("youtube", "long"): 600,
+    ("youtube", "youtube"): 600,
+    ("youtube", "youtube_music"): 600,
+    ("tiktok", None): 60,
+    ("instagram", None): 60,
+    ("spotify", None): 120,
+    ("linkedin", None): 120,
+}
 DEFAULT_RESULT_LIMIT = 500
 MAX_RESULT_LIMIT = 1000
 ALLOW_IDENTIFIER_DIMENSIONS_ENV = "ALLOW_IDENTIFIER_DIMENSIONS"
 QUERY_BUCKET_TIMEZONE_ENV = "QUERY_BUCKET_TIMEZONE"
 DEFAULT_QUERY_BUCKET_TIMEZONE = "UTC"
+SUPPORTED_DATASETS = {"youtube_usage", "usage_analytics"}
 
 ALLOWED_METRICS = {
     "event_count",
     "estimated_watch_seconds",
     "api_watch_seconds",
     "estimated_event_count",
+    "estimated_usage_seconds",
     "subscription_count",
     "unique_video_count",
     "unique_channel_count",
@@ -30,25 +42,56 @@ BASE_ALLOWED_DIMENSIONS = {
     "weekday",
     "month",
     "event_type",
+    "platform",
     "product",
+    "is_synthetic",
+    "age",
+    "age_bucket",
+    "sex",
+    "cohort",
 }
 IDENTIFIER_DIMENSIONS = {
     "channel_id",
     "video_id",
 }
 ALLOWED_DIMENSIONS = BASE_ALLOWED_DIMENSIONS | IDENTIFIER_DIMENSIONS
-ALLOWED_FILTERS = {"user_id", "start_date", "end_date", "event_type", "product"}
+ALLOWED_FILTERS = {
+    "user_id",
+    "start_date",
+    "end_date",
+    "event_type",
+    "platform",
+    "product",
+    "is_synthetic",
+    "age",
+    "age_bucket",
+    "sex",
+    "cohort",
+}
 ALLOWED_SORT_DIRECTIONS = {"asc", "desc"}
+STRING_VALUE_FILTERS = {"event_type", "platform", "product", "age_bucket", "sex", "cohort"}
 
 EVENT_DIMENSION_SQL = {
     "event_type": "ue.event_type",
+    "platform": "ue.platform",
     "product": "ue.product",
+    "is_synthetic": "ue.is_synthetic",
+    "age": "u.age",
+    "age_bucket": "u.age_bucket",
+    "sex": "u.sex",
+    "cohort": "u.cohort",
     "channel_id": "COALESCE(ue.channel_id, yv.channel_id)",
     "video_id": "ue.video_id",
 }
 SUBSCRIPTION_DIMENSION_SQL = {
     "event_type": "NULL::text",
+    "platform": "'youtube'::text",
     "product": "'youtube'::text",
+    "is_synthetic": "false",
+    "age": "u.age",
+    "age_bucket": "u.age_bucket",
+    "sex": "u.sex",
+    "cohort": "u.cohort",
     "channel_id": "s.channel_id",
     "video_id": "NULL::text",
 }
@@ -68,6 +111,10 @@ METRIC_SQL = {
         "COUNT(event_id) FILTER (WHERE metric_event_type = 'watch' "
         "AND api_duration_seconds IS NULL)::bigint "
         "AS estimated_event_count"
+    ),
+    "estimated_usage_seconds": (
+        "COALESCE(ROUND(SUM(estimated_duration_seconds))::bigint, 0) "
+        "AS estimated_usage_seconds"
     ),
     "subscription_count": (
         "COUNT(DISTINCT subscription_id)::bigint AS subscription_count"
@@ -134,10 +181,11 @@ def query_youtube_usage(
         "dataset": query.dataset,
         "user_id": query.user_id,
         "duration_strategy": {
-            "kind": "api_user_average_global_default",
+            "kind": "event_duration_api_user_average_platform_default",
             "api_duration_source": "youtube_data_api",
             "user_average_source": "event_weighted_user_average",
             "global_default_seconds": global_duration_seconds,
+            "platform_defaults_seconds": _platform_duration_defaults_payload(),
         },
         "query": {
             "metrics": query.metrics,
@@ -191,7 +239,7 @@ def validate_query_request(request_payload: object) -> StructuredQuery:
         raise QueryValidationError("raw_sql_not_allowed")
 
     dataset = request_payload.get("dataset")
-    if dataset != "youtube_usage":
+    if dataset not in SUPPORTED_DATASETS:
         raise QueryValidationError("invalid_dataset")
 
     user_id = request_payload.get("user_id")
@@ -322,6 +370,7 @@ def compile_quality_query(
             )::bigint AS events_counted,
             COUNT(event_id) FILTER (
                 WHERE metric_event_type = 'watch'
+                  AND metric_platform = 'youtube'
                   AND api_duration_seconds IS NOT NULL
             )::bigint AS events_with_api_duration,
             COUNT(event_id) FILTER (
@@ -336,11 +385,13 @@ def compile_quality_query(
             )::bigint AS events_with_global_default_estimate,
             COUNT(DISTINCT video_id) FILTER (
                 WHERE metric_event_type = 'watch'
+                  AND metric_platform = 'youtube'
                   AND video_id IS NOT NULL
                   AND api_duration_seconds IS NULL
             )::bigint AS videos_unavailable,
             COUNT(DISTINCT video_id) FILTER (
                 WHERE metric_event_type = 'watch'
+                  AND metric_platform = 'youtube'
                   AND max_duration_applied IS TRUE
             )::bigint AS videos_capped
         FROM event_rows
@@ -381,7 +432,7 @@ def _validate_date_filters(filters: dict[str, Any]) -> None:
 
 
 def _validate_value_filters(filters: dict[str, Any]) -> None:
-    for key in ("event_type", "product"):
+    for key in STRING_VALUE_FILTERS:
         if key not in filters:
             continue
         value = filters[key]
@@ -395,6 +446,22 @@ def _validate_value_filters(filters: dict[str, Any]) -> None:
             or not all(isinstance(item, str) and item for item in value)
         ):
             raise QueryValidationError("invalid_filter_value")
+
+    if "age" in filters:
+        value = filters["age"]
+        if isinstance(value, bool):
+            raise QueryValidationError("invalid_filter_value")
+        if isinstance(value, int):
+            pass
+        elif (
+            not isinstance(value, list)
+            or not value
+            or not all(isinstance(item, int) and not isinstance(item, bool) for item in value)
+        ):
+            raise QueryValidationError("invalid_filter_value")
+
+    if "is_synthetic" in filters and not isinstance(filters["is_synthetic"], bool):
+        raise QueryValidationError("invalid_filter_value")
 
 
 def _validate_limit(value: object) -> int:
@@ -462,11 +529,33 @@ def _user_duration_stats_cte() -> str:
             JOIN youtube_videos
               ON youtube_videos.video_id = usage_events.video_id
             WHERE users.external_id = %s
+              AND usage_events.is_synthetic = false
               AND usage_events.platform = 'youtube'
               AND usage_events.event_type = 'watch'
               AND youtube_videos.availability_status = 'available'
               AND youtube_videos.duration_seconds IS NOT NULL
         )
+    """
+
+
+def _default_duration_seconds_sql(event_alias: str) -> str:
+    return f"""
+        CASE
+            WHEN {event_alias}.platform = 'youtube'
+             AND {event_alias}.product = 'shorts'
+            THEN {DEFAULT_PLATFORM_DURATION_SECONDS[("youtube", "shorts")]}::numeric
+            WHEN {event_alias}.platform = 'youtube'
+            THEN {DEFAULT_PLATFORM_DURATION_SECONDS[("youtube", "long")]}::numeric
+            WHEN {event_alias}.platform = 'tiktok'
+            THEN {DEFAULT_PLATFORM_DURATION_SECONDS[("tiktok", None)]}::numeric
+            WHEN {event_alias}.platform = 'instagram'
+            THEN {DEFAULT_PLATFORM_DURATION_SECONDS[("instagram", None)]}::numeric
+            WHEN {event_alias}.platform = 'spotify'
+            THEN {DEFAULT_PLATFORM_DURATION_SECONDS[("spotify", None)]}::numeric
+            WHEN {event_alias}.platform = 'linkedin'
+            THEN {DEFAULT_PLATFORM_DURATION_SECONDS[("linkedin", None)]}::numeric
+            ELSE %s::numeric
+        END
     """
 
 
@@ -479,39 +568,66 @@ def _event_rows_cte(query: StructuredQuery, where_sql: str) -> str:
             bucket_timezone=query.bucket_timezone,
         ),
     )
+    default_duration_sql = _default_duration_seconds_sql("ue")
+    clipped_api_duration_sql = _clipped_duration_seconds_sql(
+        "raw_api_duration_seconds"
+    )
+    clipped_estimated_duration_sql = _clipped_duration_seconds_sql(
+        "base_estimated_duration_seconds"
+    )
     return f"""
-        event_rows AS (
+        event_base_rows AS (
             SELECT
                 {dimensions},
                 ue.id AS event_id,
+                ue.occurred_at,
                 ue.video_id,
                 COALESCE(ue.channel_id, yv.channel_id) AS metric_channel_id,
                 NULL::uuid AS subscription_id,
                 ue.event_type AS metric_event_type,
+                ue.platform AS metric_platform,
                 CASE
                     WHEN yv.availability_status = 'available'
                      AND yv.duration_seconds IS NOT NULL
                     THEN yv.duration_seconds::numeric
                     ELSE NULL::numeric
-                END AS api_duration_seconds,
+                END AS raw_api_duration_seconds,
                 CASE
+                    WHEN ue.duration_seconds IS NOT NULL
+                    THEN ue.duration_seconds::numeric
                     WHEN yv.availability_status = 'available'
                      AND yv.duration_seconds IS NOT NULL
                     THEN yv.duration_seconds::numeric
-                    WHEN uds.avg_api_duration_seconds IS NOT NULL
+                    WHEN ue.is_synthetic = false
+                     AND ue.platform = 'youtube'
+                     AND uds.avg_api_duration_seconds IS NOT NULL
                     THEN uds.avg_api_duration_seconds
-                    ELSE %s::numeric
-                END AS estimated_duration_seconds,
+                    ELSE {default_duration_sql}
+                END AS base_estimated_duration_seconds,
                 CASE
+                    WHEN ue.duration_seconds IS NOT NULL
+                    THEN 'event_duration'
                     WHEN yv.availability_status = 'available'
                      AND yv.duration_seconds IS NOT NULL
                     THEN 'api'
-                    WHEN uds.avg_api_duration_seconds IS NOT NULL
+                    WHEN ue.is_synthetic = false
+                     AND ue.platform = 'youtube'
+                     AND uds.avg_api_duration_seconds IS NOT NULL
                     THEN 'user_average'
                     ELSE 'global_default'
                 END AS duration_bucket,
                 yv.availability_status,
-                COALESCE(yv.max_duration_applied, false) AS max_duration_applied
+                COALESCE(yv.max_duration_applied, false) AS max_duration_applied,
+                (
+                    SELECT MIN(next_ue.occurred_at)
+                    FROM usage_events next_ue
+                    WHERE next_ue.user_id = ue.user_id
+                      AND next_ue.platform = ue.platform
+                      AND next_ue.event_type = 'watch'
+                      AND next_ue.occurred_at IS NOT NULL
+                      AND ue.occurred_at IS NOT NULL
+                      AND next_ue.occurred_at > ue.occurred_at
+                ) AS next_watch_started_at
             FROM usage_events ue
             JOIN users u
               ON u.id = ue.user_id
@@ -519,7 +635,42 @@ def _event_rows_cte(query: StructuredQuery, where_sql: str) -> str:
               ON yv.video_id = ue.video_id
             CROSS JOIN user_duration_stats uds
             {where_sql}
+        ),
+        event_rows AS (
+            SELECT
+                {", ".join(query.dimensions) if query.dimensions else "1 AS __all_rows"},
+                event_id,
+                video_id,
+                metric_channel_id,
+                subscription_id,
+                metric_event_type,
+                metric_platform,
+                {clipped_api_duration_sql} AS api_duration_seconds,
+                {clipped_estimated_duration_sql} AS estimated_duration_seconds,
+                duration_bucket,
+                availability_status,
+                max_duration_applied
+            FROM event_base_rows
         )
+    """
+
+
+def _clipped_duration_seconds_sql(duration_column: str) -> str:
+    return f"""
+        CASE
+            WHEN {duration_column} IS NOT NULL
+             AND metric_event_type = 'watch'
+             AND occurred_at IS NOT NULL
+             AND next_watch_started_at IS NOT NULL
+            THEN LEAST(
+                {duration_column},
+                GREATEST(
+                    0::numeric,
+                    EXTRACT(EPOCH FROM next_watch_started_at - occurred_at)::numeric
+                )
+            )
+            ELSE {duration_column}
+        END
     """
 
 
@@ -541,6 +692,7 @@ def _subscription_rows_cte(query: StructuredQuery, where_sql: str) -> str:
                 s.channel_id AS metric_channel_id,
                 s.id AS subscription_id,
                 NULL::text AS metric_event_type,
+                'youtube'::text AS metric_platform,
                 NULL::numeric AS api_duration_seconds,
                 NULL::numeric AS estimated_duration_seconds,
                 NULL::text AS duration_bucket,
@@ -593,23 +745,31 @@ def _bucket_timestamp_sql(timestamp_sql: str, *, bucket_timezone: str) -> str:
 def _source_where_clause(
     query: StructuredQuery, *, source: str
 ) -> tuple[str, list[object]]:
-    clauses: list[str] = ["u.external_id = %s"]
-    parameters: list[object] = [query.user_id]
+    filters = query.filters
+    clauses, parameters = _population_scope_clause(query, source=source)
     if source == "event":
-        clauses.append("ue.platform = 'youtube'")
         timestamp_sql = "ue.occurred_at"
         filter_columns = {
             "event_type": "ue.event_type",
+            "platform": "ue.platform",
             "product": "ue.product",
+            "age": "u.age",
+            "age_bucket": "u.age_bucket",
+            "sex": "u.sex",
+            "cohort": "u.cohort",
         }
     else:
         timestamp_sql = "s.created_at"
         filter_columns = {
             "event_type": "NULL::text",
+            "platform": "'youtube'::text",
             "product": "'youtube'::text",
+            "age": "u.age",
+            "age_bucket": "u.age_bucket",
+            "sex": "u.sex",
+            "cohort": "u.cohort",
         }
 
-    filters = query.filters
     if "start_date" in filters:
         clauses.append(
             f"{timestamp_sql} >= "
@@ -635,6 +795,24 @@ def _source_where_clause(
     return "WHERE " + " AND ".join(clauses), parameters
 
 
+def _population_scope_clause(
+    query: StructuredQuery, *, source: str
+) -> tuple[list[str], list[object]]:
+    synthetic_filter = query.filters.get("is_synthetic")
+    if source == "event":
+        if synthetic_filter is True:
+            return ["ue.is_synthetic = true"], []
+        if synthetic_filter is False:
+            return ["u.external_id = %s", "ue.is_synthetic = false"], [query.user_id]
+        if "is_synthetic" in query.dimensions:
+            return ["(u.external_id = %s OR ue.is_synthetic = true)"], [query.user_id]
+        return ["u.external_id = %s", "ue.is_synthetic = false"], [query.user_id]
+
+    if synthetic_filter is True:
+        return ["false"], []
+    return ["u.external_id = %s"], [query.user_id]
+
+
 def _utc_date_filter_boundary_sql(*, end_of_day: bool) -> str:
     if end_of_day:
         return "((%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'UTC')"
@@ -650,6 +828,17 @@ def _response_options(query: StructuredQuery) -> dict[str, object]:
         options["sort_by"] = query.sort_by
         options["sort_direction"] = query.sort_direction
     return options
+
+
+def _platform_duration_defaults_payload() -> dict[str, int]:
+    return {
+        "youtube_long": DEFAULT_PLATFORM_DURATION_SECONDS[("youtube", "long")],
+        "youtube_shorts": DEFAULT_PLATFORM_DURATION_SECONDS[("youtube", "shorts")],
+        "tiktok": DEFAULT_PLATFORM_DURATION_SECONDS[("tiktok", None)],
+        "instagram": DEFAULT_PLATFORM_DURATION_SECONDS[("instagram", None)],
+        "spotify": DEFAULT_PLATFORM_DURATION_SECONDS[("spotify", None)],
+        "linkedin": DEFAULT_PLATFORM_DURATION_SECONDS[("linkedin", None)],
+    }
 
 
 def _fetch_rows(connection, compiled: CompiledSql) -> list[dict[str, object]]:

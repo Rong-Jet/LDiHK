@@ -1,2 +1,1 @@
-"""Individual YouTube Takeout parsers."""
-
+"""Individual supported export parsers."""

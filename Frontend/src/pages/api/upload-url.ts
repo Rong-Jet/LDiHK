@@ -4,6 +4,7 @@ import path from 'path';
 import os from 'os';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { configuredBackendApiBase, isMockApiMode, shouldAllowImplicitMockApiMode } from '../../lib/env';
 
 export const prerender = false;
 
@@ -74,19 +75,23 @@ export const POST: APIRoute = async ({ request }) => {
     // Fallback if empty payload
   }
 
-  const filename = body.filename || 'data.zip';
+  const rawFilename = typeof body.filename === 'string' ? body.filename : 'data.zip';
+  const filename = rawFilename.replace(/[\/\\\x00-\x1F]+/g, '_').trim() || 'data.zip';
   const contentType = body.contentType || 'application/zip';
   const urlObj = new URL(request.url);
   const s3Key = `uploads/${ldihkId}/${filename}`;
 
   // AWS Configuration lookup
-  const isMockMode = import.meta.env.PUBLIC_MOCK_API === 'true';
-  const awsAccessKeyId = import.meta.env.CUSTOM_AWS_ACCESS_KEY_ID || process.env.CUSTOM_AWS_ACCESS_KEY_ID;
-  const awsSecretAccessKey = import.meta.env.CUSTOM_AWS_SECRET_ACCESS_KEY || process.env.CUSTOM_AWS_SECRET_ACCESS_KEY;
-  const awsRegion = import.meta.env.CUSTOM_AWS_REGION || process.env.CUSTOM_AWS_REGION;
+  const awsAccessKeyId =
+    import.meta.env.CUSTOM_AWS_ACCESS_KEY_ID || process.env.CUSTOM_AWS_ACCESS_KEY_ID;
+  const awsSecretAccessKey =
+    import.meta.env.CUSTOM_AWS_SECRET_ACCESS_KEY || process.env.CUSTOM_AWS_SECRET_ACCESS_KEY;
+  const awsRegion =
+    import.meta.env.CUSTOM_AWS_REGION || process.env.CUSTOM_AWS_REGION;
   const s3Bucket = import.meta.env.S3_BUCKET || process.env.S3_BUCKET;
+  const backendApiBase = configuredBackendApiBase;
 
-  const hasAwsKeys = !isMockMode && !!(awsAccessKeyId && awsSecretAccessKey && awsRegion && s3Bucket);
+  const hasAwsKeys = !isMockApiMode && !!(awsAccessKeyId && awsSecretAccessKey && awsRegion && s3Bucket);
 
   if (hasAwsKeys) {
     try {
@@ -114,6 +119,8 @@ export const POST: APIRoute = async ({ request }) => {
           headers: {
             'Content-Type': contentType,
           },
+          s3Bucket,
+          s3Key,
           isMock: false
         }),
         {
@@ -139,6 +146,38 @@ export const POST: APIRoute = async ({ request }) => {
     }
   }
 
+  if (!isMockApiMode && backendApiBase) {
+    return new Response(
+      JSON.stringify({
+        error: 'upload_not_configured',
+        message: 'AWS upload credentials are required when PUBLIC_API_URL points at a backend.',
+      }),
+      {
+        status: 503,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        },
+      }
+    );
+  }
+
+  if (!isMockApiMode && !shouldAllowImplicitMockApiMode) {
+    return new Response(
+      JSON.stringify({
+        error: 'upload_not_configured',
+        message: 'Mock uploads are disabled. Configure AWS upload credentials or set PUBLIC_MOCK_API=true.',
+      }),
+      {
+        status: 503,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        },
+      }
+    );
+  }
+
   // Fallback: Return S3 pre-signed upload credentials under mock uploader
   return new Response(
     JSON.stringify({
@@ -150,6 +189,8 @@ export const POST: APIRoute = async ({ request }) => {
         'x-amz-meta-ldihkid': ldihkId,
         'x-amz-s3-key': s3Key
       },
+      s3Bucket: 'local-mock-bucket',
+      s3Key,
       isMock: true
     }),
     {

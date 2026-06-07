@@ -1,4 +1,4 @@
-"""Shared ingestion contracts for YouTube Takeout imports."""
+"""Shared ingestion contracts for supported export imports."""
 
 from backend.ingestion.models import (
     ParseResult,

@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { apiRoutes, authHeaders, jsonHeaders } from '../lib/api';
 
 export interface DistributionRow {
   hours: number;
@@ -8,16 +9,16 @@ export interface DistributionRow {
 export interface DecileRow {
   date: string;
   user: number;
-  median: number;
-  top10: number;
-  bottom10: number;
-  customPercentileHours: number;
+  median: number | null;
+  top10: number | null;
+  bottom10: number | null;
+  customPercentileHours: number | null;
 }
 
 export interface HourlyAverageRow {
   hour: string;
-  populationAvg: number;
-  userAvg: number;
+  populationAvg: number | null;
+  userAvg: number | null;
 }
 
 export interface PopulationQueryResult {
@@ -26,7 +27,7 @@ export interface PopulationQueryResult {
   hasPopulationData?: boolean;
   userPercentile: number | null;
   userDailyAverageHours: number | null;
-  useSyntheticData: boolean;
+  includeSynthetic: boolean;
   customPercentile: number;
   distribution: DistributionRow[];
   deciles: DecileRow[];
@@ -37,22 +38,22 @@ const fetchPopulationData = async (
   platforms: string[],
   startDate: string,
   endDate: string,
-  useSyntheticData: boolean,
+  includeSynthetic: boolean,
   customPercentile: number,
   sessionToken: string,
   visibleStartDate: string
 ): Promise<PopulationQueryResult> => {
-  const res = await fetch('/api/population', {
+  const res = await fetch(apiRoutes.population(), {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${sessionToken}`
+      ...jsonHeaders,
+      ...authHeaders(sessionToken),
     },
     body: JSON.stringify({
       platforms,
       startDate,
       endDate,
-      useSyntheticData,
+      includeSynthetic,
       customPercentile,
       visibleStartDate
     })
@@ -69,15 +70,15 @@ export function usePopulationData(
   platforms: string[],
   startDate: string,
   endDate: string,
-  useSyntheticData: boolean,
+  includeSynthetic: boolean,
   customPercentile: number,
   isReady: boolean,
   sessionToken: string | null,
   visibleStartDate: string
 ) {
   return useQuery<PopulationQueryResult>({
-    queryKey: ['population', platforms.join(','), platforms.join(','), startDate, endDate, useSyntheticData, customPercentile, sessionToken, visibleStartDate],
-    queryFn: () => fetchPopulationData(platforms, startDate, endDate, useSyntheticData, customPercentile, sessionToken || '', visibleStartDate),
+    queryKey: ['population', platforms.join(','), startDate, endDate, includeSynthetic, customPercentile, sessionToken, visibleStartDate],
+    queryFn: () => fetchPopulationData(platforms, startDate, endDate, includeSynthetic, customPercentile, sessionToken || '', visibleStartDate),
     enabled: isReady && !!startDate && !!endDate && !!sessionToken && platforms.length > 0,
   });
 }

@@ -2,10 +2,9 @@ import type { APIRoute } from 'astro';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
+import { isMockApiMode, shouldAllowImplicitMockApiMode } from '../../lib/env';
 
 export const prerender = false;
-
-const IS_MOCK_MODE = import.meta.env.PUBLIC_MOCK_API === 'true';
 
 // Handle OPTIONS preflight requests for CORS compatibility
 export const OPTIONS: APIRoute = async () => {
@@ -24,11 +23,11 @@ function getHourlyMockRecord(platform: string, dateStr: string, hour: number) {
   const yearStr = dateStr.substring(0, 4);
   const monthStr = dateStr.substring(5, 7);
   const dayStr = dateStr.substring(8, 10);
-  
+
   const year = parseInt(yearStr) || 2026;
   const month = parseInt(monthStr) || 6;
   const day = parseInt(dayStr) || 6;
-  
+
   let platformOffset = 0;
   if (platform === 'instagram') platformOffset = 50;
   else if (platform === 'tiktok') platformOffset = 100;
@@ -37,7 +36,7 @@ function getHourlyMockRecord(platform: string, dateStr: string, hour: number) {
   else if (platform === 'linkedin') platformOffset = 200;
 
   const seed = (year * 367) + (month * 31) + day + hour * 17 + platformOffset;
-  const rand = Math.abs(Math.sin(seed + 12.34)) * 0.8 + 0.2; 
+  const rand = Math.abs(Math.sin(seed + 12.34)) * 0.8 + 0.2;
 
   const dObj = new Date(year, month - 1, day);
   const dayOfWeek = dObj.getDay();
@@ -45,8 +44,8 @@ function getHourlyMockRecord(platform: string, dateStr: string, hour: number) {
   const weekendMult = isWeekend ? 1.45 : 0.95;
 
   const epochDays = Math.round((dObj.getTime() - new Date('2016-01-01').getTime()) / (1000 * 3600 * 24));
-  const seasonalTrend = 1.0 + Math.sin(epochDays / 120) * 0.25; 
-  const longTermTrend = 1.0 + (epochDays / 3652.5) * 0.35; 
+  const seasonalTrend = 1.0 + Math.sin(epochDays / 120) * 0.25;
+  const longTermTrend = 1.0 + (epochDays / 3652.5) * 0.35;
 
   let hourWeight = 1.0;
   let baseSeconds = 850;
@@ -54,7 +53,7 @@ function getHourlyMockRecord(platform: string, dateStr: string, hour: number) {
 
   if (platform === 'youtube') {
     if (hour >= 23 || hour <= 4) {
-      hourWeight = isWeekend 
+      hourWeight = isWeekend
         ? (hour === 23 || hour === 0 ? 1.9 : 0.9)
         : (hour === 23 || hour === 0 ? 0.7 : 0.15);
     } else if (hour >= 5 && hour <= 8) {
@@ -64,7 +63,7 @@ function getHourlyMockRecord(platform: string, dateStr: string, hour: number) {
     } else if (hour >= 13 && hour <= 17) {
       hourWeight = 1.1;
     } else if (hour >= 18 && hour <= 22) {
-      hourWeight = 2.4; 
+      hourWeight = 2.4;
     }
     baseSeconds = 850;
     eventDivisor = 270;
@@ -155,7 +154,7 @@ export const POST: APIRoute = async ({ request }) => {
 
     const body = await request.json();
     const { dataset, metrics = [], dimensions = [], filters = {} } = body;
-    
+
     if (!dataset) {
       return new Response(JSON.stringify({ error: 'invalid_dataset' }), {
         status: 400,
@@ -179,38 +178,11 @@ export const POST: APIRoute = async ({ request }) => {
       });
     }
 
-    if (!IS_MOCK_MODE) {
-      const backendUrl = import.meta.env.PUBLIC_API_URL || 'https://ldihk-api.onrender.com';
-      try {
-        const backendRes = await fetch(`${backendUrl}/api/query`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': authHeader,
-          },
-          body: JSON.stringify(body),
-        });
-
-        if (!backendRes.ok) {
-          const errText = await backendRes.text();
-          return new Response(errText, {
-            status: backendRes.status,
-            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-          });
-        }
-
-        const backendData = await backendRes.json();
-        return new Response(JSON.stringify(backendData), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-        });
-      } catch (err: any) {
-        console.error('Failed to proxy query to backend:', err);
-        return new Response(JSON.stringify({ error: 'backend_connection_failure', message: err.message }), {
-          status: 502,
-          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-        });
-      }
+    if (!isMockApiMode && !shouldAllowImplicitMockApiMode) {
+      return new Response(JSON.stringify({ error: 'backend_not_configured' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+      });
     }
 
     // Check if the dataset is ready in mock database
@@ -223,7 +195,7 @@ export const POST: APIRoute = async ({ request }) => {
       // Fallback
     }
 
-    const isReady = IS_MOCK_MODE || state.datasets?.[platform]?.status === 'READY';
+    const isReady = isMockApiMode || state.datasets?.[platform]?.status === 'READY';
 
     if (!isReady) {
       return new Response(
@@ -244,7 +216,7 @@ export const POST: APIRoute = async ({ request }) => {
     // Parse filters
     const startDateStr = filters.start_date || '2026-05-08';
     const endDateStr = filters.end_date || '2026-06-06';
-    
+
     const start = new Date(startDateStr);
     const end = new Date(endDateStr);
 
