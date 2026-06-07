@@ -148,6 +148,39 @@ class DeploymentSmokeTests(unittest.TestCase):
                 },
             )
 
+    def test_provider_setup_docs_cover_render_supabase_s3_and_youtube(self):
+        deployment_doc = (ROOT / "docs/backend/deployment.md").read_text(
+            encoding="utf-8"
+        )
+        env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+
+        for section in (
+            "## Supabase Setup",
+            "## Render Setup",
+            "## AWS S3 Setup",
+            "## YouTube Data API Setup",
+        ):
+            self.assertIn(section, deployment_doc)
+
+        for expected in (
+            "Session Pooler",
+            "health check path: /health",
+            "python backend/scripts/run_migrations.py",
+            "python backend/scripts/run_worker.py",
+            "python backend/scripts/run_enrichment_worker.py",
+            "s3:GetObject",
+            "s3:HeadObject",
+            "uploads/<LDiHKID>/<filename>.zip",
+            "YouTube Data API v3",
+            "quota",
+            "AWS_SESSION_TOKEN",
+            "long-lived IAM access keys",
+            "Web, import worker, enrichment worker, migrations",
+        ):
+            self.assertIn(expected, deployment_doc)
+
+        self.assertIn("long-lived IAM access keys", env_example)
+
     def test_migration_runner_smoke_applies_pending_migration(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             migrations_dir = Path(tmpdir)
