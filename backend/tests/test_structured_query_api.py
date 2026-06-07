@@ -302,6 +302,21 @@ class StructuredQueryApiTests(unittest.TestCase):
             ["demo_user", 600, "demo_user", ["youtube", "tiktok"], 500],
         )
 
+    def test_instagram_platform_default_duration_is_15_seconds(self):
+        query = validate_query_request(
+            {
+                "dataset": "usage_analytics",
+                "user_id": "demo_user",
+                "metrics": ["estimated_usage_seconds"],
+                "dimensions": ["platform"],
+                "filters": {"platform": "instagram"},
+            }
+        )
+
+        compiled = compile_aggregate_query(query)
+
+        self.assertIn("WHEN ue.platform = 'instagram' THEN 15::numeric", compiled.sql)
+
     def test_synthetic_filter_queries_population_without_exposing_user_ids(self):
         query = validate_query_request(
             {

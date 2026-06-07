@@ -18,6 +18,7 @@ class ParsedEvent:
     raw_status: str | None = None
     native_id: str | None = None
     sequence: int = 0
+    duration_seconds: int | None = None
 
 
 @dataclass(frozen=True)

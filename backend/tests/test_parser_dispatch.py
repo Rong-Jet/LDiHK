@@ -94,6 +94,29 @@ class ParserDispatchTests(unittest.TestCase):
             "backend.ingestion.parsers.tiktok_watch_history:parse_tiktok_watch_history",
         )
 
+    def test_routes_known_instagram_activity_paths(self):
+        cases = [
+            "your_instagram_activity/story_interactions/stories_viewed.html",
+            "your_instagram_activity/story_interactions/story_likes.html",
+            "your_instagram_activity/likes/liked_posts.html",
+            "your_instagram_activity/saved/saved_posts.html",
+            "ads_information/ads_and_topics/videos_watched.html",
+            "your_instagram_activity/messages/inbox/thread_1/message_1.html",
+        ]
+
+        for suffix in cases:
+            with self.subTest(suffix=suffix):
+                result = dispatch_member_path(f"Instagram export/{suffix}")
+                self.assertFalse(result.ignored)
+                self.assertEqual(result.parser_name, "instagram_activity")
+                self.assertEqual(
+                    result.callable_path,
+                    (
+                        "backend.ingestion.parsers.instagram_activity:"
+                        "parse_instagram_activity"
+                    ),
+                )
+
     def test_unmatched_files_are_ignored(self):
         result = dispatch_member_path(
             "Takeout/YouTube and YouTube Music/history/not-watch-history.txt"

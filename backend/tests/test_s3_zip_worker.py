@@ -461,6 +461,36 @@ class S3ZipWorkerTests(unittest.TestCase):
         self.assertEqual(usage_event.video_id, "tiktok:7345678901234567890")
         self.assertEqual(repository.enrichment_jobs, [])
 
+    def test_instagram_interaction_event_persists_duration_without_enrichment_job(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_zip = Path(tmpdir) / "takeout.zip"
+            source_path = "your_instagram_activity/likes/liked_posts.html"
+            write_zip(source_zip, {source_path: b"history"})
+            job = ImportJob(
+                id="import-instagram",
+                user_id="user-1",
+                s3_bucket="bucket",
+                s3_key="uploads/user-1/instagram.zip",
+            )
+            repository = FakeImportRepository(job)
+            worker = S3ZipImportWorker(
+                repository=repository,
+                s3_client=FakeS3Client(source_zip),
+                dispatch_member=fake_instagram_dispatch_member,
+                parser_loader=lambda dispatch: instagram_activity_parser,
+            )
+
+            result = worker.process_one()
+
+        self.assertEqual(result.status, IMPORT_STATUS_COMPLETED)
+        self.assertEqual(len(repository.usage_events), 1)
+        usage_event = repository.usage_events[0]
+        self.assertEqual(usage_event.platform, "instagram")
+        self.assertEqual(usage_event.product, "posts")
+        self.assertEqual(usage_event.event_type, "liked_post")
+        self.assertEqual(usage_event.duration_seconds, 15)
+        self.assertEqual(repository.enrichment_jobs, [])
+
     def test_imported_counts_use_actual_persistence_results(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             source_zip = Path(tmpdir) / "takeout.zip"
@@ -830,6 +860,23 @@ def fake_tiktok_dispatch_member(source_path: str) -> DispatchResult:
     )
 
 
+def fake_instagram_dispatch_member(source_path: str) -> DispatchResult:
+    if source_path.endswith("liked_posts.html"):
+        return DispatchResult(
+            source_path=source_path,
+            parser_name="instagram_activity",
+            callable_path="fake:parse_instagram",
+            ignored=False,
+        )
+    return DispatchResult(
+        source_path=source_path,
+        parser_name=None,
+        callable_path=None,
+        ignored=True,
+        reason="no_parser",
+    )
+
+
 def successful_parser(content: bytes, *, source_path: str) -> ParseResult:
     return ParseResult(
         events=[
@@ -855,6 +902,24 @@ def tiktok_watch_parser(content: bytes, *, source_path: str) -> ParseResult:
                 occurred_at=datetime(2026, 6, 6, 8, 53, tzinfo=timezone.utc),
                 video_id="tiktok:7345678901234567890",
                 title="Private TikTok Title",
+            )
+        ],
+        subscriptions=[],
+        warnings=[],
+        records_seen=1,
+    )
+
+
+def instagram_activity_parser(content: bytes, *, source_path: str) -> ParseResult:
+    return ParseResult(
+        events=[
+            ParsedEvent(
+                platform="instagram",
+                product="posts",
+                event_type="liked_post",
+                occurred_at=datetime(2026, 6, 6, 8, 53, tzinfo=timezone.utc),
+                title="Private Instagram Title",
+                duration_seconds=15,
             )
         ],
         subscriptions=[],

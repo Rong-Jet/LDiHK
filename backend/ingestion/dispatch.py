@@ -57,6 +57,64 @@ DISPATCH_TABLE: tuple[ParserRoute, ...] = (
         path_pattern="user_data_tiktok.json",
     ),
     ParserRoute(
+        parser_name="instagram_activity",
+        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
+        path_pattern="your_instagram_activity/story_interactions/stories_viewed.html",
+    ),
+    ParserRoute(
+        parser_name="instagram_activity",
+        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
+        path_pattern="your_instagram_activity/story_interactions/story_likes.html",
+    ),
+    ParserRoute(
+        parser_name="instagram_activity",
+        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
+        path_pattern="your_instagram_activity/likes/liked_posts.html",
+    ),
+    ParserRoute(
+        parser_name="instagram_activity",
+        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
+        path_pattern="your_instagram_activity/saved/saved_posts.html",
+    ),
+    ParserRoute(
+        parser_name="instagram_activity",
+        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
+        path_pattern="ads_information/ads_and_topics/posts_viewed.html",
+    ),
+    ParserRoute(
+        parser_name="instagram_activity",
+        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
+        path_pattern="ads_information/ads_and_topics/videos_watched.html",
+    ),
+    ParserRoute(
+        parser_name="instagram_activity",
+        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
+        path_pattern="your_instagram_activity/content/posts.html",
+    ),
+    ParserRoute(
+        parser_name="instagram_activity",
+        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
+        path_pattern="your_instagram_activity/content/reels.html",
+    ),
+    ParserRoute(
+        parser_name="instagram_activity",
+        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
+        path_pattern="your_instagram_activity/content/stories.html",
+    ),
+    ParserRoute(
+        parser_name="instagram_activity",
+        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
+        path_pattern=(
+            "your_instagram_activity/followers_and_following/"
+            "recently_unfollowed_profiles.html"
+        ),
+    ),
+    ParserRoute(
+        parser_name="instagram_activity",
+        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
+        path_pattern="your_instagram_activity/messages/**/*.html",
+    ),
+    ParserRoute(
         parser_name="subscriptions",
         callable_path="backend.ingestion.parsers.subscriptions:parse_subscriptions",
         path_pattern="subscriptions.csv",
