@@ -5,12 +5,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 import hashlib
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Callable, ContextManager, Protocol
 from uuid import uuid4
 from zipfile import ZipFile
 
+from backend.enrichment.durations import ENRICHMENT_JOB_TYPE_YOUTUBE_DURATIONS
 from backend.ingestion.dispatch import DispatchResult, dispatch_member_path
 from backend.ingestion.fingerprints import event_fingerprint
 from backend.ingestion.models import ParseResult, ParserCallable
@@ -163,6 +165,9 @@ class ImportRepository(Protocol):
         records_imported: int,
         warnings_count: int,
     ) -> None:
+        ...
+
+    def enqueue_enrichment_for_import(self, *, import_id: str) -> int:
         ...
 
     def mark_import_failed(
@@ -328,12 +333,14 @@ class S3ZipImportWorker:
                     summary.records_imported = next_records_imported
                     summary.warnings_count = next_warnings_count
 
-            self.repository.mark_import_completed(
-                import_id=job.id,
-                records_seen=summary.records_seen,
-                records_imported=summary.records_imported,
-                warnings_count=summary.warnings_count,
-            )
+            with self.repository.import_persistence_transaction():
+                self.repository.mark_import_completed(
+                    import_id=job.id,
+                    records_seen=summary.records_seen,
+                    records_imported=summary.records_imported,
+                    warnings_count=summary.warnings_count,
+                )
+                self.repository.enqueue_enrichment_for_import(import_id=job.id)
 
     def _record_failed_source_file(
         self,
@@ -719,6 +726,59 @@ class PostgresImportRepository:
             self._rollback_unless_in_transaction()
             raise
 
+    def enqueue_enrichment_for_import(self, *, import_id: str) -> int:
+        placeholder = _placeholder(self.connection)
+        try:
+            rows = self.connection.execute(
+                f"""
+                SELECT DISTINCT video_id
+                FROM usage_events
+                WHERE import_id = {placeholder}
+                  AND platform = {placeholder}
+                  AND product = {placeholder}
+                  AND event_type = {placeholder}
+                  AND video_id IS NOT NULL
+                ORDER BY video_id
+                """,
+                (import_id, "youtube", "youtube", "watch"),
+            ).fetchall()
+            video_ids = [row[0] for row in rows]
+            if not video_ids:
+                self._commit_unless_in_transaction()
+                return 0
+
+            payload = json.dumps(
+                {"import_id": import_id, "video_ids": video_ids},
+                separators=(",", ":"),
+            )
+            payload_expression = (
+                placeholder
+                if _uses_sqlite_placeholders(self.connection)
+                else f"{placeholder}::jsonb"
+            )
+            self.connection.execute(
+                f"""
+                INSERT INTO enrichment_jobs (
+                    id,
+                    job_type,
+                    status,
+                    payload_json
+                )
+                VALUES ({placeholder}, {placeholder}, {placeholder}, {payload_expression})
+                """,
+                (
+                    str(uuid4()),
+                    ENRICHMENT_JOB_TYPE_YOUTUBE_DURATIONS,
+                    "queued",
+                    payload,
+                ),
+            )
+            self._commit_unless_in_transaction()
+            return len(video_ids)
+        except Exception:
+            self._rollback_unless_in_transaction()
+            raise
+
     def mark_import_failed(
         self,
         *,
@@ -825,3 +885,13 @@ def _error_message(error: Exception) -> str:
     if message:
         return message[:1000]
     return error.__class__.__name__
+
+
+def _placeholder(connection) -> str:
+    if _uses_sqlite_placeholders(connection):
+        return "?"
+    return "%s"
+
+
+def _uses_sqlite_placeholders(connection) -> bool:
+    return type(connection).__module__.startswith("sqlite3")
