@@ -39,11 +39,12 @@ docs/backend/frontend-api-spec.md
 - The backend creates queued import jobs in Postgres.
 - The backend exposes import status through `GET /api/imports/{import_id}`.
 - The import worker polls Postgres, claims queued imports, downloads ZIP files
-  from S3, safely scans ZIP members, dispatches supported YouTube parsers, and
-  writes normalized records to Postgres.
-- The backend stores normalized usage events for watch history, search history,
-  likes, playlist/watch-later adds, comments, live chats, and subscriptions
-  where Takeout source files are available and parser support exists.
+  from S3, safely scans ZIP members, dispatches supported YouTube and TikTok
+  parsers, and writes normalized records to Postgres.
+- The backend stores normalized usage events for YouTube watch history, search
+  history, likes, playlist/watch-later adds, comments, live chats, and
+  subscriptions, plus TikTok watch history where export source files are
+  available and parser support exists.
 - The backend stores privacy-minimized fields by default: IDs, timestamps,
   event types, hashed titles, hashed channel titles, hashed search terms, and
   count/sample-hash warnings.
@@ -112,7 +113,7 @@ Do not restate endpoint schemas in this backend requirements document.
 
 - Use one Docker image for web and workers.
 - Use Supabase Postgres or equivalent hosted Postgres.
-- Use an existing S3 bucket for frontend-uploaded Takeout ZIP files.
+- Use an existing S3 bucket for frontend-uploaded export ZIP files.
 - Use Render Web Service for the API.
 - Use Render Background Workers for import and enrichment loops.
 - Run migrations before long-lived services handle traffic.
@@ -128,7 +129,7 @@ Do not restate endpoint schemas in this backend requirements document.
 - Frontend-submitted raw SQL.
 - Creator-side YouTube metrics such as uploads, revenue, channel analytics, or
   studio metrics.
-- Instagram, TikTok, and Douyin support.
+- Instagram, Douyin, and unsupported TikTok source files beyond watch history.
 - Redis, Celery, Kubernetes, Terraform, or a separate analytics warehouse for
   the hackathon MVP.
 - AI augmentation.

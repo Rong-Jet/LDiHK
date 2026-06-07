@@ -50,6 +50,13 @@ DISPATCH_TABLE: tuple[ParserRoute, ...] = (
         path_pattern="my activity/youtube/myactivity.json",
     ),
     ParserRoute(
+        parser_name="tiktok_watch_history",
+        callable_path=(
+            "backend.ingestion.parsers.tiktok_watch_history:parse_tiktok_watch_history"
+        ),
+        path_pattern="user_data_tiktok.json",
+    ),
+    ParserRoute(
         parser_name="subscriptions",
         callable_path="backend.ingestion.parsers.subscriptions:parse_subscriptions",
         path_pattern="subscriptions.csv",

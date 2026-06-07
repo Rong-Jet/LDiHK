@@ -68,8 +68,9 @@ This is demo identity, not production authentication.
 
 ## Platform Scope
 
-Only YouTube Takeout is supported for user uploads in v5. The query API also
-supports seeded synthetic population rows for these normalized platforms:
+Supported user-uploaded export ZIPs in v5 are YouTube Takeout and TikTok data
+export ZIPs. The query API also supports seeded synthetic population rows for
+these normalized platforms:
 
 Supported datasets:
 
@@ -90,12 +91,13 @@ linkedin
 
 ## Upload And Import Flow
 
-1. User selects a YouTube Takeout ZIP in the frontend.
+1. User selects a supported export ZIP in the frontend: YouTube Takeout or
+   TikTok data export.
 2. Frontend uploads the ZIP to S3 under `uploads/<LDiHKID>/<filename>.zip`.
 3. Frontend calls `POST /api/imports` with S3 object metadata.
 4. Backend creates a queued import in Postgres.
 5. Worker polls Postgres, downloads the ZIP from S3, parses supported YouTube
-   files, and writes normalized rows.
+   and TikTok files, and writes normalized rows.
 6. Frontend polls `GET /api/imports/{import_id}`.
 7. Frontend calls `POST /api/query` for dashboard data.
 
@@ -425,8 +427,9 @@ Authorization: Bearer <LDiHKID>
 Content-Type: application/json
 ```
 
-Live backend scope is YouTube-only for the MVP. Multi-product population
-benchmarks are mock-only until those ingestion paths are stable.
+Live user-upload scope supports YouTube and TikTok for the MVP. Other
+multi-product population benchmarks are mock-only until those ingestion paths
+are stable.
 
 Request body:
 

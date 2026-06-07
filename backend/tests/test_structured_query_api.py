@@ -534,6 +534,7 @@ class StructuredQueryApiTests(unittest.TestCase):
                 r"WHEN yv\.availability_status = 'available'.*"
                 r"THEN yv\.duration_seconds::numeric.*"
                 r"WHEN ue\.is_synthetic = false "
+                r"AND ue\.platform = 'youtube' "
                 r"AND uds\.avg_api_duration_seconds IS NOT NULL.*"
                 r"THEN uds\.avg_api_duration_seconds.*"
                 r"WHEN ue\.platform = 'youtube'.*"
@@ -554,6 +555,53 @@ class StructuredQueryApiTests(unittest.TestCase):
         self.assertIn(
             "COUNT(DISTINCT metric_channel_id)::bigint AS unique_channel_count",
             aggregate.sql,
+        )
+
+    def test_tiktok_duration_sql_uses_platform_default_not_youtube_user_average(self):
+        query = validate_query_request(
+            {
+                "dataset": "usage_analytics",
+                "user_id": "demo_user",
+                "metrics": ["estimated_watch_seconds"],
+                "dimensions": ["platform"],
+                "filters": {"platform": "tiktok"},
+            }
+        )
+
+        compiled = compile_aggregate_query(query)
+
+        self.assertIn("ue.platform = %s", compiled.sql)
+        self.assertIn("tiktok", compiled.parameters)
+        self.assertIn(
+            "WHEN ue.is_synthetic = false AND ue.platform = 'youtube' "
+            "AND uds.avg_api_duration_seconds IS NOT NULL "
+            "THEN uds.avg_api_duration_seconds",
+            compiled.sql,
+        )
+        self.assertIn("WHEN ue.platform = 'tiktok' THEN 60::numeric", compiled.sql)
+
+    def test_tiktok_watch_duration_sql_clips_to_next_tiktok_watch_start(self):
+        query = validate_query_request(
+            {
+                "dataset": "usage_analytics",
+                "user_id": "demo_user",
+                "metrics": ["estimated_watch_seconds"],
+                "dimensions": ["platform"],
+                "filters": {"platform": "tiktok"},
+            }
+        )
+
+        compiled = compile_aggregate_query(query)
+
+        self.assertIn("WHEN ue.platform = 'tiktok' THEN 60::numeric", compiled.sql)
+        self.assertIn("next_ue.platform = ue.platform", compiled.sql)
+        self.assertIn("next_ue.event_type = 'watch'", compiled.sql)
+        self.assertIn("next_ue.occurred_at > ue.occurred_at", compiled.sql)
+        self.assertIn(
+            "THEN LEAST( base_estimated_duration_seconds, "
+            "GREATEST( 0::numeric, EXTRACT(EPOCH FROM next_watch_started_at "
+            "- occurred_at)::numeric ) )",
+            compiled.sql,
         )
 
     def test_watch_duration_sql_clips_to_next_watch_start(self):

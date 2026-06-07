@@ -599,6 +599,7 @@ def _event_rows_cte(query: StructuredQuery, where_sql: str) -> str:
                      AND yv.duration_seconds IS NOT NULL
                     THEN yv.duration_seconds::numeric
                     WHEN ue.is_synthetic = false
+                     AND ue.platform = 'youtube'
                      AND uds.avg_api_duration_seconds IS NOT NULL
                     THEN uds.avg_api_duration_seconds
                     ELSE {default_duration_sql}
@@ -610,6 +611,7 @@ def _event_rows_cte(query: StructuredQuery, where_sql: str) -> str:
                      AND yv.duration_seconds IS NOT NULL
                     THEN 'api'
                     WHEN ue.is_synthetic = false
+                     AND ue.platform = 'youtube'
                      AND uds.avg_api_duration_seconds IS NOT NULL
                     THEN 'user_average'
                     ELSE 'global_default'

@@ -399,7 +399,7 @@ class S3ZipImportWorker:
                 user_id=job.user_id,
                 import_id=job.id,
                 source_file_id=source_file_id,
-                platform="youtube",
+                platform=event.platform,
                 product=event.product,
                 event_type=event.event_type,
                 occurred_at=event.occurred_at,
