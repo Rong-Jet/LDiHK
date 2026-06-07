@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import re
 import unittest
+from unittest.mock import patch
 
 from backend.app import create_app
 from backend.query_api import (
     MAX_RESULT_LIMIT,
+    QueryValidationError,
     compile_aggregate_query,
     compile_quality_query,
     validate_query_request,
@@ -257,6 +259,122 @@ class StructuredQueryApiTests(unittest.TestCase):
         self.assertEqual(invalid_limit_response.status_code, 400)
         self.assertEqual(invalid_limit_response.get_json(), {"error": "invalid_limit"})
 
+    def test_video_id_dimension_is_allowed_by_default(self):
+        query = validate_query_request(
+            {
+                "dataset": "youtube_usage",
+                "user_id": "demo_user",
+                "metrics": ["event_count"],
+                "dimensions": ["video_id"],
+                "filters": {},
+            }
+        )
+
+        compiled = compile_aggregate_query(query)
+
+        self.assertEqual(query.dimensions, ["video_id"])
+        self.assertIn("ue.video_id AS video_id", compiled.sql)
+
+    def test_identifier_dimensions_are_rejected_when_gate_is_disabled(self):
+        for dimension in ("channel_id", "video_id"):
+            with self.subTest(dimension=dimension), patch.dict(
+                "os.environ",
+                {"ALLOW_IDENTIFIER_DIMENSIONS": "false"},
+                clear=False,
+            ):
+                with self.assertRaises(QueryValidationError) as error:
+                    validate_query_request(
+                        {
+                            "dataset": "youtube_usage",
+                            "user_id": "demo_user",
+                            "metrics": ["event_count"],
+                            "dimensions": [dimension],
+                            "filters": {},
+                        }
+                    )
+
+                self.assertEqual(error.exception.code, "invalid_dimension")
+
+    def test_top_identifier_query_sorts_server_side(self):
+        query = validate_query_request(
+            {
+                "dataset": "youtube_usage",
+                "user_id": "demo_user",
+                "metrics": ["event_count"],
+                "dimensions": ["channel_id"],
+                "filters": {},
+                "options": {
+                    "limit": 25,
+                    "sort_by": "event_count",
+                    "sort_direction": "desc",
+                },
+            }
+        )
+
+        compiled = compile_aggregate_query(query)
+
+        self.assertEqual(query.sort_by, "event_count")
+        self.assertEqual(query.sort_direction, "desc")
+        self.assertIn("ORDER BY event_count DESC, channel_id", compiled.sql)
+        self.assertNotIn("ORDER BY channel_id LIMIT", compiled.sql)
+
+    def test_invalid_sort_options_are_rejected(self):
+        app = create_app(query_connection_factory=RecordingConnection)
+        client = app.test_client()
+        cases = [
+            {"sort_by": "raw_video_ids", "sort_direction": "desc"},
+            {"sort_by": "event_count", "sort_direction": "sideways"},
+            {"sort_direction": "desc"},
+        ]
+
+        for options in cases:
+            with self.subTest(options=options):
+                response = client.post(
+                    "/api/query",
+                    headers=auth_headers(),
+                    json={
+                        "dataset": "youtube_usage",
+                        "metrics": ["event_count"],
+                        "dimensions": ["channel_id"],
+                        "filters": {},
+                        "options": options,
+                    },
+                )
+
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.get_json(), {"error": "invalid_sort"})
+
+    def test_sort_options_are_returned_in_public_query_contract(self):
+        connection = RecordingConnection()
+        app = create_app(query_connection_factory=lambda: connection)
+
+        response = app.test_client().post(
+            "/api/query",
+            headers=auth_headers(),
+            json={
+                "dataset": "youtube_usage",
+                "metrics": ["event_count"],
+                "dimensions": ["channel_id"],
+                "filters": {},
+                "options": {
+                    "limit": 25,
+                    "sort_by": "event_count",
+                    "sort_direction": "desc",
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.get_json()["query"]["options"],
+            {
+                "include_zero_buckets": False,
+                "limit": 25,
+                "sort_by": "event_count",
+                "sort_direction": "desc",
+            },
+        )
+
     def test_compiled_sql_is_parameterized_and_enforces_limit(self):
         query = validate_query_request(
             {
@@ -295,6 +413,40 @@ class StructuredQueryApiTests(unittest.TestCase):
         self.assertNotIn("youtube_music", compiled.sql)
         self.assertEqual(compiled.sql.count("%s"), len(compiled.parameters))
         self.assertIn("LIMIT %s", compiled.sql)
+
+    def test_date_and_hour_buckets_compile_to_utc(self):
+        query = validate_query_request(
+            {
+                "dataset": "youtube_usage",
+                "user_id": "demo_user",
+                "metrics": ["event_count"],
+                "dimensions": ["date", "hour"],
+                "filters": {
+                    "start_date": "2026-06-01",
+                    "end_date": "2026-06-06",
+                },
+            }
+        )
+
+        compiled = compile_aggregate_query(query)
+
+        self.assertIn(
+            "to_char(ue.occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS date",
+            compiled.sql,
+        )
+        self.assertIn(
+            "EXTRACT(HOUR FROM ue.occurred_at AT TIME ZONE 'UTC')::int AS hour",
+            compiled.sql,
+        )
+        self.assertIn(
+            "ue.occurred_at >= (%s::date::timestamp AT TIME ZONE 'UTC')",
+            compiled.sql,
+        )
+        self.assertIn(
+            "ue.occurred_at < ((%s::date + INTERVAL '1 day')::timestamp "
+            "AT TIME ZONE 'UTC')",
+            compiled.sql,
+        )
 
     def test_estimated_duration_sql_falls_back_from_api_to_user_average_to_default(self):
         query = validate_query_request(

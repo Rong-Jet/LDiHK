@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
@@ -10,6 +11,9 @@ QUERY_SCHEMA_VERSION = "youtube_usage.structured_query.v1"
 DEFAULT_GLOBAL_DURATION_SECONDS = 600
 DEFAULT_RESULT_LIMIT = 500
 MAX_RESULT_LIMIT = 1000
+ALLOW_IDENTIFIER_DIMENSIONS_ENV = "ALLOW_IDENTIFIER_DIMENSIONS"
+QUERY_BUCKET_TIMEZONE_ENV = "QUERY_BUCKET_TIMEZONE"
+DEFAULT_QUERY_BUCKET_TIMEZONE = "UTC"
 
 ALLOWED_METRICS = {
     "event_count",
@@ -20,34 +24,33 @@ ALLOWED_METRICS = {
     "unique_video_count",
     "unique_channel_count",
 }
-ALLOWED_DIMENSIONS = {
+BASE_ALLOWED_DIMENSIONS = {
     "date",
     "hour",
     "weekday",
     "month",
     "event_type",
     "product",
-    "channel_id",
 }
+IDENTIFIER_DIMENSIONS = {
+    "channel_id",
+    "video_id",
+}
+ALLOWED_DIMENSIONS = BASE_ALLOWED_DIMENSIONS | IDENTIFIER_DIMENSIONS
 ALLOWED_FILTERS = {"user_id", "start_date", "end_date", "event_type", "product"}
+ALLOWED_SORT_DIRECTIONS = {"asc", "desc"}
 
 EVENT_DIMENSION_SQL = {
-    "date": "to_char(ue.occurred_at, 'YYYY-MM-DD')",
-    "hour": "EXTRACT(HOUR FROM ue.occurred_at)::int",
-    "weekday": "EXTRACT(ISODOW FROM ue.occurred_at)::int",
-    "month": "to_char(ue.occurred_at, 'YYYY-MM')",
     "event_type": "ue.event_type",
     "product": "ue.product",
     "channel_id": "COALESCE(ue.channel_id, yv.channel_id)",
+    "video_id": "ue.video_id",
 }
 SUBSCRIPTION_DIMENSION_SQL = {
-    "date": "to_char(s.created_at, 'YYYY-MM-DD')",
-    "hour": "EXTRACT(HOUR FROM s.created_at)::int",
-    "weekday": "EXTRACT(ISODOW FROM s.created_at)::int",
-    "month": "to_char(s.created_at, 'YYYY-MM')",
     "event_type": "NULL::text",
     "product": "'youtube'::text",
     "channel_id": "s.channel_id",
+    "video_id": "NULL::text",
 }
 
 METRIC_SQL = {
@@ -93,6 +96,9 @@ class StructuredQuery:
     filters: dict[str, Any]
     include_zero_buckets: bool
     limit: int
+    sort_by: str | None = None
+    sort_direction: str | None = None
+    bucket_timezone: str = DEFAULT_QUERY_BUCKET_TIMEZONE
 
 
 @dataclass(frozen=True)
@@ -137,10 +143,7 @@ def query_youtube_usage(
             "metrics": query.metrics,
             "dimensions": query.dimensions,
             "filters": query.filters,
-            "options": {
-                "include_zero_buckets": query.include_zero_buckets,
-                "limit": query.limit,
-            },
+            "options": _response_options(query),
         },
         "quality": _normalize_quality(quality),
         "rows": rows[: query.limit],
@@ -210,6 +213,10 @@ def validate_query_request(request_payload: object) -> StructuredQuery:
         raise QueryValidationError("invalid_metric")
     if any(dimension not in ALLOWED_DIMENSIONS for dimension in dimensions):
         raise QueryValidationError("invalid_dimension")
+    if not _allow_identifier_dimensions() and any(
+        dimension in IDENTIFIER_DIMENSIONS for dimension in dimensions
+    ):
+        raise QueryValidationError("invalid_dimension")
     if any(filter_name not in ALLOWED_FILTERS for filter_name in filters):
         raise QueryValidationError("invalid_filter")
 
@@ -225,6 +232,8 @@ def validate_query_request(request_payload: object) -> StructuredQuery:
     ):
         raise QueryValidationError("invalid_options")
     limit = _validate_limit(options.get("limit", DEFAULT_RESULT_LIMIT))
+    sort_by, sort_direction = _validate_sort_options(options, metrics)
+    bucket_timezone = _query_bucket_timezone()
 
     return StructuredQuery(
         dataset=dataset,
@@ -234,6 +243,9 @@ def validate_query_request(request_payload: object) -> StructuredQuery:
         filters=normalized_filters,
         include_zero_buckets=bool(options.get("include_zero_buckets")),
         limit=limit,
+        sort_by=sort_by,
+        sort_direction=sort_direction,
+        bucket_timezone=bucket_timezone,
     )
 
 
@@ -271,7 +283,13 @@ def compile_aggregate_query(
     order_sql = ""
     if query.dimensions:
         group_sql = "GROUP BY " + ", ".join(query.dimensions)
-        order_sql = "ORDER BY " + ", ".join(query.dimensions)
+    order_parts: list[str] = []
+    if query.sort_by is not None:
+        sort_direction = query.sort_direction or "desc"
+        order_parts.append(f"{query.sort_by} {sort_direction.upper()}")
+    order_parts.extend(query.dimensions)
+    if order_parts:
+        order_sql = "ORDER BY " + ", ".join(order_parts)
 
     parameters.append(query.limit)
     sql = f"""
@@ -387,6 +405,52 @@ def _validate_limit(value: object) -> int:
     return min(value, MAX_RESULT_LIMIT)
 
 
+def _validate_sort_options(
+    options: dict[str, object],
+    metrics: list[str],
+) -> tuple[str | None, str | None]:
+    if "sort_by" not in options:
+        if "sort_direction" in options:
+            raise QueryValidationError("invalid_sort")
+        return None, None
+
+    sort_by = options["sort_by"]
+    sort_direction = options.get("sort_direction", "desc")
+    if isinstance(sort_direction, str):
+        sort_direction = sort_direction.lower()
+    if (
+        not isinstance(sort_by, str)
+        or sort_by not in ALLOWED_METRICS
+        or sort_by not in metrics
+    ):
+        raise QueryValidationError("invalid_sort")
+    if (
+        not isinstance(sort_direction, str)
+        or sort_direction not in ALLOWED_SORT_DIRECTIONS
+    ):
+        raise QueryValidationError("invalid_sort")
+    return sort_by, sort_direction
+
+
+def _allow_identifier_dimensions() -> bool:
+    raw_value = os.environ.get(ALLOW_IDENTIFIER_DIMENSIONS_ENV)
+    if raw_value is None:
+        return True
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _query_bucket_timezone() -> str:
+    raw_value = os.environ.get(QUERY_BUCKET_TIMEZONE_ENV, DEFAULT_QUERY_BUCKET_TIMEZONE)
+    value = (
+        raw_value.strip().upper()
+        if raw_value.strip()
+        else DEFAULT_QUERY_BUCKET_TIMEZONE
+    )
+    if value != "UTC":
+        raise QueryValidationError("invalid_options")
+    return value
+
+
 def _user_duration_stats_cte() -> str:
     return """
         user_duration_stats AS (
@@ -407,7 +471,14 @@ def _user_duration_stats_cte() -> str:
 
 
 def _event_rows_cte(query: StructuredQuery, where_sql: str) -> str:
-    dimensions = _dimension_select_parts(query, EVENT_DIMENSION_SQL)
+    dimensions = _dimension_select_parts(
+        query,
+        _dimension_sql_by_name(
+            EVENT_DIMENSION_SQL,
+            timestamp_sql="ue.occurred_at",
+            bucket_timezone=query.bucket_timezone,
+        ),
+    )
     return f"""
         event_rows AS (
             SELECT
@@ -453,7 +524,14 @@ def _event_rows_cte(query: StructuredQuery, where_sql: str) -> str:
 
 
 def _subscription_rows_cte(query: StructuredQuery, where_sql: str) -> str:
-    dimensions = _dimension_select_parts(query, SUBSCRIPTION_DIMENSION_SQL)
+    dimensions = _dimension_select_parts(
+        query,
+        _dimension_sql_by_name(
+            SUBSCRIPTION_DIMENSION_SQL,
+            timestamp_sql="s.created_at",
+            bucket_timezone=query.bucket_timezone,
+        ),
+    )
     return f"""
         subscription_rows AS (
             SELECT
@@ -487,6 +565,31 @@ def _dimension_select_parts(
     )
 
 
+def _dimension_sql_by_name(
+    static_dimension_sql: dict[str, str],
+    *,
+    timestamp_sql: str,
+    bucket_timezone: str,
+) -> dict[str, str]:
+    bucket_timestamp_sql = _bucket_timestamp_sql(
+        timestamp_sql,
+        bucket_timezone=bucket_timezone,
+    )
+    return {
+        "date": f"to_char({bucket_timestamp_sql}, 'YYYY-MM-DD')",
+        "hour": f"EXTRACT(HOUR FROM {bucket_timestamp_sql})::int",
+        "weekday": f"EXTRACT(ISODOW FROM {bucket_timestamp_sql})::int",
+        "month": f"to_char({bucket_timestamp_sql}, 'YYYY-MM')",
+        **static_dimension_sql,
+    }
+
+
+def _bucket_timestamp_sql(timestamp_sql: str, *, bucket_timezone: str) -> str:
+    if bucket_timezone != "UTC":
+        raise QueryValidationError("invalid_options")
+    return f"{timestamp_sql} AT TIME ZONE 'UTC'"
+
+
 def _source_where_clause(
     query: StructuredQuery, *, source: str
 ) -> tuple[str, list[object]]:
@@ -508,10 +611,16 @@ def _source_where_clause(
 
     filters = query.filters
     if "start_date" in filters:
-        clauses.append(f"{timestamp_sql} >= %s::date")
+        clauses.append(
+            f"{timestamp_sql} >= "
+            f"{_utc_date_filter_boundary_sql(end_of_day=False)}"
+        )
         parameters.append(filters["start_date"])
     if "end_date" in filters:
-        clauses.append(f"{timestamp_sql} < (%s::date + INTERVAL '1 day')")
+        clauses.append(
+            f"{timestamp_sql} < "
+            f"{_utc_date_filter_boundary_sql(end_of_day=True)}"
+        )
         parameters.append(filters["end_date"])
     for name, column_sql in filter_columns.items():
         if name not in filters:
@@ -524,6 +633,23 @@ def _source_where_clause(
         parameters.append(value)
 
     return "WHERE " + " AND ".join(clauses), parameters
+
+
+def _utc_date_filter_boundary_sql(*, end_of_day: bool) -> str:
+    if end_of_day:
+        return "((%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'UTC')"
+    return "(%s::date::timestamp AT TIME ZONE 'UTC')"
+
+
+def _response_options(query: StructuredQuery) -> dict[str, object]:
+    options: dict[str, object] = {
+        "include_zero_buckets": query.include_zero_buckets,
+        "limit": query.limit,
+    }
+    if query.sort_by is not None:
+        options["sort_by"] = query.sort_by
+        options["sort_direction"] = query.sort_direction
+    return options
 
 
 def _fetch_rows(connection, compiled: CompiledSql) -> list[dict[str, object]]:
