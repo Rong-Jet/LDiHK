@@ -45,6 +45,8 @@ export interface FlattenedTimelineRecord {
   smaHours: number;
 }
 
+const API_BASE = import.meta.env.PUBLIC_API_URL || '';
+
 // Fetch helper that runs POST queries in parallel for active platforms with date range filters
 const fetchCombinedPlatforms = async (
   platforms: string[],
@@ -58,7 +60,7 @@ const fetchCombinedPlatforms = async (
 
   // 1. Fetch daily records
   const dailyPromises = platforms.map(async (platform) => {
-    const res = await fetch('/api/query', {
+    const res = await fetch(`${API_BASE}/api/query`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -81,7 +83,7 @@ const fetchCombinedPlatforms = async (
 
   // 2. Fetch hourly aggregates
   const hourlyPromises = platforms.map(async (platform) => {
-    const res = await fetch('/api/query', {
+    const res = await fetch(`${API_BASE}/api/query`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
