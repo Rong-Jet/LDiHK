@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { UploadCloud, CheckCircle2, AlertTriangle, RefreshCw, Database, Lock, Shield, Copy } from 'lucide-react';
 
-const API_BASE = import.meta.env.PUBLIC_API_URL || '';
+const IS_MOCK_MODE = import.meta.env.PUBLIC_MOCK_API === 'true';
+const API_BASE = IS_MOCK_MODE ? '' : (import.meta.env.PUBLIC_API_URL || '');
 
 interface UploadZoneProps {
   onUploadComplete: (s3Key: string, s3Bucket: string) => void;
@@ -83,7 +84,7 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
   const [isMock, setIsMock] = useState<boolean | null>(null);
 
   useEffect(() => {
-    fetch('/api/uploader-info')
+    fetch(`${API_BASE}/api/uploader-info`)
       .then((res) => {
         if (!res.ok) throw new Error();
         return res.json();
@@ -227,7 +228,7 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
 
     try {
       // 1. Fetch pre-signed S3 upload url (mocked locally via authenticated POST)
-      const response = await fetch('/api/upload-url', {
+      const response = await fetch(`${API_BASE}/api/upload-url`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

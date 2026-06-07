@@ -31,20 +31,25 @@ export interface PopulationQueryResult {
   hourlyAverages: HourlyAverageRow[];
 }
 
+const IS_MOCK_MODE = import.meta.env.PUBLIC_MOCK_API === 'true';
+const API_BASE = IS_MOCK_MODE ? '' : (import.meta.env.PUBLIC_API_URL || '');
+
 const fetchPopulationData = async (
+  platforms: string[],
   startDate: string,
   endDate: string,
   useSyntheticData: boolean,
   customPercentile: number,
   sessionToken: string
 ): Promise<PopulationQueryResult> => {
-  const res = await fetch('/api/population', {
+  const res = await fetch(`${API_BASE}/api/population`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${sessionToken}`
     },
     body: JSON.stringify({
+      platforms,
       startDate,
       endDate,
       useSyntheticData,
@@ -60,6 +65,7 @@ const fetchPopulationData = async (
 };
 
 export function usePopulationData(
+  platforms: string[],
   startDate: string,
   endDate: string,
   useSyntheticData: boolean,
@@ -68,8 +74,8 @@ export function usePopulationData(
   sessionToken: string | null
 ) {
   return useQuery<PopulationQueryResult>({
-    queryKey: ['population', startDate, endDate, useSyntheticData, customPercentile, sessionToken],
-    queryFn: () => fetchPopulationData(startDate, endDate, useSyntheticData, customPercentile, sessionToken || ''),
-    enabled: isReady && !!startDate && !!endDate && !!sessionToken,
+    queryKey: ['population', platforms.join(','), startDate, endDate, useSyntheticData, customPercentile, sessionToken],
+    queryFn: () => fetchPopulationData(platforms, startDate, endDate, useSyntheticData, customPercentile, sessionToken || ''),
+    enabled: isReady && !!startDate && !!endDate && !!sessionToken && platforms.length > 0,
   });
 }

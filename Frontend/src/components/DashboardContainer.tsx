@@ -10,7 +10,8 @@ import DeepDive from './DeepDive';
 import BehavioralHeatmap from './BehavioralHeatmap';
 import { useAnalyticsData } from '../hooks/useAnalyticsData';
 
-const API_BASE = import.meta.env.PUBLIC_API_URL || '';
+const IS_MOCK_MODE = import.meta.env.PUBLIC_MOCK_API === 'true';
+const API_BASE = IS_MOCK_MODE ? '' : (import.meta.env.PUBLIC_API_URL || '');
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -162,14 +163,31 @@ function DashboardContent() {
   }, [probeData]);
 
   const datasets = React.useMemo(() => {
+    const statusVal = IS_MOCK_MODE ? 'READY' : currentStatus;
+    const bounds = discoveredBounds;
     return {
       youtube: {
-        status: currentStatus,
-        min_date: discoveredBounds.minDate,
-        max_date: discoveredBounds.maxDate,
+        status: statusVal,
+        min_date: bounds.minDate,
+        max_date: bounds.maxDate,
+      },
+      instagram: {
+        status: statusVal,
+        min_date: bounds.minDate,
+        max_date: bounds.maxDate,
+      },
+      tiktok: {
+        status: statusVal,
+        min_date: bounds.minDate,
+        max_date: bounds.maxDate,
+      },
+      spotify: {
+        status: statusVal,
+        min_date: bounds.minDate,
+        max_date: bounds.maxDate,
       }
     };
-  }, [currentStatus, discoveredBounds]);
+  }, [IS_MOCK_MODE, currentStatus, discoveredBounds]);
 
   // Derive global min/max date bounds across all ready platforms
   const dateBounds = React.useMemo(() => {
@@ -178,8 +196,9 @@ function DashboardContent() {
 
   // Filter which platforms are actually uploaded and ready to query
   const readyPlatforms = React.useMemo(() => {
+    if (IS_MOCK_MODE) return ['youtube', 'instagram', 'tiktok', 'spotify'];
     return currentStatus === 'READY' ? ['youtube'] : [];
-  }, [currentStatus]);
+  }, [IS_MOCK_MODE, currentStatus]);
 
   // Only query active platforms that are actually ready
   const platformsToQuery = React.useMemo(() => {
@@ -243,7 +262,7 @@ function DashboardContent() {
   // Reset pipeline state locally & on mock server
   const handleResetPipeline = async () => {
     try {
-      await fetch('/api/upload-url'); // GET triggers state reset in mock backend
+      await fetch(`${API_BASE}/api/upload-url`); // GET triggers state reset in mock backend
       setUploadCompleted(false);
       setSelectedDate(null);
       setStartDate('2026-05-08');
@@ -489,6 +508,13 @@ function DashboardContent() {
           id="tab-population-benchmark"
         >
           Population Benchmark
+        </a>
+        <a 
+          href="/risk"
+          className="px-4 py-3 text-sm font-bold border-b-2 border-transparent text-brand-navy/50 hover:text-brand-navy transition-all"
+          id="tab-mental-health-risk"
+        >
+          Mental Health Risk
         </a>
       </div>
 

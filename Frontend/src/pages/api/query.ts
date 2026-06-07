@@ -5,6 +5,8 @@ import os from 'os';
 
 export const prerender = false;
 
+const IS_MOCK_MODE = import.meta.env.PUBLIC_MOCK_API === 'true';
+
 // Handle OPTIONS preflight requests for CORS compatibility
 export const OPTIONS: APIRoute = async () => {
   return new Response(null, {
@@ -17,6 +19,121 @@ export const OPTIONS: APIRoute = async () => {
     },
   });
 };
+
+function getHourlyMockRecord(platform: string, dateStr: string, hour: number) {
+  const yearStr = dateStr.substring(0, 4);
+  const monthStr = dateStr.substring(5, 7);
+  const dayStr = dateStr.substring(8, 10);
+  
+  const year = parseInt(yearStr) || 2026;
+  const month = parseInt(monthStr) || 6;
+  const day = parseInt(dayStr) || 6;
+  
+  let platformOffset = 0;
+  if (platform === 'instagram') platformOffset = 50;
+  else if (platform === 'tiktok') platformOffset = 100;
+  else if (platform === 'spotify') platformOffset = 120;
+  else if (platform === 'twitter') platformOffset = 150;
+  else if (platform === 'linkedin') platformOffset = 200;
+
+  const seed = (year * 367) + (month * 31) + day + hour * 17 + platformOffset;
+  const rand = Math.abs(Math.sin(seed + 12.34)) * 0.8 + 0.2; 
+
+  const dObj = new Date(year, month - 1, day);
+  const dayOfWeek = dObj.getDay();
+  const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+  const weekendMult = isWeekend ? 1.45 : 0.95;
+
+  const epochDays = Math.round((dObj.getTime() - new Date('2016-01-01').getTime()) / (1000 * 3600 * 24));
+  const seasonalTrend = 1.0 + Math.sin(epochDays / 120) * 0.25; 
+  const longTermTrend = 1.0 + (epochDays / 3652.5) * 0.35; 
+
+  let hourWeight = 1.0;
+  let baseSeconds = 850;
+  let eventDivisor = 270;
+
+  if (platform === 'youtube') {
+    if (hour >= 23 || hour <= 4) {
+      hourWeight = isWeekend 
+        ? (hour === 23 || hour === 0 ? 1.9 : 0.9)
+        : (hour === 23 || hour === 0 ? 0.7 : 0.15);
+    } else if (hour >= 5 && hour <= 8) {
+      hourWeight = 0.1;
+    } else if (hour >= 9 && hour <= 12) {
+      hourWeight = 0.65;
+    } else if (hour >= 13 && hour <= 17) {
+      hourWeight = 1.1;
+    } else if (hour >= 18 && hour <= 22) {
+      hourWeight = 2.4; 
+    }
+    baseSeconds = 850;
+    eventDivisor = 270;
+  } else if (platform === 'instagram') {
+    if (hour >= 23 || hour <= 6) {
+      hourWeight = isWeekend ? 0.3 : 0.15;
+    } else if (hour >= 7 && hour <= 8) {
+      hourWeight = 1.0;
+    } else if (hour >= 9 && hour <= 11) {
+      hourWeight = 1.2;
+    } else if (hour >= 12 && hour <= 14) {
+      hourWeight = 1.4;
+    } else if (hour >= 15 && hour <= 17) {
+      hourWeight = 1.1;
+    } else if (hour >= 18 && hour <= 22) {
+      hourWeight = 1.6;
+    }
+    baseSeconds = 420;
+    eventDivisor = 45;
+  } else if (platform === 'tiktok') {
+    if (hour >= 22 || hour <= 2) {
+      hourWeight = isWeekend ? 3.5 : 2.5;
+    } else if (hour >= 3 && hour <= 6) {
+      hourWeight = 0.1;
+    } else if (hour >= 7 && hour <= 11) {
+      hourWeight = 0.4;
+    } else if (hour >= 12 && hour <= 14) {
+      hourWeight = 0.8;
+    } else if (hour >= 15 && hour <= 17) {
+      hourWeight = 0.9;
+    } else if (hour >= 18 && hour <= 21) {
+      hourWeight = 1.8;
+    }
+    baseSeconds = 630;
+    eventDivisor = 90;
+  } else if (platform === 'spotify') {
+    if (hour >= 23 || hour <= 5) {
+      hourWeight = 0.15;
+    } else if (hour >= 9 && hour <= 17) {
+      hourWeight = 1.8;
+    } else if (hour >= 18 && hour <= 22) {
+      hourWeight = 1.2;
+    } else {
+      hourWeight = 0.7;
+    }
+    baseSeconds = 540;
+    eventDivisor = 180;
+  } else {
+    if (hour >= 23 || hour <= 5) {
+      hourWeight = 0.2;
+    } else if (hour >= 9 && hour <= 17) {
+      hourWeight = 1.5;
+    } else {
+      hourWeight = 0.8;
+    }
+    baseSeconds = 200;
+    eventDivisor = 60;
+  }
+
+  const watchSeconds = Math.max(0, Math.round(baseSeconds * hourWeight * weekendMult * seasonalTrend * longTermTrend * rand));
+  const eventCount = watchSeconds > 0 ? Math.max(1, Math.round(watchSeconds / eventDivisor)) : 0;
+
+  return {
+    date: dateStr,
+    hour,
+    estimated_watch_seconds: watchSeconds,
+    event_count: eventCount
+  };
+}
 
 export const POST: APIRoute = async ({ request }) => {
   try {
@@ -39,18 +156,6 @@ export const POST: APIRoute = async ({ request }) => {
     const body = await request.json();
     const { dataset, metrics = [], dimensions = [], filters = {} } = body;
     
-    // Check if the dataset is ready in mock database
-    const statePath = path.join(os.tmpdir(), 'ldihk_state.json');
-    let state: any = { datasets: {} };
-    try {
-      const stateContent = await fs.readFile(statePath, 'utf-8');
-      state = JSON.parse(stateContent);
-    } catch (err) {
-      // Fallback
-    }
-
-    const isYoutubeReady = state.datasets?.youtube?.status === 'READY';
-    
     if (!dataset) {
       return new Response(JSON.stringify({ error: 'invalid_dataset' }), {
         status: 400,
@@ -58,7 +163,9 @@ export const POST: APIRoute = async ({ request }) => {
       });
     }
 
-    if (dataset !== 'youtube_usage') {
+    const platform = dataset.replace('_usage', '');
+    const allowedPlatforms = ['youtube', 'instagram', 'tiktok', 'spotify', 'twitter', 'linkedin'];
+    if (!allowedPlatforms.includes(platform)) {
       return new Response(JSON.stringify({ error: 'invalid_dataset' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
@@ -72,10 +179,22 @@ export const POST: APIRoute = async ({ request }) => {
       });
     }
 
-    if (!isYoutubeReady) {
+    // Check if the dataset is ready in mock database
+    const statePath = path.join(os.tmpdir(), 'ldihk_state.json');
+    let state: any = { datasets: {} };
+    try {
+      const stateContent = await fs.readFile(statePath, 'utf-8');
+      state = JSON.parse(stateContent);
+    } catch (err) {
+      // Fallback
+    }
+
+    const isReady = IS_MOCK_MODE || state.datasets?.[platform]?.status === 'READY';
+
+    if (!isReady) {
       return new Response(
         JSON.stringify({
-          schema_version: 'youtube_usage.structured_query.v1',
+          schema_version: `${platform}_usage.structured_query.v1`,
           dataset,
           ldihk_id: ldihkId,
           query: body,
@@ -95,124 +214,69 @@ export const POST: APIRoute = async ({ request }) => {
     const start = new Date(startDateStr);
     const end = new Date(endDateStr);
 
-    const [y1, m1, d1] = startDateStr.split('-').map(Number);
-    const [y2, m2, d2] = endDateStr.split('-').map(Number);
-    const startUTC = Date.UTC(y1, m1 - 1, d1);
-    const endUTC = Date.UTC(y2, m2 - 1, d2);
-    const diffMs = endUTC - startUTC;
-    const dayCount = Math.max(1, Math.round(diffMs / (1000 * 3600 * 24)) + 1);
+    // Generate deterministic hourly records for every day in timeframe
+    const allHourlyRows = [];
+    const current = new Date(start);
+    while (current <= end) {
+      const dateString = current.toISOString().split('T')[0];
+      for (let hour = 0; hour < 24; hour++) {
+        allHourlyRows.push(getHourlyMockRecord(platform, dateString, hour));
+      }
+      current.setDate(current.getDate() + 1);
+    }
 
-    // 1. Grouping by both Date and Hour (for heatmap)
+    let responseRows = [];
+
+    // Aggregate based on dimensions
     if (dimensions.includes('date') && dimensions.includes('hour')) {
-      const rows = [];
-      const current = new Date(start);
-
-      while (current <= end) {
-        const dateString = current.toISOString().split('T')[0];
-        
-        for (let hour = 0; hour < 24; hour++) {
-          let weight = 1;
-          if (hour >= 1 && hour <= 5) weight = 0.1;
-          else if (hour >= 8 && hour <= 11) weight = 1.2;
-          else if (hour >= 12 && hour <= 17) weight = 1.5;
-          else if (hour >= 18 && hour <= 22) weight = 2.8;
-          else weight = 1.4;
-
-          const baseSecs = 1200; // YouTube watch seconds base
-          const pseudoRand = Math.sin(hour + current.getTime() + 5) * 0.2 + 1;
-          
-          const watchSeconds = Math.max(0, Math.round(baseSecs * weight * pseudoRand));
-          const eventCount = Math.max(0, Math.round(watchSeconds / 300));
-
-          rows.push({
-            date: dateString,
-            hour,
-            event_count: eventCount,
-            estimated_watch_seconds: watchSeconds,
-          });
+      // 1. Grouping by both Date and Hour (wellness assessment / heatmap)
+      responseRows = allHourlyRows;
+    } else if (dimensions.includes('date')) {
+      // 2. Grouping by Date (timeline allocation)
+      const dateGroups: { [date: string]: { estimated_watch_seconds: number, event_count: number } } = {};
+      allHourlyRows.forEach(row => {
+        if (!dateGroups[row.date]) {
+          dateGroups[row.date] = { estimated_watch_seconds: 0, event_count: 0 };
         }
-        current.setDate(current.getDate() + 1);
+        dateGroups[row.date].estimated_watch_seconds += row.estimated_watch_seconds;
+        dateGroups[row.date].event_count += row.event_count;
+      });
+      responseRows = Object.keys(dateGroups).sort().map(dateStr => ({
+        date: dateStr,
+        estimated_watch_seconds: dateGroups[dateStr].estimated_watch_seconds,
+        event_count: dateGroups[dateStr].event_count
+      }));
+    } else if (dimensions.includes('hour')) {
+      // 3. Grouping by Hour (heatmap daily averages)
+      const hourGroups: { [hour: number]: { estimated_watch_seconds: number, event_count: number } } = {};
+      for (let h = 0; h < 24; h++) {
+        hourGroups[h] = { estimated_watch_seconds: 0, event_count: 0 };
       }
-
-      return new Response(
-        JSON.stringify({
-          schema_version: 'youtube_usage.structured_query.v1',
-          dataset,
-          ldihk_id: ldihkId,
-          query: body,
-          rows,
-        }),
-        {
-          status: 200,
-          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-        }
-      );
+      allHourlyRows.forEach(row => {
+        hourGroups[row.hour].estimated_watch_seconds += row.estimated_watch_seconds;
+        hourGroups[row.hour].event_count += row.event_count;
+      });
+      responseRows = Object.keys(hourGroups).map(Number).sort((a,b) => a - b).map(h => ({
+        hour: h,
+        estimated_watch_seconds: hourGroups[h].estimated_watch_seconds,
+        event_count: hourGroups[h].event_count
+      }));
     }
 
-    // 2. Grouping by Date (for timeline chart)
-    if (dimensions.includes('date')) {
-      const rows = [];
-      const current = new Date(start);
-      
-      while (current <= end) {
-        const dateString = current.toISOString().split('T')[0];
-        const dayOfWeek = current.getDay();
-        const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-        
-        const baseHoursMultiplier = isWeekend ? 1.5 : 1.0;
-        const d = current.getDate();
-        const trend = 1 + (d / 30) * 0.2; 
-        const avgHours = 2.4; // youtube average watch hours
-
-        const pseudoRand = Math.sin(current.getTime() + 12) * 0.25 + 1;
-        const watchHours = Math.max(0, avgHours * baseHoursMultiplier * trend * pseudoRand);
-        const watchSeconds = Math.round(watchHours * 3600);
-        const eventCount = Math.round(watchHours * 10);
-
-        rows.push({
-          date: dateString,
-          event_count: eventCount,
-          estimated_watch_seconds: watchSeconds,
-        });
-
-        current.setDate(current.getDate() + 1);
-      }
-
-      return new Response(
-        JSON.stringify({
-          schema_version: 'youtube_usage.structured_query.v1',
-          dataset,
-          ldihk_id: ldihkId,
-          query: body,
-          rows,
-        }),
-        {
-          status: 200,
-          headers: {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*',
-          },
-        }
-      );
-    }
-
-    // Default aggregate fallback (single row)
     return new Response(
       JSON.stringify({
-        schema_version: 'youtube_usage.structured_query.v1',
+        schema_version: `${platform}_usage.structured_query.v1`,
         dataset,
         ldihk_id: ldihkId,
         query: body,
-        rows: [
-          {
-            event_count: 500,
-            estimated_watch_seconds: 180000,
-          }
-        ],
+        rows: responseRows,
       }),
       {
         status: 200,
-        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        },
       }
     );
   } catch (err: any) {

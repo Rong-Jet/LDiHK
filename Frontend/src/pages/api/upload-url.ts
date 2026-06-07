@@ -80,12 +80,13 @@ export const POST: APIRoute = async ({ request }) => {
   const s3Key = `uploads/${ldihkId}/${filename}`;
 
   // AWS Configuration lookup
+  const isMockMode = import.meta.env.PUBLIC_MOCK_API === 'true';
   const awsAccessKeyId = import.meta.env.AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID;
   const awsSecretAccessKey = import.meta.env.AWS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY;
   const awsRegion = import.meta.env.AWS_REGION || process.env.AWS_REGION;
   const s3Bucket = import.meta.env.S3_BUCKET || process.env.S3_BUCKET;
 
-  const hasAwsKeys = !!(awsAccessKeyId && awsSecretAccessKey && awsRegion && s3Bucket);
+  const hasAwsKeys = !isMockMode && !!(awsAccessKeyId && awsSecretAccessKey && awsRegion && s3Bucket);
 
   if (hasAwsKeys) {
     try {
