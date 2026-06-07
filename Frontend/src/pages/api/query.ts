@@ -179,6 +179,40 @@ export const POST: APIRoute = async ({ request }) => {
       });
     }
 
+    if (!IS_MOCK_MODE) {
+      const backendUrl = import.meta.env.PUBLIC_API_URL || 'https://ldihk-api.onrender.com';
+      try {
+        const backendRes = await fetch(`${backendUrl}/api/query`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': authHeader,
+          },
+          body: JSON.stringify(body),
+        });
+
+        if (!backendRes.ok) {
+          const errText = await backendRes.text();
+          return new Response(errText, {
+            status: backendRes.status,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+          });
+        }
+
+        const backendData = await backendRes.json();
+        return new Response(JSON.stringify(backendData), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        });
+      } catch (err: any) {
+        console.error('Failed to proxy query to backend:', err);
+        return new Response(JSON.stringify({ error: 'backend_connection_failure', message: err.message }), {
+          status: 502,
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        });
+      }
+    }
+
     // Check if the dataset is ready in mock database
     const statePath = path.join(os.tmpdir(), 'ldihk_state.json');
     let state: any = { datasets: {} };

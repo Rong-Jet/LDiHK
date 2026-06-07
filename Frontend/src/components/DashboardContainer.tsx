@@ -11,7 +11,7 @@ import BehavioralHeatmap from './BehavioralHeatmap';
 import { useAnalyticsData } from '../hooks/useAnalyticsData';
 
 const IS_MOCK_MODE = import.meta.env.PUBLIC_MOCK_API === 'true';
-const API_BASE = IS_MOCK_MODE ? '' : (import.meta.env.PUBLIC_API_URL || '');
+
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -93,7 +93,7 @@ function DashboardContent() {
     queryKey: ['probe', sessionToken],
     queryFn: async () => {
       if (!sessionToken) return null;
-      const res = await fetch(`${API_BASE}/api/query`, {
+      const res = await fetch(`/api/query`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -122,7 +122,7 @@ function DashboardContent() {
   const { data: importStatusData } = useQuery({
     queryKey: ['importStatus', currentImportId, sessionToken],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/api/imports/${currentImportId}`, {
+      const res = await fetch(`/api/imports/${currentImportId}`, {
         headers: {
           'Authorization': `Bearer ${sessionToken}`
         }
@@ -239,7 +239,7 @@ function DashboardContent() {
 
   const handleUploadComplete = async (s3Key: string, s3Bucket: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/imports`, {
+      const res = await fetch(`/api/imports`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

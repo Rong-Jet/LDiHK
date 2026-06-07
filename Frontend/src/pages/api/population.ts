@@ -257,41 +257,284 @@ export const POST: APIRoute = async ({ request }) => {
       startDate = '2026-05-08', 
       endDate = '2026-06-06', 
       useSyntheticData = true,
-      customPercentile = 90
+      customPercentile = 90,
+      visibleStartDate
     } = body;
+
+    const actualVisibleStartDate = visibleStartDate || startDate;
+
+    if (!IS_MOCK_MODE) {
+      const backendUrl = import.meta.env.PUBLIC_API_URL || 'https://ldihk-api.onrender.com';
+      try {
+        const backendRes = await fetch(`${backendUrl}/api/population`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': authHeader,
+          },
+          body: JSON.stringify(body),
+        });
+
+        if (backendRes.ok) {
+          const backendData = await backendRes.json();
+          return new Response(JSON.stringify({
+            ...backendData,
+            hasPopulationData: true,
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+          });
+        }
+        console.warn('Backend population API returned non-OK status:', backendRes.status);
+      } catch (err) {
+        console.warn('Failed to call backend population API:', err);
+      }
+
+      // Population API unavailable — still fetch the user's own daily data so
+      // the timeline chart can render the user's watch time line.
+      try {
+        const start = new Date(startDate);
+        const end = new Date(endDate);
+        const userDailyWatchHours: { [dateStr: string]: number } = {};
+        let totalUserSeconds = 0;
+        const userHourlySecondsByHour = new Array(24).fill(0);
+
+        // Initialise all dates in range to 0
+        const dateInit = new Date(start);
+        while (dateInit <= end) {
+          userDailyWatchHours[dateInit.toISOString().split('T')[0]] = 0;
+          dateInit.setDate(dateInit.getDate() + 1);
+        }
+
+        // Fetch daily aggregates from the real backend
+        const dailyRes = await fetch(`${backendUrl}/api/query`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+          body: JSON.stringify({
+            dataset: 'youtube_usage',
+            metrics: ['estimated_watch_seconds', 'event_count'],
+            dimensions: ['date'],
+            filters: { start_date: startDate, end_date: endDate },
+          }),
+        });
+
+        if (dailyRes.ok) {
+          const dailyData = await dailyRes.json();
+          if (dailyData.rows) {
+            dailyData.rows.forEach((row: any) => {
+              const dateStr = row.date;
+              const secs = row.estimated_watch_seconds || 0;
+              userDailyWatchHours[dateStr] = (userDailyWatchHours[dateStr] || 0) + (secs / 3600);
+              if (dateStr >= actualVisibleStartDate) totalUserSeconds += secs;
+            });
+          }
+        }
+
+        // Fetch hourly aggregates for the heatmap user column
+        const hourlyRes = await fetch(`${backendUrl}/api/query`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': authHeader },
+          body: JSON.stringify({
+            dataset: 'youtube_usage',
+            metrics: ['estimated_watch_seconds', 'event_count'],
+            dimensions: ['hour'],
+            filters: { start_date: actualVisibleStartDate, end_date: endDate },
+          }),
+        });
+
+        if (hourlyRes.ok) {
+          const hourlyData = await hourlyRes.json();
+          if (hourlyData.rows) {
+            hourlyData.rows.forEach((row: any) => {
+              const hr = row.hour;
+              if (hr >= 0 && hr < 24) userHourlySecondsByHour[hr] += row.estimated_watch_seconds || 0;
+            });
+          }
+        }
+
+        const [y1, m1, d1] = actualVisibleStartDate.split('-').map(Number);
+        const [y2, m2, d2] = endDate.split('-').map(Number);
+        const dayCount = Math.max(1, Math.round(
+          (Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / (1000 * 3600 * 24)
+        ) + 1);
+
+        const userDailyAverageHours = totalUserSeconds / 3600 / dayCount;
+        const userHourlyAverages = userHourlySecondsByHour.map(s => s / dayCount);
+
+        // Build deciles with user hours only — no population bands
+        const dateList = Object.keys(userDailyWatchHours).sort();
+        const deciles = dateList.map(dateStr => ({
+          date: dateStr,
+          user: parseFloat(userDailyWatchHours[dateStr].toFixed(2)),
+          median: null as unknown as number,
+          top10: null as unknown as number,
+          bottom10: null as unknown as number,
+          customPercentileHours: null as unknown as number,
+        }));
+
+        // Build hourlyAverages with user data only (no population baseline)
+        const hourlyAverages = Array.from({ length: 24 }, (_, hour) => ({
+          hour: `${hour.toString().padStart(2, '0')}:00`,
+          populationAvg: null as unknown as number,
+          userAvg: parseFloat((userHourlyAverages[hour] / 3600).toFixed(3)),
+        }));
+
+        return new Response(JSON.stringify({
+          ready: true,
+          hasPopulationData: false,
+          userPercentile: null,
+          userDailyAverageHours: parseFloat(userDailyAverageHours.toFixed(2)),
+          useSyntheticData: false,
+          customPercentile,
+          distribution: [],
+          deciles,
+          hourlyAverages,
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        });
+      } catch (fallbackErr) {
+        console.error('Failed to fetch user fallback data:', fallbackErr);
+        // Last resort: return empty but valid structure
+        return new Response(JSON.stringify({
+          ready: true,
+          hasPopulationData: false,
+          userPercentile: null,
+          userDailyAverageHours: null,
+          useSyntheticData: false,
+          customPercentile,
+          distribution: [],
+          deciles: [],
+          hourlyAverages: [],
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+        });
+      }
+    }
 
     const start = new Date(startDate);
     const end = new Date(endDate);
 
-    const [y1, m1, d1] = startDate.split('-').map(Number);
+    const [y1, m1, d1] = actualVisibleStartDate.split('-').map(Number);
     const [y2, m2, d2] = endDate.split('-').map(Number);
     const startUTC = Date.UTC(y1, m1 - 1, d1);
     const endUTC = Date.UTC(y2, m2 - 1, d2);
     const diffMs = endUTC - startUTC;
     const dayCount = Math.max(1, Math.round(diffMs / (1000 * 3600 * 24)) + 1);
 
-    // 1. Calculate user's deterministic watch metrics over the range
+    // 1. Calculate user's watch metrics over the range
     let totalUserSeconds = 0;
     const userDailyWatchHours: { [dateStr: string]: number } = {};
     const userHourlySecondsByHour = new Array(24).fill(0);
 
-    const current = new Date(start);
-    while (current <= end) {
-      const dateString = current.toISOString().split('T')[0];
-      let dailySecs = 0;
-      for (let hour = 0; hour < 24; hour++) {
-        let hourSecs = 0;
-        platforms.forEach((platform: string) => {
-          const record = getHourlyMockRecord(platform, dateString, hour);
-          hourSecs += record.estimated_watch_seconds;
-        });
-        dailySecs += hourSecs;
-        userHourlySecondsByHour[hour] += hourSecs;
-      }
-      userDailyWatchHours[dateString] = dailySecs / 3600;
-      totalUserSeconds += dailySecs;
+    // Initialize every date in range to 0 to ensure full timeline coverage
+    const dateInit = new Date(start);
+    while (dateInit <= end) {
+      const dateString = dateInit.toISOString().split('T')[0];
+      userDailyWatchHours[dateString] = 0;
+      dateInit.setDate(dateInit.getDate() + 1);
+    }
 
-      current.setDate(current.getDate() + 1);
+    if (IS_MOCK_MODE) {
+      const current = new Date(start);
+      while (current <= end) {
+        const dateString = current.toISOString().split('T')[0];
+        let dailySecs = 0;
+        for (let hour = 0; hour < 24; hour++) {
+          let hourSecs = 0;
+          platforms.forEach((platform: string) => {
+            const record = getHourlyMockRecord(platform, dateString, hour);
+            hourSecs += record.estimated_watch_seconds;
+          });
+          dailySecs += hourSecs;
+          if (dateString >= actualVisibleStartDate) {
+            userHourlySecondsByHour[hour] += hourSecs;
+          }
+        }
+        userDailyWatchHours[dateString] = dailySecs / 3600;
+        if (dateString >= actualVisibleStartDate) {
+          totalUserSeconds += dailySecs;
+        }
+
+        current.setDate(current.getDate() + 1);
+      }
+    } else {
+      // Query the real backend API for the user's actual data!
+      const backendUrl = import.meta.env.PUBLIC_API_URL || 'https://ldihk-api.onrender.com';
+      
+      // We query each platform, but since the Python backend only supports 'youtube_usage', we filter.
+      for (const platform of platforms) {
+        if (platform !== 'youtube') continue; // Skip non-supported platforms in backend database
+
+        // 1. Fetch daily watch seconds (padded range)
+        const dailyRes = await fetch(`${backendUrl}/api/query`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': authHeader,
+          },
+          body: JSON.stringify({
+            dataset: 'youtube_usage',
+            metrics: ['estimated_watch_seconds', 'event_count'],
+            dimensions: ['date'],
+            filters: {
+              start_date: startDate,
+              end_date: endDate,
+            },
+          }),
+        });
+
+        if (!dailyRes.ok) {
+          throw new Error(`Failed to fetch daily data from backend for ${platform}`);
+        }
+
+        const dailyData = await dailyRes.json();
+        if (dailyData.rows) {
+          dailyData.rows.forEach((row: any) => {
+            const dateStr = row.date;
+            const secs = row.estimated_watch_seconds || 0;
+            userDailyWatchHours[dateStr] = (userDailyWatchHours[dateStr] || 0) + (secs / 3600);
+            
+            if (dateStr >= actualVisibleStartDate) {
+              totalUserSeconds += secs;
+            }
+          });
+        }
+
+        // 2. Fetch hourly watch seconds (visible range only!)
+        const hourlyRes = await fetch(`${backendUrl}/api/query`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': authHeader,
+          },
+          body: JSON.stringify({
+            dataset: 'youtube_usage',
+            metrics: ['estimated_watch_seconds', 'event_count'],
+            dimensions: ['hour'],
+            filters: {
+              start_date: actualVisibleStartDate,
+              end_date: endDate,
+            },
+          }),
+        });
+
+        if (!hourlyRes.ok) {
+          throw new Error(`Failed to fetch hourly data from backend for ${platform}`);
+        }
+
+        const hourlyData = await hourlyRes.json();
+        if (hourlyData.rows) {
+          hourlyData.rows.forEach((row: any) => {
+            const hr = row.hour;
+            const secs = row.estimated_watch_seconds || 0;
+            if (hr >= 0 && hr < 24) {
+              userHourlySecondsByHour[hr] += secs;
+            }
+          });
+        }
+      }
     }
 
     const userDailyAverageHours = totalUserSeconds / 3600 / dayCount;
@@ -354,10 +597,23 @@ export const POST: APIRoute = async ({ request }) => {
       const dateList = Object.keys(userDailyWatchHours).sort();
       deciles = dateList.map(dateStr => {
         const uHours = userDailyWatchHours[dateStr];
-        const median = parseFloat((uHours * 0.9 + Math.sin(new Date(dateStr).getTime()) * 0.15).toFixed(2));
-        const top10 = parseFloat((median * 1.8 + 0.6 * scaleFactor).toFixed(2));
-        const bottom10 = parseFloat((median * 0.25).toFixed(2));
-        const customHours = Math.max(0, median + zScoreCustom * combinedStdDev);
+        
+        const dObj = new Date(dateStr);
+        const dayOfWeek = dObj.getDay();
+        const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+        const weekendMult = isWeekend ? 1.45 : 0.95;
+
+        const epochDays = Math.round((dObj.getTime() - new Date('2016-01-01').getTime()) / (1000 * 3600 * 24));
+        const seasonalTrend = 1.0 + Math.sin(epochDays / 120) * 0.25;
+
+        // Calculate independent dynamic mean and standard deviation for this date
+        const dateMean = combinedMean * weekendMult * seasonalTrend;
+        const dateStdDev = combinedStdDev * weekendMult * seasonalTrend;
+
+        const median = parseFloat(dateMean.toFixed(2));
+        const top10 = parseFloat((dateMean + 1.282 * dateStdDev).toFixed(2));
+        const bottom10 = parseFloat(Math.max(0, dateMean - 1.282 * dateStdDev).toFixed(2));
+        const customHours = parseFloat(Math.max(0, dateMean + zScoreCustom * dateStdDev).toFixed(2));
 
         return {
           date: dateStr,
@@ -365,7 +621,7 @@ export const POST: APIRoute = async ({ request }) => {
           median,
           top10,
           bottom10,
-          customPercentileHours: parseFloat(customHours.toFixed(2)),
+          customPercentileHours: customHours,
         };
       });
 

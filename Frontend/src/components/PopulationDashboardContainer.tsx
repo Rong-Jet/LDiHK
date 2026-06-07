@@ -15,7 +15,7 @@ import UploadZone from './UploadZone';
 import { usePopulationData } from '../hooks/usePopulationData';
 
 const IS_MOCK_MODE = import.meta.env.PUBLIC_MOCK_API === 'true';
-const API_BASE = IS_MOCK_MODE ? '' : (import.meta.env.PUBLIC_API_URL || '');
+
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -103,7 +103,7 @@ function PopulationDashboardContent() {
     queryKey: ['probe', sessionToken],
     queryFn: async () => {
       if (!sessionToken) return null;
-      const res = await fetch(`${API_BASE}/api/query`, {
+      const res = await fetch(`/api/query`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -132,7 +132,7 @@ function PopulationDashboardContent() {
   const { data: importStatusData } = useQuery({
     queryKey: ['importStatus', currentImportId, sessionToken],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/api/imports/${currentImportId}`, {
+      const res = await fetch(`/api/imports/${currentImportId}`, {
         headers: {
           'Authorization': `Bearer ${sessionToken}`
         }
@@ -184,12 +184,13 @@ function PopulationDashboardContent() {
     useSyntheticData, 
     customPercentile,
     readyPlatforms.length > 0 && activePlatforms.some(p => readyPlatforms.includes(p)), 
-    sessionToken
+    sessionToken,
+    startDate
   );
 
   const handleUploadComplete = async (s3Key: string, s3Bucket: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/imports`, {
+      const res = await fetch(`/api/imports`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -299,11 +300,8 @@ function PopulationDashboardContent() {
   }, [popData?.deciles]);
 
   const smoothWindow = useMemo(() => {
-    if (totalDays > 1825) return 60; // 60-day rolling average for 5Y+
-    if (totalDays > 365) return 30;  // 30-day rolling average for 1Y+
-    if (totalDays > 30) return 7;    // 7-day rolling average for >30 Days
     return 1;                        // raw (no smoothing) by default
-  }, [totalDays]);
+  }, []);
 
   // 2. Set moving average default to a multiple (2x) of the smoothing window when it changes
   useEffect(() => {
@@ -440,6 +438,10 @@ function PopulationDashboardContent() {
   }, [popData]);
 
   const hasSelectedPlatforms = activePlatforms.some(p => readyPlatforms.includes(p));
+
+  // In production mode the backend may not yet serve population comparison data;
+  // hasPopulationData tracks whether we received real comparative metrics.
+  const hasPopulationData = IS_MOCK_MODE || (popData?.hasPopulationData === true);
 
   if (!sessionToken) {
     return (
@@ -723,6 +725,24 @@ function PopulationDashboardContent() {
                 </div>
                 {isPopLoading ? (
                   <h2 className="text-2xl sm:text-3xl font-black tracking-tight leading-tight animate-pulse">Calculating Standings...</h2>
+                ) : !IS_MOCK_MODE && popData && hasPopulationData && popData.userDailyAverageHours !== null ? (
+                  <>
+                    <h2 className="text-2xl sm:text-3xl font-black tracking-tight leading-tight">
+                      Your daily usage exceeds <span className="text-brand-peach">{popData.userPercentile}%</span> of the population
+                    </h2>
+                    <div className="inline-block px-2.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider rounded-md border border-white/20 bg-white/5 mt-1.5">
+                      Real Database Mode · Population Comparison Active
+                    </div>
+                  </>
+                ) : !IS_MOCK_MODE && popData && !hasPopulationData ? (
+                  <>
+                    <h2 className="text-2xl sm:text-3xl font-black tracking-tight leading-tight">
+                      Your data is ready for analysis
+                    </h2>
+                    <div className="inline-block px-2.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider rounded-md border border-white/20 bg-white/5 mt-1.5">
+                      Real Database Mode Active · Population API Pending
+                    </div>
+                  </>
                 ) : percentileNuance ? (
                   <>
                     <h2 className="text-2xl sm:text-3xl font-black tracking-tight leading-tight">
@@ -734,7 +754,11 @@ function PopulationDashboardContent() {
                   </>
                 ) : null}
                 <p className="text-xs text-white/70 max-w-xl leading-relaxed pt-1">
-                  {percentileNuance ? percentileNuance.description : ""}
+                  {!IS_MOCK_MODE && !hasPopulationData
+                    ? "Population comparison data is not yet available from the backend API. Once the endpoint is live, percentile rankings and cohort benchmarks will appear here automatically."
+                    : !IS_MOCK_MODE && hasPopulationData
+                    ? "Your percentile ranking and cohort benchmarks are sourced directly from the population database."
+                    : (percentileNuance ? percentileNuance.description : "")}
                 </p>
               </div>
             </div>
@@ -908,35 +932,37 @@ function PopulationDashboardContent() {
                       </div>
 
                       {/* 3. Custom Percentile Line Controls */}
-                      <div className="space-y-2">
-                        <label className="text-[10px] uppercase tracking-wider font-extrabold text-brand-navy/60 flex items-center gap-1.5 justify-between">
-                          <span className="flex items-center gap-1.5">
-                            <span className="w-2.5 h-2.5 rounded-full bg-brand-teal"></span>
-                            Custom Percentile Line
-                          </span>
-                          <input 
-                            type="checkbox"
-                            checked={showCustomPercentile}
-                            onChange={(e) => setShowCustomPercentile(e.target.checked)}
-                            className="rounded text-brand-teal focus:ring-brand-teal h-3.5 w-3.5 cursor-pointer"
-                            id="checkbox-show-percentile"
-                          />
-                        </label>
-                        <div className="flex items-center gap-3">
-                          <input
-                            type="range"
-                            min="1"
-                            max="99"
-                            disabled={!showCustomPercentile}
-                            value={customPercentile}
-                            onChange={(e) => setCustomPercentile(parseInt(e.target.value))}
-                            className="w-full h-1.5 bg-brand-navy/10 rounded-lg appearance-none cursor-pointer accent-brand-teal disabled:opacity-40"
-                          />
-                          <span className="text-xs font-black text-brand-navy w-8 text-right">
-                            {customPercentile}%
-                          </span>
+                      {IS_MOCK_MODE && (
+                        <div className="space-y-2">
+                          <label className="text-[10px] uppercase tracking-wider font-extrabold text-brand-navy/60 flex items-center gap-1.5 justify-between">
+                            <span className="flex items-center gap-1.5">
+                              <span className="w-2.5 h-2.5 rounded-full bg-brand-teal"></span>
+                              Custom Percentile Line
+                            </span>
+                            <input 
+                              type="checkbox"
+                              checked={showCustomPercentile}
+                              onChange={(e) => setShowCustomPercentile(e.target.checked)}
+                              className="rounded text-brand-teal focus:ring-brand-teal h-3.5 w-3.5 cursor-pointer"
+                              id="checkbox-show-percentile"
+                            />
+                          </label>
+                          <div className="flex items-center gap-3">
+                            <input
+                              type="range"
+                              min="1"
+                              max="99"
+                              disabled={!showCustomPercentile}
+                              value={customPercentile}
+                              onChange={(e) => setCustomPercentile(parseInt(e.target.value))}
+                              className="w-full h-1.5 bg-brand-navy/10 rounded-lg appearance-none cursor-pointer accent-brand-teal disabled:opacity-40"
+                            />
+                            <span className="text-xs font-black text-brand-navy w-8 text-right">
+                              {customPercentile}%
+                            </span>
+                          </div>
                         </div>
-                      </div>
+                      )}
                     </div>
                   )}
 
@@ -1071,23 +1097,27 @@ function PopulationDashboardContent() {
                             }}
                           />
                           
-                          {/* Shaded Areas representing Cohort Bands */}
-                          <Area 
-                            name="top10" 
-                            type="monotone" 
-                            dataKey="top10" 
-                            fill="#44A194" 
-                            fillOpacity={0.06} 
-                            stroke="transparent" 
-                          />
-                          <Area 
-                            name="median" 
-                            type="monotone" 
-                            dataKey="median" 
-                            fill="#537D96" 
-                            fillOpacity={0.09} 
-                            stroke="transparent" 
-                          />
+                          {/* Shaded Areas representing Cohort Bands (Mock mode only) */}
+                          {IS_MOCK_MODE && (
+                            <>
+                              <Area 
+                                name="top10" 
+                                type="monotone" 
+                                dataKey="top10" 
+                                fill="#44A194" 
+                                fillOpacity={0.06} 
+                                stroke="transparent" 
+                              />
+                              <Area 
+                                name="median" 
+                                type="monotone" 
+                                dataKey="median" 
+                                fill="#537D96" 
+                                fillOpacity={0.09} 
+                                stroke="transparent" 
+                              />
+                            </>
+                          )}
 
                           {/* Solid line representing User Watch hours */}
                           <Line 
@@ -1100,8 +1130,8 @@ function PopulationDashboardContent() {
                             activeDot={{ r: 6, stroke: '#FFFFFF', strokeWidth: 2 }}
                           />
 
-                          {/* Dashed line representing custom percentile if toggled */}
-                          {showCustomPercentile && (
+                          {/* Dashed line representing custom percentile if toggled (Mock mode only) */}
+                          {IS_MOCK_MODE && showCustomPercentile && (
                             <Line
                               name="customPercentileHours"
                               type="monotone"
@@ -1139,11 +1169,13 @@ function PopulationDashboardContent() {
                         <span className="w-3.5 h-3.5 bg-brand-peach rounded"></span>
                         <span>Your Watch Time</span>
                       </div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="w-3.5 h-3.5 bg-brand-navy/15 rounded"></span>
-                        <span>Median Cohort Shading</span>
-                      </div>
-                      {showCustomPercentile && (
+                      {IS_MOCK_MODE && (
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-3.5 h-3.5 bg-brand-navy/15 rounded"></span>
+                          <span>Median Cohort Shading</span>
+                        </div>
+                      )}
+                      {IS_MOCK_MODE && showCustomPercentile && (
                         <div className="flex items-center gap-1.5">
                           <span className="w-3.5 h-1 border-t-2 border-dashed border-brand-teal"></span>
                           <span>{customPercentile}th Percentile Benchmark</span>
@@ -1173,8 +1205,14 @@ function PopulationDashboardContent() {
                   </p>
                 </div>
 
-                <div className="h-[480px] w-full">
-                  {isPopLoading || !popData ? (
+                <div className="h-[480px] w-full flex items-center justify-center">
+                  {!IS_MOCK_MODE && !hasPopulationData ? (
+                    <div className="text-center p-6 space-y-3 max-w-xs bg-brand-beige/10 rounded-2xl border border-brand-navy/5">
+                      <TrendingUp className="w-8 h-8 text-brand-navy/40 mx-auto" />
+                      <p className="text-xs font-bold text-brand-navy">Population distribution unavailable</p>
+                      <p className="text-[10px] text-brand-navy/50 leading-relaxed">The population comparison API is not yet available. This chart will populate automatically once the endpoint is live.</p>
+                    </div>
+                  ) : isPopLoading || !popData ? (
                     <div className="h-full flex items-center justify-center">
                       <RefreshCw className="w-6 h-6 animate-spin text-brand-teal" />
                     </div>
@@ -1283,10 +1321,17 @@ function PopulationDashboardContent() {
                 </div>
               </div>
 
-              {/* Heatmap Grid (matching 12-column wrapping grid of BehavioralHeatmap) */}
-              <div className="space-y-4">
-                <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-12 gap-3">
-                  {popData.hourlyAverages.map((row) => {
+              {/* Heatmap Grid: show placeholder when population API is unavailable */}
+              {!hasPopulationData ? (
+                <div className="text-center p-12 py-16 space-y-3 max-w-md mx-auto bg-brand-beige/10 rounded-2xl border border-brand-navy/5">
+                  <Clock className="w-10 h-10 text-brand-navy/25 mx-auto" />
+                  <p className="text-sm font-bold text-brand-navy">Population comparison pending</p>
+                  <p className="text-xs text-brand-navy/50 leading-relaxed">Hour-by-hour divergence analysis will appear here once the population benchmark API is live. Your own usage data is already being tracked.</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-12 gap-3">
+                    {popData.hourlyAverages.map((row) => {
                     const userHrs = row.userAvg;
                     const popHrs = row.populationAvg;
                     const diff = userHrs - popHrs;
@@ -1296,23 +1341,23 @@ function PopulationDashboardContent() {
                     let labelColor = 'text-brand-navy/70';
 
                     if (cappedDiff > 0.05) {
-                      // More active than average (Teal intensity shades)
+                      // More active than average = higher screentime (Peach/Red intensity shades)
                       const ratio = cappedDiff / 0.8;
-                      if (ratio < 0.25) colorClass = 'bg-brand-teal/10 border-brand-teal/10 text-brand-teal/90';
-                      else if (ratio < 0.6) colorClass = 'bg-brand-teal/30 border-brand-teal/20 text-brand-teal';
-                      else if (ratio < 0.85) colorClass = 'bg-brand-teal/60 border-brand-teal/30 text-white';
-                      else colorClass = 'bg-brand-teal border-brand-teal/50 text-white font-black';
-                      
-                      labelColor = ratio >= 0.6 ? 'text-white' : 'text-brand-teal font-black';
-                    } else if (cappedDiff < -0.05) {
-                      // Less active than average (Peach intensity shades)
-                      const ratio = Math.abs(cappedDiff) / 0.8;
                       if (ratio < 0.25) colorClass = 'bg-brand-peach/10 border-brand-peach/10 text-brand-peach/90';
                       else if (ratio < 0.6) colorClass = 'bg-brand-peach/30 border-brand-peach/20 text-brand-peach';
                       else if (ratio < 0.85) colorClass = 'bg-brand-peach/60 border-brand-peach/30 text-white';
                       else colorClass = 'bg-brand-peach border-brand-peach/50 text-white font-black';
                       
                       labelColor = ratio >= 0.6 ? 'text-white' : 'text-brand-peach font-black';
+                    } else if (cappedDiff < -0.05) {
+                      // Less active than average = lower screentime (Teal/Green intensity shades)
+                      const ratio = Math.abs(cappedDiff) / 0.8;
+                      if (ratio < 0.25) colorClass = 'bg-brand-teal/10 border-brand-teal/10 text-brand-teal/90';
+                      else if (ratio < 0.6) colorClass = 'bg-brand-teal/30 border-brand-teal/20 text-brand-teal';
+                      else if (ratio < 0.85) colorClass = 'bg-brand-teal/60 border-brand-teal/30 text-white';
+                      else colorClass = 'bg-brand-teal border-brand-teal/50 text-white font-black';
+                      
+                      labelColor = ratio >= 0.6 ? 'text-white' : 'text-brand-teal font-black';
                     } else {
                       // Neutral / matching average
                       colorClass = 'bg-brand-beige/25 border-brand-navy/10 text-brand-navy/50';
@@ -1358,7 +1403,7 @@ function PopulationDashboardContent() {
                               <span>Population Avg:</span>
                               <span className="font-mono">{(popHrs * 60).toFixed(0)} mins</span>
                             </p>
-                            <p className="flex justify-between border-t border-white/10 pt-1 mt-1 font-bold text-brand-peach">
+                            <p className={`flex justify-between border-t border-white/10 pt-1 mt-1 font-bold ${diff >= 0.05 ? 'text-brand-peach' : diff <= -0.05 ? 'text-brand-teal' : 'text-white/60'}`}>
                               <span>Divergence:</span>
                               <span className="font-mono">
                                 {diff >= 0 ? '+' : ''}{(diff * 60).toFixed(0)} mins
@@ -1374,17 +1419,18 @@ function PopulationDashboardContent() {
 
                 {/* Heatmap Legend */}
                 <div className="flex items-center justify-end gap-3 mt-6 text-xs text-brand-navy/60 font-semibold px-1">
-                  <span>Less Active</span>
+                  <span>Less Active (Good)</span>
                   <div className="flex items-center gap-1 select-none">
-                    <span className="w-4 h-4 rounded bg-brand-peach border border-brand-peach/50" title="Significantly less active"></span>
-                    <span className="w-4 h-4 rounded bg-brand-peach/30 border border-brand-peach/20" title="Slightly less active"></span>
+                    <span className="w-4 h-4 rounded bg-brand-teal border border-brand-teal/50" title="Significantly less active"></span>
+                    <span className="w-4 h-4 rounded bg-brand-teal/30 border border-brand-teal/20" title="Slightly less active"></span>
                     <span className="w-4 h-4 rounded bg-brand-beige/25 border border-brand-navy/10" title="Neutral / Average"></span>
-                    <span className="w-4 h-4 rounded bg-brand-teal/30 border border-brand-teal/20" title="Slightly more active"></span>
-                    <span className="w-4 h-4 rounded bg-brand-teal border border-brand-teal/50" title="Significantly more active"></span>
+                    <span className="w-4 h-4 rounded bg-brand-peach/30 border border-brand-peach/20" title="Slightly more active"></span>
+                    <span className="w-4 h-4 rounded bg-brand-peach border border-brand-peach/50" title="Significantly more active"></span>
                   </div>
-                  <span>More Active</span>
+                  <span>More Active (Harmful)</span>
                 </div>
               </div>
+              )}
 
             </div>
           )}
