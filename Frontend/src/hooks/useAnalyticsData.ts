@@ -58,50 +58,67 @@ const fetchCombinedPlatforms = async (
     return { dailyResults: [], hourlyResults: [] };
   }
 
+  const emptyDailyResult = (platform: string): PlatformDailyResult => ({
+    platform,
+    rows: [],
+  });
+  const emptyHourlyResult = (platform: string): PlatformHourlyResult => ({
+    platform,
+    rows: [],
+  });
+
   // 1. Fetch daily records for the visible interval only.
   const dailyPromises = platforms.map(async (platform) => {
-    const res = await fetch(apiRoutes.query(), {
-      method: 'POST',
-      headers: { 
-        ...jsonHeaders,
-        ...authHeaders(sessionToken),
-      },
-      body: JSON.stringify({
-        dataset: `${platform}_usage`,
-        metrics: ['event_count', 'estimated_watch_seconds'],
-        dimensions: ['date'],
-        filters: {
-          start_date: startDate,
-          end_date: endDate,
+    try {
+      const res = await fetch(apiRoutes.query(), {
+        method: 'POST',
+        headers: {
+          ...jsonHeaders,
+          ...authHeaders(sessionToken),
         },
-      }),
-    });
-    if (!res.ok) throw new Error(`Daily query failed for ${platform}`);
-    const data = await res.json();
-    return { platform, rows: data.rows as DailyRow[] };
+        body: JSON.stringify({
+          dataset: `${platform}_usage`,
+          metrics: ['event_count', 'estimated_watch_seconds'],
+          dimensions: ['date'],
+          filters: {
+            start_date: startDate,
+            end_date: endDate,
+          },
+        }),
+      });
+      if (!res.ok) return emptyDailyResult(platform);
+      const data = await res.json();
+      return { platform, rows: data.rows as DailyRow[] };
+    } catch {
+      return emptyDailyResult(platform);
+    }
   });
 
   // 2. Fetch hourly aggregates for the visible interval.
   const hourlyPromises = platforms.map(async (platform) => {
-    const res = await fetch(apiRoutes.query(), {
-      method: 'POST',
-      headers: { 
-        ...jsonHeaders,
-        ...authHeaders(sessionToken),
-      },
-      body: JSON.stringify({
-        dataset: `${platform}_usage`,
-        metrics: ['event_count', 'estimated_watch_seconds'],
-        dimensions: ['hour'],
-        filters: {
-          start_date: startDate,
-          end_date: endDate,
+    try {
+      const res = await fetch(apiRoutes.query(), {
+        method: 'POST',
+        headers: {
+          ...jsonHeaders,
+          ...authHeaders(sessionToken),
         },
-      }),
-    });
-    if (!res.ok) throw new Error(`Hourly query failed for ${platform}`);
-    const data = await res.json();
-    return { platform, rows: data.rows as HourlyRow[] };
+        body: JSON.stringify({
+          dataset: `${platform}_usage`,
+          metrics: ['event_count', 'estimated_watch_seconds'],
+          dimensions: ['hour'],
+          filters: {
+            start_date: startDate,
+            end_date: endDate,
+          },
+        }),
+      });
+      if (!res.ok) return emptyHourlyResult(platform);
+      const data = await res.json();
+      return { platform, rows: data.rows as HourlyRow[] };
+    } catch {
+      return emptyHourlyResult(platform);
+    }
   });
 
   const [dailyResults, hourlyResults] = await Promise.all([

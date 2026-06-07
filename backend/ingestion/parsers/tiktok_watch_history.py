@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -23,6 +24,7 @@ TITLE_FIELDS = (
     "videoTitle",
     "video_title",
 )
+DEFAULT_TIKTOK_WATCH_DURATION_SECONDS = 60
 
 
 def parse_tiktok_watch_history(content: bytes, *, source_path: str) -> ParseResult:
@@ -65,7 +67,7 @@ def parse_tiktok_watch_history(content: bytes, *, source_path: str) -> ParseResu
             events.append(event)
 
     return ParseResult(
-        events=events,
+        events=_with_non_overlapping_durations(events),
         subscriptions=[],
         warnings=warnings,
         records_seen=len(records),
@@ -98,6 +100,7 @@ def _parse_video_record(
             video_id=video_id,
             title=_title(record),
             sequence=sequence,
+            duration_seconds=DEFAULT_TIKTOK_WATCH_DURATION_SECONDS,
         ),
         warnings,
     )
@@ -178,6 +181,41 @@ def _extract_video_id(url: str | None) -> str | None:
 
 def _title(record: Mapping[str, Any]) -> str | None:
     return _first_string(record, *TITLE_FIELDS)
+
+
+def _with_non_overlapping_durations(events: list[ParsedEvent]) -> list[ParsedEvent]:
+    ordered_events = sorted(
+        enumerate(events),
+        key=lambda item: (
+            item[1].occurred_at or datetime.max.replace(tzinfo=timezone.utc),
+            item[1].sequence,
+            item[0],
+        ),
+    )
+    durations = [DEFAULT_TIKTOK_WATCH_DURATION_SECONDS for _ in events]
+
+    for position, (original_index, event) in enumerate(ordered_events):
+        next_event = (
+            ordered_events[position + 1][1]
+            if position + 1 < len(ordered_events)
+            else None
+        )
+        if (
+            event.occurred_at is None
+            or next_event is None
+            or next_event.occurred_at is None
+        ):
+            continue
+        gap_seconds = int((next_event.occurred_at - event.occurred_at).total_seconds())
+        durations[original_index] = max(
+            0,
+            min(DEFAULT_TIKTOK_WATCH_DURATION_SECONDS, gap_seconds),
+        )
+
+    return [
+        replace(event, duration_seconds=durations[index])
+        for index, event in enumerate(events)
+    ]
 
 
 def _first_string(record: Mapping[str, Any], *keys: str) -> str | None:

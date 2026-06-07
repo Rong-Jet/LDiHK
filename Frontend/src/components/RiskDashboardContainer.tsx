@@ -39,6 +39,9 @@ const queryClient = new QueryClient({
   },
 });
 
+const LIVE_QUERY_PLATFORMS = ['youtube', 'instagram', 'tiktok'];
+const MOCK_QUERY_PLATFORMS = ['youtube', 'instagram', 'tiktok', 'spotify'];
+
 interface QueryRow {
   date: string;
   hour: number;
@@ -120,7 +123,7 @@ function RiskDashboardContent() {
         body: JSON.stringify({
           dataset: 'usage_analytics',
           metrics: ['event_count'],
-          dimensions: ['date'],
+          dimensions: ['date', 'platform'],
           filters: {
             start_date: '2015-01-01',
             end_date: '2026-12-31',
@@ -162,15 +165,22 @@ function RiskDashboardContent() {
     }
   }, [importStatusData?.status, importStatusData?.enrichment_status, refetchProbe]);
 
+  const hasLiveQueryableRows = probeData?.rows?.some((row: any) => (
+    typeof row.platform === 'string' && LIVE_QUERY_PLATFORMS.includes(row.platform.toLowerCase())
+  )) ?? false;
   const currentStatus = isMockApiMode
     ? 'READY'
     : (currentImportId && !isResolvedImportStatus(importStatusData)
       ? 'PROCESSING'
-      : (probeData?.rows && probeData.rows.length > 0 ? 'READY' : 'NOT_UPLOADED'));
+      : (hasLiveQueryableRows ? 'READY' : 'NOT_UPLOADED'));
 
   const readyPlatforms = isMockApiMode
-    ? ['youtube', 'instagram', 'tiktok', 'spotify']
-    : (currentStatus === 'READY' ? ['youtube', 'instagram', 'tiktok'] : []);
+    ? MOCK_QUERY_PLATFORMS
+    : LIVE_QUERY_PLATFORMS.filter((platform) => (
+        probeData?.rows?.some((row: any) => (
+          typeof row.platform === 'string' && row.platform.toLowerCase() === platform
+        ))
+      ));
 
   // Discovered Date Bounds
   const discoveredBounds = React.useMemo(() => {
@@ -219,29 +229,33 @@ function RiskDashboardContent() {
       if (readyPlatforms.length === 0) return { rows: [] };
 
       const promises = readyPlatforms.map(async (platform) => {
-        const res = await fetch(apiRoutes.query(), {
-          method: 'POST',
-          headers: {
-            ...jsonHeaders,
-            ...authHeaders(sessionToken),
-          },
-          body: JSON.stringify({
-            dataset: `${platform}_usage`,
-            metrics: ['event_count', 'estimated_watch_seconds'],
-            dimensions: ['date', 'hour'],
-            filters: {
-              start_date: startDate,
-              end_date: endDate,
+        try {
+          const res = await fetch(apiRoutes.query(), {
+            method: 'POST',
+            headers: {
+              ...jsonHeaders,
+              ...authHeaders(sessionToken),
             },
-            options: {
-              include_zero_buckets: true,
-              limit: 1000
-            }
-          })
-        });
-        if (!res.ok) throw new Error(`Failed to load detailed usage logs for ${platform}`);
-        const data = await res.json();
-        return data.rows as QueryRow[];
+            body: JSON.stringify({
+              dataset: `${platform}_usage`,
+              metrics: ['event_count', 'estimated_watch_seconds'],
+              dimensions: ['date', 'hour'],
+              filters: {
+                start_date: startDate,
+                end_date: endDate,
+              },
+              options: {
+                include_zero_buckets: true,
+                limit: 1000
+              }
+            })
+          });
+          if (!res.ok) return [];
+          const data = await res.json();
+          return data.rows as QueryRow[];
+        } catch {
+          return [];
+        }
       });
 
       const results = await Promise.all(promises);

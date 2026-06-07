@@ -432,7 +432,7 @@ class S3ZipWorkerTests(unittest.TestCase):
             [("import-9", ["video-1", "video-2"])],
         )
 
-    def test_tiktok_watch_event_persists_platform_without_enrichment_job(self):
+    def test_tiktok_watch_event_persists_platform_and_duration_without_enrichment_job(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             source_zip = Path(tmpdir) / "takeout.zip"
             write_zip(source_zip, {"user_data_tiktok.json": b"history"})
@@ -459,6 +459,7 @@ class S3ZipWorkerTests(unittest.TestCase):
         self.assertEqual(usage_event.product, "shorts")
         self.assertEqual(usage_event.event_type, "watch")
         self.assertEqual(usage_event.video_id, "tiktok:7345678901234567890")
+        self.assertEqual(usage_event.duration_seconds, 60)
         self.assertEqual(repository.enrichment_jobs, [])
 
     def test_instagram_interaction_event_persists_duration_without_enrichment_job(self):
@@ -902,6 +903,7 @@ def tiktok_watch_parser(content: bytes, *, source_path: str) -> ParseResult:
                 occurred_at=datetime(2026, 6, 6, 8, 53, tzinfo=timezone.utc),
                 video_id="tiktok:7345678901234567890",
                 title="Private TikTok Title",
+                duration_seconds=60,
             )
         ],
         subscriptions=[],

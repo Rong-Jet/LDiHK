@@ -43,7 +43,47 @@ const PLATFORM_LABELS: Record<string, string> = {
   totalHours: 'Total Active Time',
 };
 
-const REFERENCE_DATE = '2026-06-06';
+const FALLBACK_REFERENCE_DATE = '2026-06-06';
+const PRESETS = ['1D', '7D', '15D', '30D', '1Y', '5Y', 'all'];
+
+const parseUtcDate = (dateString: string) => {
+  const [year, month, day] = dateString.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day));
+};
+
+const formatUtcDate = (date: Date) => date.toISOString().split('T')[0];
+
+const clampStartDate = (start: string, minDate?: string) => (
+  minDate && start < minDate ? minDate : start
+);
+
+const getPresetRange = (preset: string, referenceDate: string, minDate?: string) => {
+  const refDateObj = parseUtcDate(referenceDate);
+  let start = referenceDate;
+
+  if (preset === '7D') {
+    refDateObj.setUTCDate(refDateObj.getUTCDate() - 6);
+    start = formatUtcDate(refDateObj);
+  } else if (preset === '15D') {
+    refDateObj.setUTCDate(refDateObj.getUTCDate() - 14);
+    start = formatUtcDate(refDateObj);
+  } else if (preset === '30D') {
+    refDateObj.setUTCDate(refDateObj.getUTCDate() - 29);
+    start = formatUtcDate(refDateObj);
+  } else if (preset === '1Y') {
+    refDateObj.setUTCFullYear(refDateObj.getUTCFullYear() - 1);
+    refDateObj.setUTCDate(refDateObj.getUTCDate() + 1);
+    start = formatUtcDate(refDateObj);
+  } else if (preset === '5Y') {
+    refDateObj.setUTCFullYear(refDateObj.getUTCFullYear() - 5);
+    refDateObj.setUTCDate(refDateObj.getUTCDate() + 1);
+    start = formatUtcDate(refDateObj);
+  } else if (preset === 'all') {
+    start = minDate || referenceDate;
+  }
+
+  return { start: clampStartDate(start, minDate), end: referenceDate };
+};
 
 export default function MainTimeline({
   data,
@@ -59,52 +99,53 @@ export default function MainTimeline({
 }: MainTimelineProps) {
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
 
+  const activeDateBounds = useMemo(() => {
+    const readyBounds = activePlatforms
+      .map((platform) => datasets?.[platform])
+      .filter((dataset): dataset is { status: string; min_date: string; max_date: string } => (
+        dataset?.status === 'READY' && !!dataset.min_date && !!dataset.max_date
+      ));
+
+    if (readyBounds.length === 0) {
+      return dateBounds || { minDate: FALLBACK_REFERENCE_DATE, maxDate: FALLBACK_REFERENCE_DATE };
+    }
+
+    const intersectionMin = readyBounds
+      .map((dataset) => dataset.min_date)
+      .sort()
+      .at(-1) || FALLBACK_REFERENCE_DATE;
+    const intersectionMax = readyBounds
+      .map((dataset) => dataset.max_date)
+      .sort()[0] || FALLBACK_REFERENCE_DATE;
+
+    if (intersectionMin <= intersectionMax) {
+      return { minDate: intersectionMin, maxDate: intersectionMax };
+    }
+
+    const unionDates = readyBounds.flatMap((dataset) => [dataset.min_date, dataset.max_date]).sort();
+    return {
+      minDate: unionDates[0] || FALLBACK_REFERENCE_DATE,
+      maxDate: unionDates.at(-1) || FALLBACK_REFERENCE_DATE,
+    };
+  }, [activePlatforms, datasets, dateBounds]);
+
+  const referenceDate = activeDateBounds.maxDate || dateBounds?.maxDate || endDate || FALLBACK_REFERENCE_DATE;
+
   // Determine active preset label based on startDate
   const activePreset = useMemo(() => {
-    if (endDate !== REFERENCE_DATE) return 'custom';
-    
-    if (startDate === REFERENCE_DATE) return '1D';
-    if (startDate === '2026-05-31') return '7D';
-    if (startDate === '2026-05-23') return '15D';
-    if (startDate === '2026-05-08') return '30D';
-    if (startDate === '2025-06-07') return '1Y';
-    if (startDate === '2021-06-07') return '5Y';
-    if (startDate === '2016-06-06') return 'all';
-    
+    if (endDate !== referenceDate) return 'custom';
+
+    for (const preset of PRESETS) {
+      const range = getPresetRange(preset, referenceDate, activeDateBounds.minDate);
+      if (startDate === range.start) return preset;
+    }
+
     return 'custom';
-  }, [startDate, endDate]);
+  }, [activeDateBounds.minDate, endDate, referenceDate, startDate]);
 
   // Handle Preset Click
   const applyPreset = (preset: string) => {
-    const end = REFERENCE_DATE;
-    let start = REFERENCE_DATE;
-
-    const refDateObj = new Date(REFERENCE_DATE);
-
-    if (preset === '1D') {
-      start = REFERENCE_DATE;
-    } else if (preset === '7D') {
-      refDateObj.setDate(refDateObj.getDate() - 6);
-      start = refDateObj.toISOString().split('T')[0];
-    } else if (preset === '15D') {
-      refDateObj.setDate(refDateObj.getDate() - 14);
-      start = refDateObj.toISOString().split('T')[0];
-    } else if (preset === '30D') {
-      refDateObj.setDate(refDateObj.getDate() - 29);
-      start = refDateObj.toISOString().split('T')[0];
-    } else if (preset === '1Y') {
-      refDateObj.setFullYear(refDateObj.getFullYear() - 1);
-      refDateObj.setDate(refDateObj.getDate() + 1);
-      start = refDateObj.toISOString().split('T')[0];
-    } else if (preset === '5Y') {
-      refDateObj.setFullYear(refDateObj.getFullYear() - 5);
-      refDateObj.setDate(refDateObj.getDate() + 1);
-      start = refDateObj.toISOString().split('T')[0];
-    } else if (preset === 'all') {
-      refDateObj.setFullYear(refDateObj.getFullYear() - 10);
-      start = refDateObj.toISOString().split('T')[0];
-    }
-
+    const { start, end } = getPresetRange(preset, referenceDate, activeDateBounds.minDate);
     setDateRange(start, end);
   };
 
@@ -117,6 +158,15 @@ export default function MainTimeline({
       }
     } else {
       setActivePlatforms([...activePlatforms, key]);
+      const datasetInfo = datasets?.[key];
+      const hasOverlap = datasetInfo?.min_date && datasetInfo?.max_date
+        ? datasetInfo.min_date <= endDate && datasetInfo.max_date >= startDate
+        : true;
+
+      if (datasetInfo?.status === 'READY' && datasetInfo.min_date && datasetInfo.max_date && !hasOverlap) {
+        const { start, end } = getPresetRange('30D', datasetInfo.max_date, datasetInfo.min_date);
+        setDateRange(start, end);
+      }
     }
   };
 
@@ -185,8 +235,8 @@ export default function MainTimeline({
               <input
                 type="date"
                 value={startDate}
-                min={dateBounds?.minDate}
-                max={dateBounds?.maxDate}
+                min={activeDateBounds.minDate}
+                max={activeDateBounds.maxDate}
                 onChange={(e) => setDateRange(e.target.value, endDate)}
                 className="bg-white border border-brand-navy/15 rounded-xl px-3 py-2 text-xs font-bold text-brand-navy focus:outline-none focus:ring-1 focus:ring-brand-teal w-full"
               />
@@ -194,8 +244,8 @@ export default function MainTimeline({
               <input
                 type="date"
                 value={endDate}
-                min={dateBounds?.minDate}
-                max={dateBounds?.maxDate}
+                min={activeDateBounds.minDate}
+                max={activeDateBounds.maxDate}
                 onChange={(e) => setDateRange(startDate, e.target.value)}
                 className="bg-white border border-brand-navy/15 rounded-xl px-3 py-2 text-xs font-bold text-brand-navy focus:outline-none focus:ring-1 focus:ring-brand-teal w-full"
               />

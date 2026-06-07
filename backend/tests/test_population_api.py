@@ -179,6 +179,8 @@ class PopulationApiTests(unittest.TestCase):
             connection.calls[4][0],
         )
         self.assertIn("ue.platform = 'youtube'", connection.calls[4][0])
+        self.assertIn("SELECT MIN(next_ue.occurred_at)", connection.calls[4][0])
+        self.assertNotIn("LEAD(ue.occurred_at)", connection.calls[4][0])
 
     def test_population_query_rejects_non_youtube_platforms(self):
         app = create_app(query_connection_factory=PopulationConnection)

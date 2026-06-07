@@ -36,6 +36,9 @@ const shouldPollImportStatus = (importStatus: any) => (
   || isPendingEnrichment(importStatus)
 );
 
+const LIVE_QUERY_PLATFORMS = ['youtube', 'instagram', 'tiktok'];
+const MOCK_QUERY_PLATFORMS = ['youtube', 'instagram', 'tiktok', 'spotify'];
+
 function DashboardContent() {
   const queryClient = useQueryClient();
   const [uploadCompleted, setUploadCompleted] = useState(false);
@@ -95,7 +98,7 @@ function DashboardContent() {
 
   const [activePlatforms, setActivePlatforms] = useState<string[]>(['youtube']);
 
-  // Date Range Scope (defaults to past 30 days relative to 2026-06-06 reference date)
+  // Date Range Scope (defaults are replaced by discovered live bounds after probing)
   const [startDate, setStartDate] = useState('2026-05-08');
   const [endDate, setEndDate] = useState('2026-06-06');
 
@@ -113,7 +116,7 @@ function DashboardContent() {
         body: JSON.stringify({
           dataset: 'usage_analytics',
           metrics: ['event_count'],
-          dimensions: ['date'],
+          dimensions: ['date', 'platform'],
           filters: {
             start_date: '2015-01-01',
             end_date: '2026-12-31',
@@ -163,9 +166,12 @@ function DashboardContent() {
   ]);
 
   const isPipelineProcessing = currentImportId && !isResolvedImportStatus(importStatusData);
+  const hasLiveQueryableRows = probeData?.rows?.some((row: any) => (
+    typeof row.platform === 'string' && LIVE_QUERY_PLATFORMS.includes(row.platform.toLowerCase())
+  )) ?? false;
   const currentStatus = isPipelineProcessing
     ? 'PROCESSING' 
-    : (probeData?.rows && probeData.rows.length > 0 ? 'READY' : 'NOT_UPLOADED');
+    : (hasLiveQueryableRows ? 'READY' : 'NOT_UPLOADED');
   const processingTitle = importStatusData?.status === 'queued'
     ? 'Worker Queueing Import...'
     : isPendingEnrichment(importStatusData)
@@ -197,31 +203,60 @@ function DashboardContent() {
   }, [probeData]);
 
   const datasets = React.useMemo(() => {
-    const statusVal = isMockApiMode ? 'READY' : currentStatus;
     const bounds = discoveredBounds;
-    return {
+    const defaults = {
       youtube: {
-        status: statusVal,
+        status: 'NOT_UPLOADED',
         min_date: bounds.minDate,
         max_date: bounds.maxDate,
       },
       instagram: {
-        status: statusVal,
+        status: 'NOT_UPLOADED',
         min_date: bounds.minDate,
         max_date: bounds.maxDate,
       },
       tiktok: {
-        status: statusVal,
+        status: 'NOT_UPLOADED',
         min_date: bounds.minDate,
         max_date: bounds.maxDate,
       },
       spotify: {
-        status: statusVal,
+        status: 'NOT_UPLOADED',
         min_date: bounds.minDate,
         max_date: bounds.maxDate,
       }
     };
-  }, [currentStatus, discoveredBounds]);
+
+    if (isMockApiMode) {
+      return Object.fromEntries(
+        Object.entries(defaults).map(([platform, info]) => [
+          platform,
+          { ...info, status: 'READY' },
+        ])
+      );
+    }
+
+    if (!probeData?.rows) return defaults;
+
+    const next = { ...defaults };
+    probeData.rows.forEach((row: any) => {
+      const platform = typeof row.platform === 'string' ? row.platform.toLowerCase() : '';
+      if (!LIVE_QUERY_PLATFORMS.includes(platform)) return;
+      const date = typeof row.date === 'string' ? row.date : null;
+      const currentInfo = next[platform as keyof typeof next];
+      next[platform as keyof typeof next] = {
+        status: 'READY',
+        min_date: date && currentInfo.status !== 'READY'
+          ? date
+          : (date && date < currentInfo.min_date ? date : currentInfo.min_date),
+        max_date: date && currentInfo.status !== 'READY'
+          ? date
+          : (date && date > currentInfo.max_date ? date : currentInfo.max_date),
+      };
+    });
+
+    return next;
+  }, [probeData, discoveredBounds]);
 
   // Derive global min/max date bounds across all ready platforms
   const dateBounds = React.useMemo(() => {
@@ -230,9 +265,9 @@ function DashboardContent() {
 
   // Filter which platforms are actually uploaded and ready to query
   const readyPlatforms = React.useMemo(() => {
-    if (isMockApiMode) return ['youtube', 'instagram', 'tiktok', 'spotify'];
-    return currentStatus === 'READY' ? ['youtube', 'instagram', 'tiktok'] : [];
-  }, [currentStatus]);
+    if (isMockApiMode) return MOCK_QUERY_PLATFORMS;
+    return LIVE_QUERY_PLATFORMS.filter((platform) => datasets[platform]?.status === 'READY');
+  }, [datasets]);
 
   // Only query active platforms that are actually ready
   const platformsToQuery = React.useMemo(() => {
@@ -244,7 +279,8 @@ function DashboardContent() {
     if (dateBounds.minDate && dateBounds.maxDate) {
       const [y, m, d] = dateBounds.maxDate.split('-').map(Number);
       const maxDateObj = new Date(Date.UTC(y, m - 1, d));
-      const minDateObj = new Date(dateBounds.minDate);
+      const [minY, minM, minD] = dateBounds.minDate.split('-').map(Number);
+      const minDateObj = new Date(Date.UTC(minY, minM - 1, minD));
       const diffDays = Math.round((maxDateObj.getTime() - minDateObj.getTime()) / (1000 * 3600 * 24));
 
       if (diffDays > 90) {
@@ -300,8 +336,8 @@ function DashboardContent() {
       await fetch(apiRoutes.uploadUrl()); // GET triggers state reset in mock backend
       setUploadCompleted(false);
       setSelectedDate(null);
-      setStartDate('2026-05-08');
-      setEndDate('2026-06-06');
+      setStartDate(dateBounds.minDate);
+      setEndDate(dateBounds.maxDate);
       
       // Wipe queries from cache
       queryClient.setQueryData(['probe', sessionToken], null);

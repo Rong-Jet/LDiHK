@@ -239,7 +239,9 @@ async function tryBackendPopulation(body: any, authHeader: string): Promise<Resp
       try {
         const parsedBody = JSON.parse(responseBody);
         
-        if (parsedBody.ready) {
+        const hasBackendPopulationData = parsedBody.ready === true;
+
+        if (hasBackendPopulationData) {
           const { startDate, endDate, visibleStartDate } = body;
           const actualVisibleStartDate = visibleStartDate || startDate;
 
@@ -337,7 +339,7 @@ async function tryBackendPopulation(body: any, authHeader: string): Promise<Resp
         }
 
         parsedBody.includeSynthetic = parsedBody.includeSynthetic ?? body?.includeSynthetic ?? true;
-        parsedBody.hasPopulationData = true;
+        parsedBody.hasPopulationData = hasBackendPopulationData;
         normalizedBody = JSON.stringify(parsedBody);
       } catch (err) {
         console.warn('Failed to parse or overwrite backend population body:', err);
@@ -458,7 +460,7 @@ export const POST: APIRoute = async ({ request }) => {
           return new Response(JSON.stringify({
             ...backendData,
             includeSynthetic: backendData.includeSynthetic ?? includeSynthetic,
-            hasPopulationData: true,
+            hasPopulationData: backendData.ready === true,
           }), {
             status: 200,
             headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },

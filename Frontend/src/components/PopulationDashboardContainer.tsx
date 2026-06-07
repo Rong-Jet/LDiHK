@@ -54,6 +54,9 @@ const shouldPollImportStatus = (importStatus: any) => (
   || isPendingEnrichment(importStatus)
 );
 
+const LIVE_POPULATION_PLATFORMS = ['youtube'];
+const MOCK_POPULATION_PLATFORMS = ['youtube', 'instagram', 'tiktok', 'spotify'];
+
 function PopulationDashboardContent() {
   const queryClient = useQueryClient();
   const [showUploadZone, setShowUploadZone] = useState(false);
@@ -132,13 +135,14 @@ function PopulationDashboardContent() {
         body: JSON.stringify({
           dataset: 'usage_analytics',
           metrics: ['event_count'],
-          dimensions: ['date'],
+          dimensions: ['date', 'platform'],
           filters: {
-            start_date: '2026-05-08',
-            end_date: '2026-06-06',
+            start_date: '2015-01-01',
+            end_date: '2026-12-31',
           },
           options: {
-            limit: 1
+            include_zero_buckets: false,
+            limit: 1000
           }
         })
       });
@@ -182,9 +186,12 @@ function PopulationDashboardContent() {
   ]);
 
   const isPipelineProcessing = currentImportId && !isResolvedImportStatus(importStatusData);
+  const hasLiveYoutubeRows = probeData?.rows?.some((row: any) => (
+    typeof row.platform === 'string' && row.platform.toLowerCase() === 'youtube'
+  )) ?? false;
   const currentStatus = isPipelineProcessing
     ? 'PROCESSING'
-    : (probeData?.rows && probeData.rows.length > 0 ? 'READY' : 'NOT_UPLOADED');
+    : (hasLiveYoutubeRows ? 'READY' : 'NOT_UPLOADED');
   const processingTitle = importStatusData?.status === 'queued'
     ? 'Worker Queueing Import...'
     : isPendingEnrichment(importStatusData)
@@ -192,9 +199,49 @@ function PopulationDashboardContent() {
       : 'Extracting and Normalizing Takeout...';
 
   const readyPlatforms = React.useMemo(() => {
-    if (isMockApiMode) return ['youtube', 'instagram', 'tiktok', 'spotify'];
-    return currentStatus === 'READY' ? ['youtube', 'instagram', 'tiktok'] : [];
+    if (isMockApiMode) return MOCK_POPULATION_PLATFORMS;
+    return currentStatus === 'READY' ? LIVE_POPULATION_PLATFORMS : [];
   }, [currentStatus]);
+
+  const discoveredBounds = React.useMemo(() => {
+    if (isMockApiMode) {
+      return { minDate: '2026-05-08', maxDate: REFERENCE_DATE };
+    }
+
+    const youtubeDates = (probeData?.rows || [])
+      .filter((row: any) => typeof row.platform === 'string' && row.platform.toLowerCase() === 'youtube')
+      .map((row: any) => row.date)
+      .filter((dateValue: any): dateValue is string => typeof dateValue === 'string')
+      .sort();
+
+    if (youtubeDates.length === 0) {
+      return { minDate: '2026-05-08', maxDate: REFERENCE_DATE };
+    }
+
+    return {
+      minDate: youtubeDates[0],
+      maxDate: youtubeDates[youtubeDates.length - 1],
+    };
+  }, [probeData]);
+
+  React.useEffect(() => {
+    if (isMockApiMode || !hasLiveYoutubeRows) return;
+
+    const [y, m, d] = discoveredBounds.maxDate.split('-').map(Number);
+    const maxDateObj = new Date(Date.UTC(y, m - 1, d));
+    const minDateObj = new Date(discoveredBounds.minDate + 'T00:00:00Z');
+    const diffDays = Math.round((maxDateObj.getTime() - minDateObj.getTime()) / (1000 * 3600 * 24));
+
+    if (diffDays > 90) {
+      const defaultStart = new Date(maxDateObj);
+      defaultStart.setUTCDate(defaultStart.getUTCDate() - 29);
+      setStartDate(defaultStart.toISOString().split('T')[0]);
+      setEndDate(discoveredBounds.maxDate);
+    } else {
+      setStartDate(discoveredBounds.minDate);
+      setEndDate(discoveredBounds.maxDate);
+    }
+  }, [discoveredBounds.minDate, discoveredBounds.maxDate, hasLiveYoutubeRows]);
 
   // Fetch Population Analytics
   const {
@@ -240,8 +287,8 @@ function PopulationDashboardContent() {
   const handleResetPipeline = async () => {
     try {
       await fetch(apiRoutes.uploadUrl()); // GET triggers state reset in mock backend
-      setStartDate('2026-05-08');
-      setEndDate('2026-06-06');
+      setStartDate(IS_MOCK_MODE ? '2026-05-08' : discoveredBounds.minDate);
+      setEndDate(IS_MOCK_MODE ? REFERENCE_DATE : discoveredBounds.maxDate);
       setShowAdvancedFilters(false);
       setCustomPercentile(90);
       setShowCustomPercentile(false);
@@ -261,47 +308,72 @@ function PopulationDashboardContent() {
 
   // Active preset matching MainTimeline
   const activePreset = useMemo(() => {
-    if (endDate !== REFERENCE_DATE) return 'custom';
+    const referenceEndDate = IS_MOCK_MODE ? REFERENCE_DATE : discoveredBounds.maxDate;
+    if (endDate !== referenceEndDate) return 'custom';
 
-    if (startDate === REFERENCE_DATE) return '1D';
-    if (startDate === '2026-05-31') return '7D';
-    if (startDate === '2026-05-23') return '15D';
-    if (startDate === '2026-05-08') return '30D';
-    if (startDate === '2025-06-07') return '1Y';
-    if (startDate === '2021-06-07') return '5Y';
-    if (startDate === '2016-06-06') return 'all';
+    if (startDate === referenceEndDate) return '1D';
+
+    const refDateObj = new Date(referenceEndDate + 'T00:00:00Z');
+
+    const d7 = new Date(refDateObj);
+    d7.setUTCDate(d7.getUTCDate() - 6);
+    if (startDate === d7.toISOString().split('T')[0]) return '7D';
+
+    const d15 = new Date(refDateObj);
+    d15.setUTCDate(d15.getUTCDate() - 14);
+    if (startDate === d15.toISOString().split('T')[0]) return '15D';
+
+    const d30 = new Date(refDateObj);
+    d30.setUTCDate(d30.getUTCDate() - 29);
+    if (startDate === d30.toISOString().split('T')[0]) return '30D';
+
+    const d1y = new Date(refDateObj);
+    d1y.setUTCFullYear(d1y.getUTCFullYear() - 1);
+    d1y.setUTCDate(d1y.getUTCDate() + 1);
+    if (startDate === d1y.toISOString().split('T')[0]) return '1Y';
+
+    const d5y = new Date(refDateObj);
+    d5y.setUTCFullYear(d5y.getUTCFullYear() - 5);
+    d5y.setUTCDate(d5y.getUTCDate() + 1);
+    if (startDate === d5y.toISOString().split('T')[0]) return '5Y';
+
+    if (startDate === discoveredBounds.minDate) return 'all';
 
     return 'custom';
-  }, [startDate, endDate]);
+  }, [startDate, endDate, discoveredBounds.minDate, discoveredBounds.maxDate]);
 
   const applyPreset = (preset: string) => {
-    const end = REFERENCE_DATE;
-    let start = REFERENCE_DATE;
+    const end = IS_MOCK_MODE ? REFERENCE_DATE : discoveredBounds.maxDate;
+    let start = end;
 
-    const refDateObj = new Date(REFERENCE_DATE);
+    const refDateObj = new Date(end + 'T00:00:00Z');
+    const clampStart = (dateValue: string) => (
+      !IS_MOCK_MODE && dateValue < discoveredBounds.minDate
+        ? discoveredBounds.minDate
+        : dateValue
+    );
 
     if (preset === '1D') {
-      start = REFERENCE_DATE;
+      start = end;
     } else if (preset === '7D') {
-      refDateObj.setDate(refDateObj.getDate() - 6);
-      start = refDateObj.toISOString().split('T')[0];
+      refDateObj.setUTCDate(refDateObj.getUTCDate() - 6);
+      start = clampStart(refDateObj.toISOString().split('T')[0]);
     } else if (preset === '15D') {
-      refDateObj.setDate(refDateObj.getDate() - 14);
-      start = refDateObj.toISOString().split('T')[0];
+      refDateObj.setUTCDate(refDateObj.getUTCDate() - 14);
+      start = clampStart(refDateObj.toISOString().split('T')[0]);
     } else if (preset === '30D') {
-      refDateObj.setDate(refDateObj.getDate() - 29);
-      start = refDateObj.toISOString().split('T')[0];
+      refDateObj.setUTCDate(refDateObj.getUTCDate() - 29);
+      start = clampStart(refDateObj.toISOString().split('T')[0]);
     } else if (preset === '1Y') {
-      refDateObj.setFullYear(refDateObj.getFullYear() - 1);
-      refDateObj.setDate(refDateObj.getDate() + 1);
-      start = refDateObj.toISOString().split('T')[0];
+      refDateObj.setUTCFullYear(refDateObj.getUTCFullYear() - 1);
+      refDateObj.setUTCDate(refDateObj.getUTCDate() + 1);
+      start = clampStart(refDateObj.toISOString().split('T')[0]);
     } else if (preset === '5Y') {
-      refDateObj.setFullYear(refDateObj.getFullYear() - 5);
-      refDateObj.setDate(refDateObj.getDate() + 1);
-      start = refDateObj.toISOString().split('T')[0];
+      refDateObj.setUTCFullYear(refDateObj.getUTCFullYear() - 5);
+      refDateObj.setUTCDate(refDateObj.getUTCDate() + 1);
+      start = clampStart(refDateObj.toISOString().split('T')[0]);
     } else if (preset === 'all') {
-      refDateObj.setFullYear(refDateObj.getFullYear() - 10);
-      start = refDateObj.toISOString().split('T')[0];
+      start = IS_MOCK_MODE ? '2016-06-06' : discoveredBounds.minDate;
     }
 
     setStartDate(start);
@@ -739,9 +811,9 @@ function PopulationDashboardContent() {
               </div>
               <button
                 onClick={() => setIncludeSynthetic(!includeSynthetic)}
-                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                className={`relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
                   includeSynthetic ? 'bg-brand-teal' : 'bg-brand-navy/20'
-                }`}
+                } cursor-pointer`}
                 role="switch"
                 aria-checked={includeSynthetic}
                 id="toggle-synthetic-data"
@@ -839,8 +911,8 @@ function PopulationDashboardContent() {
                           <input
                             type="date"
                             value={startDate}
-                            min="2026-05-08"
-                            max="2026-06-06"
+                            min={discoveredBounds.minDate}
+                            max={discoveredBounds.maxDate}
                             onChange={(e) => setStartDate(e.target.value)}
                             className="bg-white border border-brand-navy/15 rounded-xl px-3 py-2 text-xs font-bold text-brand-navy focus:outline-none focus:ring-1 focus:ring-brand-teal w-full"
                           />
@@ -848,8 +920,8 @@ function PopulationDashboardContent() {
                           <input
                             type="date"
                             value={endDate}
-                            min="2026-05-08"
-                            max="2026-06-06"
+                            min={discoveredBounds.minDate}
+                            max={discoveredBounds.maxDate}
                             onChange={(e) => setEndDate(e.target.value)}
                             className="bg-white border border-brand-navy/15 rounded-xl px-3 py-2 text-xs font-bold text-brand-navy focus:outline-none focus:ring-1 focus:ring-brand-teal w-full"
                           />

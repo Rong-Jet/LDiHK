@@ -317,6 +317,33 @@ class StructuredQueryApiTests(unittest.TestCase):
 
         self.assertIn("WHEN ue.platform = 'instagram' THEN 15::numeric", compiled.sql)
 
+    def test_platform_specific_datasets_apply_platform_filters(self):
+        cases = [
+            ("instagram_usage", "instagram"),
+            ("tiktok_usage", "tiktok"),
+        ]
+
+        for dataset, platform in cases:
+            with self.subTest(dataset=dataset):
+                query = validate_query_request(
+                    {
+                        "dataset": dataset,
+                        "user_id": "demo_user",
+                        "metrics": ["event_count", "estimated_watch_seconds"],
+                        "dimensions": ["date"],
+                        "filters": {
+                            "start_date": "2026-06-01",
+                            "end_date": "2026-06-06",
+                        },
+                    }
+                )
+
+                compiled = compile_aggregate_query(query)
+
+                self.assertEqual(query.filters["platform"], platform)
+                self.assertIn("ue.platform = %s", compiled.sql)
+                self.assertIn(platform, compiled.parameters)
+
     def test_synthetic_filter_queries_population_without_exposing_user_ids(self):
         query = validate_query_request(
             {

@@ -220,9 +220,15 @@ def _clipped_events_cte(population_scope: str) -> str:
                         ELSE 600::numeric
                     END
                 ) AS base_duration,
-                LEAD(ue.occurred_at) OVER (
-                    PARTITION BY ue.user_id, ue.platform, ue.event_type
-                    ORDER BY ue.occurred_at
+                (
+                    SELECT MIN(next_ue.occurred_at)
+                    FROM usage_events next_ue
+                    WHERE next_ue.user_id = ue.user_id
+                      AND next_ue.platform = ue.platform
+                      AND next_ue.event_type = 'watch'
+                      AND next_ue.occurred_at IS NOT NULL
+                      AND ue.occurred_at IS NOT NULL
+                      AND next_ue.occurred_at > ue.occurred_at
                 ) AS next_occurred_at
             FROM usage_events ue
             JOIN users u ON u.id = ue.user_id
