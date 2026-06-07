@@ -1,25 +1,42 @@
-# LDiHK Frontend Backend API Handoff
+# LDiHK Authoritative API Contract
 
 ## Status
 
-Draft for v5 frontend handoff.
+Authoritative API shape for the current LDiHK MVP.
 
-This is the API contract the frontend should integrate against for the hosted
-demo. The import pipeline currently accepts YouTube Takeout ZIPs, while the
-structured query endpoint can also compare real usage against seeded synthetic
-multi-platform population data.
+This is the single source of truth for request and response shapes shared by the
+frontend, backend API, import worker, and deployment smoke tests. If endpoint
+shape changes, update this document in the same change.
+
+Non-authoritative implementation plans, historical version notes, and UI-specific
+requirements should link here instead of restating endpoint schemas.
 
 Frontend runtime convention:
 
-- Browser calls to backend-owned endpoints should use `PUBLIC_API_URL` as the
-  backend origin when it is configured.
+- Browser calls to backend-owned endpoints should use `PUBLIC_BACKEND_API_URL`
+  or `PUBLIC_API_URL` as the backend origin when configured.
 - Astro-only helper routes such as upload URL generation stay same-origin.
-- When `PUBLIC_API_URL` is configured, the frontend upload helper must have S3
-  credentials and the same `S3_BUCKET` value as the backend; local mock uploads
-  are only for UI-only development without a backend origin.
+- When a backend origin is configured, the frontend upload helper must have S3
+  credentials and the same `S3_BUCKET` value as the backend.
+- `PUBLIC_MOCK_API=true`, `1`, `yes`, or `on` forces local mock API mode and
+  ignores backend URLs.
+- `PUBLIC_MOCK_API=false` disables silent fallback to local mock routes. Local
+  helper routes must return clear errors when live configuration is missing.
+- Leaving `PUBLIC_MOCK_API` unset allows legacy local-development implicit mock
+  fallback when neither backend nor S3 upload config is present.
 - For local Astro development, the frontend origin is usually
   `http://localhost:4321`; include that origin in backend CORS config outside
   development defaults when deploying a non-local frontend.
+
+Endpoint ownership:
+
+- Backend-owned: `GET /health`, `POST /api/imports`,
+  `GET /api/imports/{import_id}`, `POST /api/query`, `POST /api/population`.
+- Frontend/Astro helper-owned: `GET /api/uploader-info`,
+  `POST /api/upload-url`.
+- Mock-only frontend routes such as `PUT /api/mock-s3-upload`, local
+  `POST /api/query`, and local `POST /api/imports` are development shims, not
+  production backend contract.
 
 ## Identity
 
@@ -104,6 +121,103 @@ Response:
 }
 ```
 
+### Get Uploader Info
+
+```text
+GET /api/uploader-info
+```
+
+Owned by the frontend Astro server. Auth is not required. The browser uses this
+to display upload capability state before a ZIP is selected.
+
+Response:
+
+```json
+{
+  "isMock": false,
+  "uploadConfigured": true
+}
+```
+
+Fields:
+
+- `isMock`: `true` only when upload will use the local mock upload route.
+- `uploadConfigured`: `true` when upload can proceed. In live mode this means
+  the frontend server has S3 credentials and bucket configuration. In explicit
+  mock mode this means mock upload is intentionally enabled.
+
+When `PUBLIC_MOCK_API=false`, missing S3 upload config must not be reported as
+mock-ready.
+
+### Create Upload URL
+
+```text
+POST /api/upload-url
+```
+
+Owned by the frontend Astro server. This route creates the browser-to-S3 upload
+configuration. It must use the same S3 bucket as the backend import API.
+
+Headers:
+
+```text
+Authorization: Bearer <LDiHKID>
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{
+  "filename": "takeout.zip",
+  "contentType": "application/zip"
+}
+```
+
+Live response:
+
+```json
+{
+  "url": "https://bucket.s3.region.amazonaws.com/uploads/demo-user-123/takeout.zip?...",
+  "method": "PUT",
+  "headers": {
+    "Content-Type": "application/zip"
+  },
+  "s3Bucket": "existing-bucket",
+  "s3Key": "uploads/demo-user-123/takeout.zip",
+  "isMock": false
+}
+```
+
+Mock response, only when mock mode is enabled or implicit mock fallback is
+allowed:
+
+```json
+{
+  "url": "http://localhost:4321/api/mock-s3-upload",
+  "method": "PUT",
+  "headers": {
+    "Content-Type": "application/zip",
+    "x-amz-meta-filename": "takeout.zip",
+    "x-amz-meta-ldihkid": "demo-user-123",
+    "x-amz-s3-key": "uploads/demo-user-123/takeout.zip"
+  },
+  "s3Bucket": "local-mock-bucket",
+  "s3Key": "uploads/demo-user-123/takeout.zip",
+  "isMock": true
+}
+```
+
+Errors:
+
+- `missing_authorization`
+- `invalid_authorization`
+- `upload_not_configured`
+- `s3_signature_failure`
+
+When `PUBLIC_MOCK_API=false`, this endpoint must return `503` with
+`upload_not_configured` instead of falling back to `/api/mock-s3-upload`.
+
 ### Create Import
 
 ```text
@@ -179,7 +293,10 @@ Response:
   "error_message": null,
   "created_at": "2026-06-07T09:00:00+00:00",
   "started_at": "2026-06-07T09:00:10+00:00",
-  "finished_at": null
+  "finished_at": null,
+  "enrichment_status": "running",
+  "enrichment_started_at": "2026-06-07T09:02:00+00:00",
+  "enrichment_finished_at": null
 }
 ```
 
@@ -190,12 +307,25 @@ Status values:
 - `completed`: import parsing and persistence completed.
 - `failed`: import failed. Read `error_message`.
 
-`completed` does not mean duration enrichment is complete. Query responses keep
-working before enrichment completes and expose duration confidence through
-`quality`.
+`completed` means ZIP parsing and persistence completed. It does not necessarily
+mean duration enrichment is complete. Use `enrichment_status`,
+`enrichment_started_at`, and `enrichment_finished_at` to decide whether the UI
+should keep polling before showing final watch-time analytics.
 
-Polling recommendation: poll every 2-5 seconds while status is `queued` or
-`running`; stop on `completed` or `failed`.
+Enrichment status values:
+
+- `null`: no enrichment job exists for this import yet, or enrichment is not
+  configured for this import.
+- `queued`: enrichment was queued.
+- `running`: enrichment is fetching video metadata.
+- `completed`: enrichment finished.
+- `failed`: enrichment failed. Query responses still work, but duration quality
+  may be lower.
+
+Polling recommendation: poll every 1-5 seconds while import status is `queued`
+or `running`, or while import status is `completed` and enrichment status is
+`queued` or `running`; stop on import `failed` or on import `completed` with no
+pending enrichment.
 
 ### Query Usage Analytics
 
@@ -282,6 +412,103 @@ Response:
 }
 ```
 
+### Query Population Benchmark
+
+```text
+POST /api/population
+```
+
+Headers:
+
+```text
+Authorization: Bearer <LDiHKID>
+Content-Type: application/json
+```
+
+Live backend scope is YouTube-only for the MVP. Multi-product population
+benchmarks are mock-only until those ingestion paths are stable.
+
+Request body:
+
+```json
+{
+  "platforms": ["youtube"],
+  "startDate": "2026-05-08",
+  "endDate": "2026-06-06",
+  "includeSynthetic": true,
+  "customPercentile": 90
+}
+```
+
+Fields:
+
+- `platforms`: optional array. Must be omitted or exactly `["youtube"]` for
+  live-backed requests.
+- `startDate`: inclusive date lower bound in `YYYY-MM-DD`.
+- `endDate`: inclusive date upper bound in `YYYY-MM-DD`.
+- `includeSynthetic`: boolean. Defaults to `true`.
+- `customPercentile`: integer from `1` through `99`. Defaults to `90`.
+
+Ready response:
+
+```json
+{
+  "schema_version": "youtube_usage.population.v1",
+  "ready": true,
+  "dataset": "youtube_usage",
+  "platforms": ["youtube"],
+  "userPercentile": 73,
+  "userDailyAverageHours": 3.12,
+  "includeSynthetic": true,
+  "customPercentile": 90,
+  "distribution": [
+    { "hours": 0, "density": 15 },
+    { "hours": 1, "density": 85 },
+    { "hours": 2, "density": 245 }
+  ],
+  "deciles": [
+    {
+      "date": "2026-06-01",
+      "user": 2.8,
+      "median": 2.3,
+      "top10": 4.1,
+      "bottom10": 0.8,
+      "customPercentileHours": 4.1
+    }
+  ],
+  "hourlyAverages": [
+    {
+      "hour": "00:00",
+      "populationAvg": 0.352,
+      "userAvg": 0.125
+    }
+  ]
+}
+```
+
+Not-ready response:
+
+```json
+{
+  "schema_version": "youtube_usage.population.v1",
+  "ready": false,
+  "message": "Dataset not ready. Please ingest YouTube data first."
+}
+```
+
+Errors:
+
+- `missing_authorization`
+- `invalid_authorization`
+- `invalid_request`
+- `invalid_platforms`
+- `unsupported_platform`
+- `invalid_date_filter`
+- `invalid_date_range`
+- `invalid_include_synthetic`
+- `invalid_custom_percentile`
+- `database_unavailable`
+
 ## Query Parameters
 
 ### `dataset`
@@ -301,6 +528,9 @@ Allowed values:
 - `estimated_watch_seconds`: estimated watch duration for `watch` events. Uses
   explicit event duration when present, YouTube API duration when available,
   event-weighted user average for real YouTube rows, then platform defaults.
+  For `/api/query`, watch duration is capped at the next watch event start for
+  the same user and platform, so overlapping video durations cannot stack as
+  simultaneous watch time.
 - `estimated_usage_seconds`: estimated duration across all matching event types.
   Uses explicit event duration when present, then the same fallback strategy as
   `estimated_watch_seconds`.

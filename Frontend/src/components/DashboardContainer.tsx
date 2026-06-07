@@ -9,7 +9,7 @@ import MainTimeline from './MainTimeline';
 import DeepDive from './DeepDive';
 import BehavioralHeatmap from './BehavioralHeatmap';
 import { useAnalyticsData } from '../hooks/useAnalyticsData';
-import { apiRoutes, authHeaders, jsonHeaders } from '../lib/api';
+import { apiRoutes, authHeaders, isMockApiMode, jsonHeaders } from '../lib/api';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -200,11 +200,28 @@ function DashboardContent() {
   }, [probeData]);
 
   const datasets = React.useMemo(() => {
+    const statusVal = isMockApiMode ? 'READY' : currentStatus;
+    const bounds = discoveredBounds;
     return {
       youtube: {
-        status: currentStatus,
-        min_date: discoveredBounds.minDate,
-        max_date: discoveredBounds.maxDate,
+        status: statusVal,
+        min_date: bounds.minDate,
+        max_date: bounds.maxDate,
+      },
+      instagram: {
+        status: statusVal,
+        min_date: bounds.minDate,
+        max_date: bounds.maxDate,
+      },
+      tiktok: {
+        status: statusVal,
+        min_date: bounds.minDate,
+        max_date: bounds.maxDate,
+      },
+      spotify: {
+        status: statusVal,
+        min_date: bounds.minDate,
+        max_date: bounds.maxDate,
       }
     };
   }, [currentStatus, discoveredBounds]);
@@ -216,6 +233,7 @@ function DashboardContent() {
 
   // Filter which platforms are actually uploaded and ready to query
   const readyPlatforms = React.useMemo(() => {
+    if (isMockApiMode) return ['youtube', 'instagram', 'tiktok', 'spotify'];
     return currentStatus === 'READY' ? ['youtube'] : [];
   }, [currentStatus]);
 
@@ -515,19 +533,26 @@ function DashboardContent() {
 
       {/* View Switcher Sub-Navigation Tabs */}
       <div className="mb-8 border-b border-brand-navy/10 flex gap-4 text-left">
-        <a 
+        <a
           href="/dashboard"
           className="px-4 py-3 text-sm font-extrabold border-b-2 border-brand-teal text-brand-teal transition-all"
           id="tab-personal-insights"
         >
           Personal Insights
         </a>
-        <a 
+        <a
           href="/population"
           className="px-4 py-3 text-sm font-bold border-b-2 border-transparent text-brand-navy/50 hover:text-brand-navy transition-all"
           id="tab-population-benchmark"
         >
           Population Benchmark
+        </a>
+        <a
+          href="/risk"
+          className="px-4 py-3 text-sm font-bold border-b-2 border-transparent text-brand-navy/50 hover:text-brand-navy transition-all"
+          id="tab-mental-health-risk"
+        >
+          Mental Health Risk
         </a>
       </div>
 

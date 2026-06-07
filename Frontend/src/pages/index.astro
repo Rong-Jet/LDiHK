@@ -2,115 +2,325 @@
 import Layout from '../layouts/Layout.astro';
 ---
 
-<Layout title="LDiHK | Social Media Data Analytics Platform">
+<Layout title="LDiHK | Social Media Analytics & Mental Wellness Insurance Platform">
   <!-- Hero Section -->
-  <section class="relative overflow-hidden bg-white py-20 lg:py-32">
+  <section class="relative overflow-hidden bg-white py-24 lg:py-32">
     <div class="absolute inset-0 bg-[linear-gradient(to_right,#F4F0E4_1px,transparent_1px),linear-gradient(to_bottom,#F4F0E4_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)] opacity-60"></div>
-    
-    <div class="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-      <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-brand-beige border border-brand-navy/10 text-xs font-semibold text-brand-navy mb-6 tracking-wide uppercase">
+
+    <div class="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center space-y-6">
+      <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-brand-teal/10 border border-brand-teal/20 text-xs font-bold text-brand-teal mb-2 tracking-wide uppercase">
         <span class="w-2 h-2 rounded-full bg-brand-teal animate-pulse"></span>
-        Enterprise MVP Live Console
+        InsurTech Venture Overview & MVP
       </div>
-      
-      <h1 class="text-4xl sm:text-6xl font-extrabold text-brand-navy tracking-tight max-w-4xl mx-auto leading-[1.1] mb-6">
-        Decode Your Social Engagement at <span class="text-transparent bg-clip-text bg-gradient-to-r from-brand-teal to-brand-navy">Scale</span>
+
+      <h1 class="text-4xl sm:text-6xl font-extrabold text-brand-navy tracking-tight max-w-4xl mx-auto leading-[1.15] text-left sm:text-center">
+        Predicting Mental Illness Risk via <span class="text-transparent bg-clip-text bg-gradient-to-r from-brand-teal via-brand-navy to-brand-peach">Social Footprints</span>
       </h1>
-      
-      <p class="text-lg sm:text-xl text-brand-navy/70 max-w-2xl mx-auto leading-relaxed mb-10">
-        Deploy direct-to-S3 programmatic ingestion, polling pipeline aggregation, and high-performance cross-platform visual matrices in seconds.
+
+      <p class="text-base sm:text-lg text-brand-navy/70 max-w-3xl mx-auto leading-relaxed text-left sm:text-center">
+        LDiHK is a pioneering InsurTech platform that bridges the gap between daily digital habits and mental wellness. By analyzing voluntary social media exports (YouTube, Instagram, TikTok, Spotify), we empower insurance providers to predict clinical risks, reward healthier habits, and deliver early preventative interventions.
       </p>
-      
-      <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
-        <a 
-          href="/dashboard" 
-          class="w-full sm:w-auto px-8 py-4 rounded-xl bg-brand-teal text-white font-bold text-base hover:bg-brand-teal/95 transition-all shadow-lg shadow-brand-teal/20 hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0 duration-150"
+
+      <div class="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4">
+        <a
+          href="/dashboard"
+          class="w-full sm:w-auto px-8 py-4 rounded-xl bg-brand-teal text-white font-bold text-base hover:bg-brand-teal/95 transition-all shadow-lg shadow-brand-teal/20 hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0 duration-150 flex items-center justify-center gap-2 cursor-pointer"
           id="hero-cta-dashboard"
         >
-          Launch Analytics Console
+          Launch Live MVP Console
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+          </svg>
         </a>
-        <a 
-          href="#pitchdeck" 
-          class="w-full sm:w-auto px-8 py-4 rounded-xl bg-brand-beige text-brand-navy font-bold text-base hover:bg-brand-navy/10 transition-all border border-brand-navy/20 duration-150"
+        <a
+          href="#roadmap"
+          class="w-full sm:w-auto px-8 py-4 rounded-xl bg-brand-beige text-brand-navy font-bold text-base hover:bg-brand-navy/10 transition-all border border-brand-navy/20 duration-150 flex items-center justify-center cursor-pointer"
           id="hero-cta-pitchdeck"
         >
-          Download Pitchdeck
+          View Venture Roadmap
         </a>
       </div>
     </div>
   </section>
 
-  <!-- Core Features Grid -->
-  <section class="py-20 bg-brand-beige/50 border-t border-b border-brand-navy/5">
+  <!-- Core Business Concept & Hong Kong Fit -->
+  <section class="py-20 bg-brand-beige/25 border-t border-brand-navy/5 text-left">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div class="text-center mb-16">
-        <h2 class="text-3xl font-extrabold text-brand-navy tracking-tight mb-4">
-          High-Performance Analytics Architecture
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+        <div class="space-y-6">
+          <span class="text-xs font-bold uppercase tracking-wider text-brand-peach bg-brand-peach/10 px-3 py-1 rounded">
+            The Market Opportunity
+          </span>
+          <h2 class="text-3xl font-extrabold text-brand-navy tracking-tight">
+            Strategic Fit: Hong Kong & Global Expansion
+          </h2>
+          <p class="text-brand-navy/70 text-sm sm:text-base leading-relaxed">
+            Mental health is a critical concern in high-density markets like Hong Kong. According to Gemini data and the Legislative Council Research Office, <strong>13% of working adults, 24% of youth, and 12.5% of the elderly</strong> are diagnosed with mental disorders, with depression, bipolar disorder, and anxiety being the most prevalent.
+          </p>
+          <p class="text-brand-navy/70 text-sm sm:text-base leading-relaxed">
+            Hong Kong is the ideal launchpad due to two unique advantages:
+          </p>
+          <ul class="space-y-3">
+            <li class="flex items-start gap-2.5 text-sm font-semibold text-brand-navy/80">
+              <span class="w-5 h-5 rounded-full bg-brand-teal/15 text-brand-teal flex items-center justify-center shrink-0 mt-0.5 font-bold">✓</span>
+              <span><strong>Hybrid Insurance System:</strong> The split between private and government-funded care rewards insurers who manage chronic risks early.</span>
+            </li>
+            <li class="flex items-start gap-2.5 text-sm font-semibold text-brand-navy/80">
+              <span class="w-5 h-5 rounded-full bg-brand-teal/15 text-brand-teal flex items-center justify-center shrink-0 mt-0.5 font-bold">✓</span>
+              <span><strong>East-Meets-West Digital Intersection:</strong> Access to both Western (YouTube, Instagram, Spotify) and Eastern ecosystems enables training models for seamless future expansion into China.</span>
+            </li>
+          </ul>
+        </div>
+
+        <div class="bg-white p-8 rounded-3xl border border-brand-navy/15 shadow-sm space-y-6 relative overflow-hidden">
+          <div class="absolute top-0 right-0 w-24 h-24 bg-brand-teal/5 rounded-full blur-xl pointer-events-none"></div>
+          <h3 class="text-lg font-black text-brand-navy border-b border-brand-navy/5 pb-3">The Ingestion Loop</h3>
+
+          <div class="space-y-4">
+            <div class="flex items-start gap-4">
+              <div class="w-8 h-8 rounded-lg bg-brand-navy/5 flex items-center justify-center font-bold text-brand-navy text-xs shrink-0 mt-0.5">01</div>
+              <div>
+                <h4 class="font-bold text-brand-navy text-sm">GDPR Takeout Request</h4>
+                <p class="text-xs text-brand-navy/60 mt-1">Users request their data packages directly from platforms under standard privacy regulations.</p>
+              </div>
+            </div>
+            <div class="flex items-start gap-4">
+              <div class="w-8 h-8 rounded-lg bg-brand-teal/10 text-brand-teal flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">02</div>
+              <div>
+                <h4 class="font-bold text-brand-navy text-sm">Ingest & Map Biomarkers</h4>
+                <p class="text-xs text-brand-navy/60 mt-1">Our pipeline extracts usage hours, late-night circadian disruptions, and hourly fragmentation indices.</p>
+              </div>
+            </div>
+            <div class="flex items-start gap-4">
+              <div class="w-8 h-8 rounded-lg bg-brand-peach/10 text-brand-peach flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">03</div>
+              <div>
+                <h4 class="font-bold text-brand-navy text-sm">Risk Assessment & Rewards</h4>
+                <p class="text-xs text-brand-navy/60 mt-1">Providers assess mental health wellness scores, providing premium offsets or early therapy recommendations.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Stakeholder Section -->
+  <section class="py-20 bg-white text-left">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="text-center mb-16 space-y-3">
+        <h2 class="text-3xl font-extrabold text-brand-navy tracking-tight">
+          The Stakeholder Ecosystem
         </h2>
         <p class="text-brand-navy/70 max-w-2xl mx-auto text-base">
-          Engineered to bypass local server bottlenecks and render multi-million record analytics instantly.
+          Creating shared value for users, private insurers, healthcare experts, and society.
         </p>
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
-        <!-- Feature 1 -->
-        <div class="bg-white p-8 rounded-2xl border border-brand-navy/10 shadow-sm hover:shadow-md transition-shadow group">
-          <div class="w-12 h-12 rounded-xl bg-brand-beige flex items-center justify-center text-brand-teal font-bold mb-6 group-hover:bg-brand-teal group-hover:text-white transition-colors duration-300">
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-            </svg>
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <!-- Insurers -->
+        <div class="bg-white p-6 rounded-2xl border border-brand-navy/10 shadow-sm flex flex-col justify-between hover:shadow-md transition-shadow group text-left">
+          <div class="space-y-4">
+            <div class="w-10 h-10 rounded-xl bg-brand-navy/5 text-brand-navy flex items-center justify-center shrink-0">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+              </svg>
+            </div>
+            <h3 class="font-extrabold text-brand-navy text-lg">Insurance Providers</h3>
+            <p class="text-xs text-brand-navy/60 leading-relaxed">
+              Gain competitive advantages in risk underwriting, lower long-term claims liabilities, and foster direct customer engagement through wellness incentive loops.
+            </p>
           </div>
-          <h3 class="text-xl font-bold text-brand-navy mb-3">Direct-to-S3 Ingestion</h3>
-          <p class="text-brand-navy/70 text-sm leading-relaxed">
-            Programmatically streams large zip datasets directly to secure S3 buckets via pre-signed PUT tokens, bypassing application server overhead.
-          </p>
         </div>
 
-        <!-- Feature 2 -->
-        <div class="bg-white p-8 rounded-2xl border border-brand-navy/10 shadow-sm hover:shadow-md transition-shadow group">
-          <div class="w-12 h-12 rounded-xl bg-brand-beige flex items-center justify-center text-brand-navy font-bold mb-6 group-hover:bg-brand-teal group-hover:text-white transition-colors duration-300">
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 002 2h2a2 2 0 002-2z" />
-            </svg>
+        <!-- Users -->
+        <div class="bg-white p-6 rounded-2xl border border-brand-navy/10 shadow-sm flex flex-col justify-between hover:shadow-md transition-shadow group text-left">
+          <div class="space-y-4">
+            <div class="w-10 h-10 rounded-xl bg-brand-teal/10 text-brand-teal flex items-center justify-center shrink-0">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 01-8 0m8 2a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+              </svg>
+            </div>
+            <h3 class="font-extrabold text-brand-navy text-lg">Policyholders / Users</h3>
+            <p class="text-xs text-brand-navy/60 leading-relaxed">
+              Unlock premium offsets or voucher rewards by sharing GDPR data, access early clinical warnings, and receive personalized lifestyle recommendations.
+            </p>
           </div>
-          <h3 class="text-xl font-bold text-brand-navy mb-3">Multi-Dimensional Sync</h3>
-          <p class="text-brand-navy/70 text-sm leading-relaxed">
-            Utilizes custom React hooks and TanStack Query to poll processing microservices, flattening complex nested JSON schemas on the fly.
-          </p>
         </div>
 
-        <!-- Feature 3 -->
-        <div class="bg-white p-8 rounded-2xl border border-brand-navy/10 shadow-sm hover:shadow-md transition-shadow group">
-          <div class="w-12 h-12 rounded-xl bg-brand-beige flex items-center justify-center text-brand-peach font-bold mb-6 group-hover:bg-brand-teal group-hover:text-white transition-colors duration-300">
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
+        <!-- Clinicians -->
+        <div class="bg-white p-6 rounded-2xl border border-brand-navy/10 shadow-sm flex flex-col justify-between hover:shadow-md transition-shadow group text-left">
+          <div class="space-y-4">
+            <div class="w-10 h-10 rounded-xl bg-brand-peach/10 text-brand-peach flex items-center justify-center shrink-0">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+              </svg>
+            </div>
+            <h3 class="font-extrabold text-brand-navy text-lg">Healthcare Experts</h3>
+            <p class="text-xs text-brand-navy/60 leading-relaxed">
+              Receive high-fidelity clinical risk signals and historical user profiles to conduct optimized, preventative psychological interventions.
+            </p>
           </div>
-          <h3 class="text-xl font-bold text-brand-navy mb-3">Behavioral Heatmaps</h3>
-          <p class="text-brand-navy/70 text-sm leading-relaxed">
-            Aggregates raw data into interactive hourly matrix grids, allowing teams to isolate viral user habits by specific social platform filters.
+        </div>
+
+        <!-- Society -->
+        <div class="bg-white p-6 rounded-2xl border border-brand-navy/10 shadow-sm flex flex-col justify-between hover:shadow-md transition-shadow group text-left">
+          <div class="space-y-4">
+            <div class="w-10 h-10 rounded-xl bg-brand-beige text-brand-navy/80 flex items-center justify-center shrink-0">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+              </svg>
+            </div>
+            <h3 class="font-extrabold text-brand-navy text-lg">The Public & Society</h3>
+            <p class="text-xs text-brand-navy/60 leading-relaxed">
+              Alleviates systemic pressure on public mental health systems, leading to a healthier, happier, and more productive workforce.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Business Roadmap Section -->
+  <section id="roadmap" class="py-20 bg-brand-beige/20 border-t border-b border-brand-navy/5 text-left">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="text-center mb-16 space-y-3">
+        <h2 class="text-3xl font-extrabold text-brand-navy tracking-tight">
+          Venture Deployment Roadmap
+        </h2>
+        <p class="text-brand-navy/70 max-w-2xl mx-auto text-base">
+          Our three-phased roadmap to bring preventative mental wellness underwriting to life.
+        </p>
+      </div>
+
+      <div class="space-y-8 relative before:absolute before:inset-0 before:left-4 sm:before:left-1/2 before:w-0.5 before:bg-brand-navy/10 before:pointer-events-none">
+
+        <!-- Phase 1 -->
+        <div class="relative flex flex-col sm:flex-row items-start sm:justify-between group">
+          <div class="absolute left-4 sm:left-1/2 w-4 h-4 rounded-full bg-brand-teal border-4 border-white -translate-x-1.5 mt-2 shadow-sm z-10 transition-colors group-hover:bg-brand-peach"></div>
+
+          <div class="w-full sm:w-[45%] pl-10 sm:pl-0 sm:text-right space-y-2">
+            <span class="inline-block px-2.5 py-0.5 rounded text-[10px] font-bold bg-brand-teal/10 text-brand-teal uppercase tracking-wide">
+              Phase 1: Ingestion & Training (Years 1-2)
+            </span>
+            <h3 class="text-xl font-bold text-brand-navy">Model Integration & Health Record Pairing</h3>
+            <p class="text-xs text-brand-navy/60 leading-relaxed">
+              Insurance companies incentivize users to share their basic GDPR-compliant data takeouts. In combination with historical medical claims records, we train custom machine learning models to identify core digital behavior predictors of anxiety, depression, and stress.
+            </p>
+          </div>
+          <div class="hidden sm:block w-[45%]"></div>
+        </div>
+
+        <!-- Phase 2 -->
+        <div class="relative flex flex-col sm:flex-row-reverse items-start sm:justify-between group">
+          <div class="absolute left-4 sm:left-1/2 w-4 h-4 rounded-full bg-brand-teal border-4 border-white -translate-x-1.5 mt-2 shadow-sm z-10 transition-colors group-hover:bg-brand-peach"></div>
+
+          <div class="w-full sm:w-[45%] pl-10 sm:pl-0 space-y-2">
+            <span class="inline-block px-2.5 py-0.5 rounded text-[10px] font-bold bg-brand-teal/10 text-brand-teal uppercase tracking-wide">
+              Phase 2: Preventative Intervention
+            </span>
+            <h3 class="text-xl font-bold text-brand-navy">Voucher Incentives & Early Treatments</h3>
+            <p class="text-xs text-brand-navy/60 leading-relaxed">
+              Using the early-warning models, insurance providers identify high-risk usage patterns in real-time. Insurers offer tailored vouchers and preventative clinical treatments, resolving wellness issues before they become severe, significantly lowering treatment liabilities.
+            </p>
+          </div>
+          <div class="hidden sm:block w-[45%]"></div>
+        </div>
+
+        <!-- Phase 3 -->
+        <div class="relative flex flex-col sm:flex-row items-start sm:justify-between group">
+          <div class="absolute left-4 sm:left-1/2 w-4 h-4 rounded-full bg-brand-teal border-4 border-white -translate-x-1.5 mt-2 shadow-sm z-10 transition-colors group-hover:bg-brand-peach"></div>
+
+          <div class="w-full sm:w-[45%] pl-10 sm:pl-0 sm:text-right space-y-2">
+            <span class="inline-block px-2.5 py-0.5 rounded text-[10px] font-bold bg-brand-teal/10 text-brand-teal uppercase tracking-wide">
+              Phase 3: Smart Underwriting
+            </span>
+            <h3 class="text-xl font-bold text-brand-navy">Dynamic Underwriting & Applicant Rewards</h3>
+            <p class="text-xs text-brand-navy/60 leading-relaxed">
+              We transition to underwriting. New applicants who voluntarily verify their digital footprints receive custom insurance plans and discounts for displaying low-risk habits, creating a substantial competitive advantage for partner insurers.
+            </p>
+          </div>
+          <div class="hidden sm:block w-[45%]"></div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- MVP Details Section -->
+  <section class="py-20 bg-white text-left">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
+        <div class="space-y-6">
+          <span class="text-xs font-bold uppercase tracking-wider text-brand-teal bg-brand-teal/10 px-3 py-1 rounded">
+            The Hackathon Showcase
+          </span>
+          <h2 class="text-3xl font-extrabold text-brand-navy tracking-tight">
+            Our Hackathon MVP Goal
+          </h2>
+          <p class="text-brand-navy/70 text-sm sm:text-base leading-relaxed">
+            Due to time constraints, this MVP is not a fully-trained clinical model. Instead, it is an interactive platform built to demonstrate the exact data aggregation workflow and business value.
           </p>
+          <p class="text-brand-navy/70 text-sm sm:text-base leading-relaxed">
+            By allowing judges and attendees to inspect their own social history (YouTube, Instagram, TikTok, and Spotify) against standard medical wellness benchmarks, we showcase the granularity of the dataset we intend to gather.
+          </p>
+          <div class="grid grid-cols-2 gap-4 border-t border-brand-navy/10 pt-6">
+            <div>
+              <span class="text-2xl font-black text-brand-teal block">4+</span>
+              <span class="text-[10px] uppercase font-bold text-brand-navy/60">Platforms Modeled</span>
+            </div>
+            <div>
+              <span class="text-2xl font-black text-brand-peach block">100%</span>
+              <span class="text-[10px] uppercase font-bold text-brand-navy/60">Data Anonymized</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="bg-brand-beige/40 p-8 rounded-3xl border border-brand-navy/10 space-y-4">
+          <h3 class="font-extrabold text-brand-navy text-lg">What we are analyzing:</h3>
+          <ul class="space-y-4 text-xs">
+            <li class="flex gap-3">
+              <span class="w-6 h-6 rounded-full bg-brand-navy/10 flex items-center justify-center shrink-0 font-bold">1</span>
+              <div>
+                <strong class="text-brand-navy">Screen Volume Index:</strong>
+                <span class="block text-brand-navy/70 mt-0.5">Aggregated active screen hours across platforms per day. High volumes represent a primary indicator of mental fatigue.</span>
+              </div>
+            </li>
+            <li class="flex gap-3">
+              <span class="w-6 h-6 rounded-full bg-brand-navy/10 flex items-center justify-center shrink-0 font-bold">2</span>
+              <div>
+                <strong class="text-brand-navy">Circadian Disruption Index:</strong>
+                <span class="block text-brand-navy/70 mt-0.5">Focuses on late-night activity bounds (23:00 to 5:00) that delay sleep cycles and correlate directly with anxiety risk.</span>
+              </div>
+            </li>
+            <li class="flex gap-3">
+              <span class="w-6 h-6 rounded-full bg-brand-navy/10 flex items-center justify-center shrink-0 font-bold">3</span>
+              <div>
+                <strong class="text-brand-navy">Task Fragmentation Index:</strong>
+                <span class="block text-brand-navy/70 mt-0.5">Evaluates how frequently the user checks platforms throughout the day, measuring attention division.</span>
+              </div>
+            </li>
+          </ul>
         </div>
       </div>
     </div>
   </section>
 
   <!-- Pitchdeck Section & Download Component -->
-  <section id="pitchdeck" class="py-24 bg-white">
+  <section id="pitchdeck" class="py-20 bg-brand-beige/10 border-t border-brand-navy/5">
     <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
       <div class="bg-brand-beige p-8 sm:p-12 rounded-3xl border border-brand-navy/15 flex flex-col md:flex-row items-center gap-8 shadow-sm">
-        <div class="flex-grow space-y-4">
+        <div class="flex-grow space-y-4 text-left">
           <span class="inline-block px-3 py-1 rounded-md bg-brand-peach/20 text-brand-navy font-bold text-xs uppercase tracking-wider">
             Investor Relations
           </span>
           <h2 class="text-2xl sm:text-3xl font-black text-brand-navy tracking-tight">
-            Review the Platform Architecture
+            Review the Venture Deck
           </h2>
           <p class="text-brand-navy/70 text-sm sm:text-base leading-relaxed max-w-lg">
-            Download our technical pitchdeck to review the deployment roadmap, Netlify Astro static builds, AWS S3 infrastructure costing, and performance benchmarks.
+            Download our pitchdeck to review the deployment roadmap, Netlify Astro static builds, AWS S3 infrastructure costing, and performance benchmarks.
           </p>
         </div>
-        
+
         <!-- Interactive Pitchdeck Download Component -->
         <div class="w-full md:w-auto shrink-0">
           <div class="bg-white p-6 rounded-2xl border border-brand-navy/10 shadow-sm text-center flex flex-col items-center max-w-xs mx-auto md:max-w-none">
@@ -119,11 +329,11 @@ import Layout from '../layouts/Layout.astro';
             </div>
             <span class="font-bold text-brand-navy text-sm block mb-1">LDiHK_Pitchdeck.pdf</span>
             <span class="text-xs text-brand-navy/50 block mb-6">File Size: 1.5 KB &bull; v1.0.0</span>
-            
-            <a 
-              href="/LDiHK_Pitchdeck.pdf" 
+
+            <a
+              href="/LDiHK_Pitchdeck.pdf"
               download="LDiHK_Pitchdeck_v1.pdf"
-              class="w-full px-6 py-3.5 rounded-xl bg-brand-teal text-white font-bold text-sm hover:bg-brand-teal/95 transition-all shadow-md shadow-brand-teal/10 hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 flex items-center justify-center gap-2 duration-150"
+              class="w-full px-6 py-3.5 rounded-xl bg-brand-teal text-white font-bold text-sm hover:bg-brand-teal/95 transition-all shadow-md shadow-brand-teal/10 hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 flex items-center justify-center gap-2 duration-150 cursor-pointer"
               id="pitchdeck-download-button"
             >
               <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -147,10 +357,10 @@ import Layout from '../layouts/Layout.astro';
       <p class="text-brand-navy/70 max-w-xl mx-auto text-sm sm:text-base leading-relaxed">
         Our support agents and solutions architects are available 24/7. Connect directly via our secure production domain.
       </p>
-      
+
       <div class="inline-flex flex-col sm:flex-row items-center gap-4 justify-center">
-        <a 
-          href="mailto:contact@LDiHK.xyz" 
+        <a
+          href="mailto:contact@LDiHK.xyz"
           class="inline-flex items-center gap-3 px-6 py-3.5 rounded-xl bg-brand-navy text-white font-bold text-sm hover:bg-brand-navy/95 transition-all shadow-md shadow-brand-navy/10 hover:shadow-lg hover:-translate-y-0.5 duration-150"
           id="main-contact-email"
         >

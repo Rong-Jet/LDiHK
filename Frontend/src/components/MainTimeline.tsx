@@ -26,12 +26,13 @@ interface MainTimelineProps {
   dateBounds?: { minDate: string; maxDate: string };
 }
 
-const ALL_PLATFORMS = ['YouTube', 'Instagram', 'TikTok', 'Twitter', 'LinkedIn'];
+const ALL_PLATFORMS = ['YouTube', 'Instagram', 'TikTok', 'Spotify', 'Twitter', 'LinkedIn'];
 
 const PLATFORM_COLORS: Record<string, string> = {
   youtube: '#537D96',   // brand-navy
   instagram: '#EC8F8D', // brand-peach
   tiktok: '#44A194',    // brand-teal
+  spotify: '#5EAF81',   // brand-green
   twitter: '#8ba6b8',   // light navy
   linkedin: '#66b8ad',  // light teal
 };
@@ -40,6 +41,7 @@ const PLATFORM_LABELS: Record<string, string> = {
   youtubeHours: 'YouTube',
   instagramHours: 'Instagram',
   tiktokHours: 'TikTok',
+  spotifyHours: 'Spotify',
   twitterHours: 'Twitter/X',
   linkedinHours: 'LinkedIn',
   totalHours: 'Total Active Time',
@@ -248,9 +250,9 @@ export default function MainTimeline({
         <div className="flex flex-wrap items-center gap-3">
           {ALL_PLATFORMS.map((platform) => {
             const key = platform.toLowerCase();
-            const isYouTube = key === 'youtube';
+            const isSupported = key === 'youtube' || key === 'instagram' || key === 'tiktok' || key === 'spotify';
 
-            if (!isYouTube) {
+            if (!isSupported) {
               return (
                 <button
                   key={platform}
@@ -325,9 +327,12 @@ export default function MainTimeline({
         <div className="flex items-center gap-3">
           <button
             onClick={() => {
-              if (datasets?.['youtube']?.status === 'READY') {
-                setActivePlatforms(['youtube']);
-              }
+              const ready = [];
+              if (datasets?.['youtube']?.status === 'READY') ready.push('youtube');
+              if (datasets?.['instagram']?.status === 'READY') ready.push('instagram');
+              if (datasets?.['tiktok']?.status === 'READY') ready.push('tiktok');
+              if (datasets?.['spotify']?.status === 'READY') ready.push('spotify');
+              if (ready.length > 0) setActivePlatforms(ready);
             }}
             className="text-[10px] uppercase tracking-wider font-extrabold text-brand-teal hover:underline cursor-pointer"
           >
@@ -458,6 +463,16 @@ export default function MainTimeline({
                   stackId="1"
                   stroke="#44A194"
                   fill="#44A194"
+                  fillOpacity={0.75}
+                />
+              )}
+              {activePlatforms.includes('spotify') && (
+                <Area
+                  type="monotone"
+                  dataKey="spotifyHours"
+                  stackId="1"
+                  stroke="#5EAF81"
+                  fill="#5EAF81"
                   fillOpacity={0.75}
                 />
               )}

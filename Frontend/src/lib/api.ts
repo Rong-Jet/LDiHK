@@ -1,7 +1,8 @@
-const configuredBackendApiBase =
-  import.meta.env.PUBLIC_BACKEND_API_URL || import.meta.env.PUBLIC_API_URL || '';
+import { configuredBackendApiBase, isMockApiMode } from './env';
 
-export const backendApiBase = configuredBackendApiBase.replace(/\/+$/, '');
+export { isMockApiMode };
+
+export const backendApiBase = configuredBackendApiBase;
 
 function normalizeApiPath(path: string): string {
   return path.startsWith('/') ? path : `/${path}`;

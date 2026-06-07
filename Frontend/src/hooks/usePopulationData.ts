@@ -25,7 +25,7 @@ export interface PopulationQueryResult {
   ready: boolean;
   userPercentile: number;
   userDailyAverageHours: number;
-  useSyntheticData: boolean;
+  includeSynthetic: boolean;
   customPercentile: number;
   distribution: DistributionRow[];
   deciles: DecileRow[];
@@ -33,9 +33,10 @@ export interface PopulationQueryResult {
 }
 
 const fetchPopulationData = async (
+  platforms: string[],
   startDate: string,
   endDate: string,
-  useSyntheticData: boolean,
+  includeSynthetic: boolean,
   customPercentile: number,
   sessionToken: string
 ): Promise<PopulationQueryResult> => {
@@ -46,9 +47,10 @@ const fetchPopulationData = async (
       ...authHeaders(sessionToken),
     },
     body: JSON.stringify({
+      platforms,
       startDate,
       endDate,
-      useSyntheticData,
+      includeSynthetic,
       customPercentile
     })
   });
@@ -61,16 +63,17 @@ const fetchPopulationData = async (
 };
 
 export function usePopulationData(
+  platforms: string[],
   startDate: string,
   endDate: string,
-  useSyntheticData: boolean,
+  includeSynthetic: boolean,
   customPercentile: number,
   isReady: boolean,
   sessionToken: string | null
 ) {
   return useQuery<PopulationQueryResult>({
-    queryKey: ['population', startDate, endDate, useSyntheticData, customPercentile, sessionToken],
-    queryFn: () => fetchPopulationData(startDate, endDate, useSyntheticData, customPercentile, sessionToken || ''),
-    enabled: isReady && !!startDate && !!endDate && !!sessionToken,
+    queryKey: ['population', platforms.join(','), startDate, endDate, includeSynthetic, customPercentile, sessionToken],
+    queryFn: () => fetchPopulationData(platforms, startDate, endDate, includeSynthetic, customPercentile, sessionToken || ''),
+    enabled: isReady && !!startDate && !!endDate && !!sessionToken && platforms.length > 0,
   });
 }

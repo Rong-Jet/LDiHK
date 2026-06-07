@@ -22,7 +22,7 @@ docs/backend/versions/v4-youtube-takeout-s3-postgres-backend.md
 docs/backend/versions/v5-hosted-backend-workers-and-deployment.md
 ```
 
-Frontend handoff contract:
+Authoritative API contract:
 
 ```text
 docs/backend/frontend-api-spec.md
@@ -85,80 +85,14 @@ docs/backend/frontend-api-spec.md
 
 ## Required API Outcomes
 
-Health:
+The current API request and response shapes are defined only in the
+authoritative contract:
 
 ```text
-GET /health
+docs/backend/frontend-api-spec.md
 ```
 
-Import creation:
-
-```text
-POST /api/imports
-```
-
-Request:
-
-```json
-{
-  "s3_bucket": "existing-bucket",
-  "s3_key": "uploads/demo-user-123/takeout.zip",
-  "s3_etag": "optional-etag",
-  "age": 23,
-  "sex": "male"
-}
-```
-
-Response:
-
-```json
-{
-  "import_id": "uuid",
-  "ldihk_id": "demo-user-123",
-  "status": "queued"
-}
-```
-
-Import status:
-
-```text
-GET /api/imports/{import_id}
-```
-
-Structured query:
-
-```text
-POST /api/query
-```
-
-Request:
-
-```json
-{
-  "dataset": "usage_analytics",
-  "metrics": ["event_count", "estimated_usage_seconds"],
-  "dimensions": ["date", "hour", "platform"],
-  "filters": {
-    "start_date": "2026-06-01",
-    "end_date": "2026-06-07",
-    "platform": ["youtube", "tiktok", "instagram", "spotify", "linkedin"]
-  },
-  "options": {
-    "include_zero_buckets": true,
-    "limit": 500
-  }
-}
-```
-
-Response includes:
-
-- `schema_version`
-- `dataset`
-- `ldihk_id`
-- `duration_strategy`
-- `query`
-- `quality`
-- `rows`
+Do not restate endpoint schemas in this backend requirements document.
 
 ## Privacy And Safety Requirements
 

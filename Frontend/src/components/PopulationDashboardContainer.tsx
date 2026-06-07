@@ -8,11 +8,12 @@ import {
 } from 'lucide-react';
 import { 
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, 
-  ReferenceLine, ComposedChart, Line, Legend, CartesianGrid 
+  ReferenceLine, ComposedChart, Line, Legend, CartesianGrid,
+  BarChart, Bar, Cell
 } from 'recharts';
 import UploadZone from './UploadZone';
 import { usePopulationData } from '../hooks/usePopulationData';
-import { apiRoutes, authHeaders, jsonHeaders } from '../lib/api';
+import { apiRoutes, authHeaders, isMockApiMode, jsonHeaders } from '../lib/api';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -23,12 +24,13 @@ const queryClient = new QueryClient({
   },
 });
 
-const ALL_PLATFORMS = ['YouTube', 'Instagram', 'TikTok', 'Twitter', 'LinkedIn'];
+const ALL_PLATFORMS = ['YouTube', 'Instagram', 'TikTok', 'Spotify', 'Twitter', 'LinkedIn'];
 
 const PLATFORM_COLORS: Record<string, string> = {
   youtube: '#537D96',   // brand-navy
   instagram: '#EC8F8D', // brand-peach
   tiktok: '#44A194',    // brand-teal
+  spotify: '#5EAF81',   // brand-green
   twitter: '#8ba6b8',
   linkedin: '#66b8ad',
 };
@@ -53,7 +55,7 @@ const shouldPollImportStatus = (importStatus: any) => (
 function PopulationDashboardContent() {
   const queryClient = useQueryClient();
   const [showUploadZone, setShowUploadZone] = useState(false);
-  const [useSyntheticData, setUseSyntheticData] = useState(true);
+  const [includeSynthetic, setIncludeSynthetic] = useState(true);
   
   // Custom Percentile Line parameters
   const [showCustomPercentile, setShowCustomPercentile] = useState(false);
@@ -189,7 +191,15 @@ function PopulationDashboardContent() {
       ? 'Enriching Video Durations...'
       : 'Extracting and Normalizing Takeout...';
 
+  const paddedStartDate = useMemo(() => {
+    if (!startDate) return '';
+    const dateObj = new Date(startDate);
+    dateObj.setDate(dateObj.getDate() - 90);
+    return dateObj.toISOString().split('T')[0];
+  }, [startDate]);
+
   const readyPlatforms = React.useMemo(() => {
+    if (isMockApiMode) return ['youtube', 'instagram', 'tiktok', 'spotify'];
     return currentStatus === 'READY' ? ['youtube'] : [];
   }, [currentStatus]);
 
@@ -200,11 +210,12 @@ function PopulationDashboardContent() {
     error: popError,
     refetch: refetchPop
   } = usePopulationData(
-    startDate, 
-    endDate, 
-    useSyntheticData, 
+    activePlatforms.filter(p => readyPlatforms.includes(p)),
+    paddedStartDate,
+    endDate,
+    includeSynthetic,
     customPercentile,
-    readyPlatforms.length > 0 && activePlatforms.includes('youtube'), 
+    readyPlatforms.length > 0 && activePlatforms.some(p => readyPlatforms.includes(p)),
     sessionToken
   );
 
@@ -259,7 +270,7 @@ function PopulationDashboardContent() {
   // Active preset matching MainTimeline
   const activePreset = useMemo(() => {
     if (endDate !== REFERENCE_DATE) return 'custom';
-    
+
     if (startDate === REFERENCE_DATE) return '1D';
     if (startDate === '2026-05-31') return '7D';
     if (startDate === '2026-05-23') return '15D';
@@ -267,7 +278,7 @@ function PopulationDashboardContent() {
     if (startDate === '2025-06-07') return '1Y';
     if (startDate === '2021-06-07') return '5Y';
     if (startDate === '2016-06-06') return 'all';
-    
+
     return 'custom';
   }, [startDate, endDate]);
 
@@ -372,7 +383,7 @@ function PopulationDashboardContent() {
   // 4. Compute User SMA Trendline over the smoothed curves
   const decilesWithSMA = useMemo(() => {
     if (smoothedDeciles.length === 0) return [];
-    return smoothedDeciles.map((record, index) => {
+    const allSMA = smoothedDeciles.map((record, index) => {
       let sum = 0;
       let count = 0;
       const start = Math.max(0, index - trendlinePeriod + 1);
@@ -386,9 +397,84 @@ function PopulationDashboardContent() {
         smaHours
       };
     });
-  }, [smoothedDeciles, trendlinePeriod]);
+    // Filter to keep only the visible dates
+    return allSMA.filter(record => record.date >= startDate && record.date <= endDate);
+  }, [smoothedDeciles, trendlinePeriod, startDate, endDate]);
 
-  const hasSelectedPlatforms = activePlatforms.includes('youtube');
+  // 5. Group distribution data into 1-hour interval bins (0-24h)
+  const binData = useMemo(() => {
+    if (!popData?.distribution) return [];
+
+    // Initialize 24 bins representing 0-24h
+    const bins = Array.from({ length: 24 }, (_, i) => {
+      const min = i;
+      const max = i + 1;
+      return {
+        min,
+        max,
+        density: 0,
+        isUserBin: false,
+      };
+    });
+
+    // Sum density into corresponding bins
+    popData.distribution.forEach((item) => {
+      const hr = item.hours;
+      const binIdx = Math.min(23, Math.floor(hr));
+      if (binIdx >= 0) {
+        bins[binIdx].density += item.density;
+      }
+    });
+
+    // Identify user's bin
+    const userAvg = popData.userDailyAverageHours;
+    const userBinIdx = Math.min(23, Math.floor(userAvg));
+    if (userBinIdx >= 0 && userBinIdx < 24) {
+      bins[userBinIdx].isUserBin = true;
+    }
+
+    // Calculate total density to compute percentage distribution
+    const totalDensity = bins.reduce((sum, b) => sum + b.density, 0);
+
+    // Calculate percentage (so that the bars add up to 100%) and build range labels
+    return bins.map(b => {
+      const percentage = totalDensity > 0 ? parseFloat(((b.density / totalDensity) * 100).toFixed(1)) : 0;
+      return {
+        ...b,
+        percentage,
+        range: b.isUserBin ? `${b.min}-${b.max}h (You)` : `${b.min}-${b.max}h`
+      };
+    });
+  }, [popData]);
+
+  // 6. Generate dynamic copy and badges based on user's consumption percentile for health-oriented insights
+  const percentileNuance = useMemo(() => {
+    if (!popData) return null;
+    const p = popData.userPercentile;
+
+    if (p >= 75) {
+      return {
+        title: <>Your daily usage exceeds <span className="text-brand-peach">{p}%</span> of the population</>,
+        status: "High Consumption Bracket",
+        description: "Your watch time falls into the upper quartile. High media consumption can impact focus, sleep quality, and overall digital well-being. Consider setting mindful downtime goals."
+      };
+    } else if (p >= 40) {
+      return {
+        title: <>Your daily usage exceeds <span className="text-brand-teal">{p}%</span> of the population</>,
+        status: "Moderate Consumption Bracket",
+        description: "Your watch time aligns with the general population median. Regular screen breaks and active check-ins can help you maintain this balanced baseline."
+      };
+    } else {
+      const inversePct = 100 - p;
+      return {
+        title: <>Your daily usage is lower than <span className="text-brand-teal">{inversePct}%</span> of the population</>,
+        status: "Balanced Consumption Bracket",
+        description: "Your watch time is below the population average. Lower screen time provides cognitive rest, supports better sleep hygiene, and encourages physical presence."
+      };
+    }
+  }, [popData]);
+
+  const hasSelectedPlatforms = activePlatforms.some(p => readyPlatforms.includes(p));
 
   if (!sessionToken) {
     return (
@@ -581,19 +667,26 @@ function PopulationDashboardContent() {
 
       {/* View Switcher Sub-Navigation Tabs */}
       <div className="mb-8 border-b border-brand-navy/10 flex gap-4 text-left">
-        <a 
+        <a
           href="/dashboard"
           className="px-4 py-3 text-sm font-bold border-b-2 border-transparent text-brand-navy/50 hover:text-brand-navy transition-all"
           id="tab-personal-insights"
         >
           Personal Insights
         </a>
-        <a 
+        <a
           href="/population"
           className="px-4 py-3 text-sm font-extrabold border-b-2 border-brand-teal text-brand-teal transition-all"
           id="tab-population-benchmark"
         >
           Population Benchmark
+        </a>
+        <a
+          href="/risk"
+          className="px-4 py-3 text-sm font-bold border-b-2 border-transparent text-brand-navy/50 hover:text-brand-navy transition-all"
+          id="tab-mental-health-risk"
+        >
+          Mental Health Risk
         </a>
       </div>
 
@@ -658,32 +751,27 @@ function PopulationDashboardContent() {
             <div className="absolute left-1/3 top-0 w-48 h-48 bg-brand-peach/15 rounded-full blur-2xl pointer-events-none"></div>
             
             <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
-              <div className="space-y-2">
+              <div className="space-y-2 flex-grow">
                 <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 border border-white/15 text-[10px] font-extrabold uppercase tracking-wider">
                   <Users className="w-3.5 h-3.5 text-brand-teal" />
                   Population Placement Analysis
                 </div>
                 {isPopLoading ? (
                   <h2 className="text-2xl sm:text-3xl font-black tracking-tight leading-tight animate-pulse">Calculating Standings...</h2>
-                ) : popData ? (
-                  <h2 className="text-2xl sm:text-3xl font-black tracking-tight leading-tight">
-                    You are in the <span className="text-brand-peach">Top {100 - popData.userPercentile}%</span> of Viewers
-                  </h2>
+                ) : percentileNuance ? (
+                  <>
+                    <h2 className="text-2xl sm:text-3xl font-black tracking-tight leading-tight">
+                      {percentileNuance.title}
+                    </h2>
+                    <div className="inline-block px-2.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider rounded-md border border-white/20 bg-white/5 mt-1.5">
+                      {percentileNuance.status}
+                    </div>
+                  </>
                 ) : null}
-                <p className="text-xs text-white/70 max-w-xl leading-relaxed">
-                  Comparing your average usage hours relative to {useSyntheticData ? ' ~10,000 active profile logs' : ' the actual users currently active in this workspace'}.
+                <p className="text-xs text-white/70 max-w-xl leading-relaxed pt-1">
+                  {percentileNuance ? percentileNuance.description : ""}
                 </p>
               </div>
-
-              {!isPopLoading && popData && (
-                <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 sm:p-5 border border-white/15 min-w-[200px] text-center shrink-0">
-                  <span className="text-[10px] uppercase font-extrabold tracking-wider text-white/60 block">Cohort Standing</span>
-                  <span className="text-4xl font-black text-brand-teal mt-1 block">
-                    {popData.userPercentile}th
-                  </span>
-                  <span className="text-[9px] uppercase tracking-wider text-white/40 block mt-0.5">Percentile Rank</span>
-                </div>
-              )}
             </div>
           </div>
 
@@ -700,19 +788,19 @@ function PopulationDashboardContent() {
                 <span className="text-[9px] text-brand-navy/50 block -mt-0.5">Use large realistic curves vs small local dataset</span>
               </div>
               <button
-                onClick={() => setUseSyntheticData(!useSyntheticData)}
+                onClick={() => setIncludeSynthetic(!includeSynthetic)}
                 className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                  useSyntheticData ? 'bg-brand-teal' : 'bg-brand-navy/20'
+                  includeSynthetic ? 'bg-brand-teal' : 'bg-brand-navy/20'
                 }`}
                 role="switch"
-                aria-checked={useSyntheticData}
+                aria-checked={includeSynthetic}
                 id="toggle-synthetic-data"
                 title="Toggle Synthetic Population Data"
               >
                 <span
                   aria-hidden="true"
                   className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                    useSyntheticData ? 'translate-x-5' : 'translate-x-0'
+                    includeSynthetic ? 'translate-x-5' : 'translate-x-0'
                   }`}
                 />
               </button>
@@ -892,15 +980,15 @@ function PopulationDashboardContent() {
                     <div className="flex flex-wrap items-center gap-3">
                       {ALL_PLATFORMS.map((platform) => {
                         const key = platform.toLowerCase();
-                        const isYouTube = key === 'youtube';
+                        const isSupported = key === 'youtube' || key === 'instagram' || key === 'tiktok' || key === 'spotify';
 
-                        if (!isYouTube) {
+                        if (!isSupported) {
                           return (
                             <button
                               key={platform}
                               disabled={true}
                               className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold border border-transparent bg-brand-navy/5 text-brand-navy/35 cursor-not-allowed"
-                              title={`${platform} is unsupported in v5 (hosted YouTube-only demo)`}
+                              title={`${platform} is unsupported in this version`}
                             >
                               <span 
                                 className="w-2.5 h-2.5 rounded-full" 
@@ -914,7 +1002,7 @@ function PopulationDashboardContent() {
                           );
                         }
                         
-                        const datasetInfo = { status: currentStatus };
+                        const datasetInfo = { status: readyPlatforms.includes(key) ? 'READY' : 'NOT_UPLOADED' };
                         const isReady = datasetInfo.status === 'READY';
                         const isActive = activePlatforms.includes(key) && isReady;
 
@@ -960,7 +1048,7 @@ function PopulationDashboardContent() {
                         <Filter className="w-10 h-10 text-brand-peach mb-3" />
                         <h4 className="font-bold text-brand-navy text-sm">No Platforms Selected</h4>
                         <p className="text-xs text-brand-navy/60 max-w-xs mt-1 leading-relaxed">
-                          Please toggle YouTube at the checklist to display the population comparison timeline.
+                          Please toggle at least one social media source in the checklist filter to display the population comparison timeline.
                         </p>
                       </div>
                     ) : isPopLoading || !popData ? (
@@ -1108,7 +1196,7 @@ function PopulationDashboardContent() {
                 </div>
               </div>
 
-              {/* Bell Curve distribution (1/3 width on xl) */}
+              {/* Watch Time Distribution (1/3 width on xl) */}
               <div className="bg-white p-6 rounded-3xl border border-brand-navy/10 shadow-sm flex flex-col justify-between">
                 <div>
                   <h3 className="font-extrabold text-brand-navy text-sm uppercase tracking-wider flex items-center gap-2 mb-2">
@@ -1116,81 +1204,88 @@ function PopulationDashboardContent() {
                     Watch Time Distribution
                   </h3>
                   <p className="text-xs text-brand-navy/60 leading-relaxed mb-6">
-                    A bell curve showcasing the concentration of user averages. The dashed line marks your position.
+                    A horizontal bar chart showing user distribution in 1-hour cohorts. Your position is highlighted in peach.
                   </p>
                 </div>
 
-                <div className="h-[280px] w-full">
+                <div className="h-[480px] w-full">
                   {isPopLoading || !popData ? (
                     <div className="h-full flex items-center justify-center">
                       <RefreshCw className="w-6 h-6 animate-spin text-brand-teal" />
                     </div>
                   ) : (
                     <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart
-                        data={popData.distribution}
-                        margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
+                      <BarChart
+                        layout="vertical"
+                        data={binData}
+                        margin={{ top: 5, right: 15, left: -15, bottom: 5 }}
                       >
-                        <defs>
-                          <linearGradient id="popCurveGrad" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#44A194" stopOpacity={0.4}/>
-                            <stop offset="95%" stopColor="#537D96" stopOpacity={0.0}/>
-                          </linearGradient>
-                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#537D96" strokeOpacity={0.07} />
                         <XAxis 
-                          dataKey="hours" 
+                          type="number"
                           stroke="#537D96" 
                           fontSize={9} 
                           fontWeight="bold"
                           tickLine={false}
                           axisLine={false}
-                          label={{ value: 'Daily Hours', position: 'insideBottom', offset: -5, fontSize: 9, fill: '#537D96', fontWeight: 'bold' }}
+                          tickFormatter={(val) => `${val}%`}
+                          label={{ value: 'Percentage of Cohort (%)', position: 'insideBottom', offset: -5, fontSize: 9, fill: '#537D96', fontWeight: 'bold' }}
                         />
                         <YAxis 
+                          dataKey="range"
+                          type="category"
                           stroke="#537D96" 
                           fontSize={9} 
                           fontWeight="bold"
                           tickLine={false}
                           axisLine={false}
+                          width={75}
                         />
                         <Tooltip 
                           content={({ active, payload }) => {
                             if (active && payload && payload.length) {
                               const data = payload[0].payload;
                               return (
-                                <div className="bg-brand-navy text-white p-2.5 rounded-xl shadow-lg border border-white/10 text-[10px] space-y-1">
-                                  <p className="font-black">Avg: {data.hours} hours</p>
-                                  <p className="text-brand-teal font-medium">
-                                    {popData.useSyntheticData ? `${data.density} active users` : `${data.density} actual user(s)`}
+                                <div className="bg-white p-3 rounded-2xl shadow-lg border border-brand-navy/15 text-xs font-semibold text-brand-navy space-y-1.5 min-w-[155px]">
+                                  <p className="font-extrabold border-b border-brand-navy/5 pb-1 text-brand-navy">{data.range}</p>
+                                  <p className="flex justify-between gap-4">
+                                    <span>Cohort Ratio:</span>
+                                    <span className="font-mono font-bold text-brand-teal">
+                                      {data.percentage}%
+                                    </span>
                                   </p>
+                                  <p className="flex justify-between gap-4 text-brand-navy/60 text-[10px]">
+                                    <span>User Count:</span>
+                                    <span className="font-mono">
+                                      {popData.includeSynthetic ? `${data.density} active users` : `${data.density} actual user(s)`}
+                                    </span>
+                                  </p>
+                                  {data.isUserBin && (
+                                    <p className="text-brand-peach font-black text-[10px] uppercase tracking-wider mt-1 flex items-center gap-1">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-brand-peach animate-pulse"></span>
+                                      Your Cohort Standing
+                                    </p>
+                                  )}
                                 </div>
                               );
                             }
                             return null;
                           }}
                         />
-                        <Area 
-                          type="monotone" 
-                          dataKey="density" 
-                          stroke="#44A194" 
-                          strokeWidth={2}
-                          fillOpacity={1} 
-                          fill="url(#popCurveGrad)" 
-                        />
-                        <ReferenceLine 
-                          x={popData.userDailyAverageHours} 
-                          stroke="#EC8F8D" 
-                          strokeWidth={2}
-                          strokeDasharray="4 4"
-                          label={{ 
-                            value: `You (${popData.userDailyAverageHours}h)`, 
-                            position: 'top', 
-                            fill: '#EC8F8D', 
-                            fontSize: 9, 
-                            fontWeight: 'black',
-                          }} 
-                        />
-                      </AreaChart>
+                        <Bar
+                          dataKey="percentage"
+                          radius={[0, 4, 4, 0]}
+                          barSize={10}
+                        >
+                          {binData.map((entry, index) => (
+                            <Cell
+                              key={`cell-${index}`}
+                              fill={entry.isUserBin ? '#EC8F8D' : '#44A194'}
+                              fillOpacity={entry.isUserBin ? 0.95 : 0.75}
+                            />
+                          ))}
+                        </Bar>
+                      </BarChart>
                     </ResponsiveContainer>
                   )}
                 </div>

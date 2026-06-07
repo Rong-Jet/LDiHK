@@ -90,7 +90,7 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
       .then((data) => setIsMock(data.isMock))
       .catch((err) => {
         console.error('Failed to retrieve uploader info:', err);
-        setIsMock(true);
+        setIsMock(null);
       });
   }, []);
 
