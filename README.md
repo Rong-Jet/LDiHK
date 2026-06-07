@@ -1,5 +1,34 @@
 # LDiHK
 
+## Hosted Site
+
+The BUSINESS VIDEO is at:
+
+```text
+https://youtube.com/shorts/t1Bc-_SUxZg
+```
+
+The website is hosted at:
+
+```text
+https://ldihk.xyz/
+```
+
+The hosted frontend is configured to use the live Render backend API:
+
+```text
+https://ldihk-api.onrender.com
+```
+
+Health check:
+
+```text
+https://ldihk-api.onrender.com/health
+```
+
+The hosted demo runs with the frontend mock API disabled and sends browser API
+traffic to the Render service. Local development instructions are below.
+
 ## Quick Start
 
 Set up the local Python environment:
