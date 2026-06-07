@@ -15,7 +15,7 @@ DEFAULT_PLATFORM_DURATION_SECONDS = {
     ("youtube", "youtube"): 600,
     ("youtube", "youtube_music"): 600,
     ("tiktok", None): 60,
-    ("instagram", None): 60,
+    ("instagram", None): 15,
     ("spotify", None): 120,
     ("linkedin", None): 120,
 }

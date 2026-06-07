@@ -33,12 +33,17 @@ docs/backend/versions/v5-hosted-backend-workers-and-deployment.md
 - The backend creates queued import jobs in Postgres.
 - The backend exposes import status through `GET /api/imports/{import_id}`.
 - The import worker polls Postgres, claims queued imports, downloads ZIP files
-  from S3, safely scans ZIP members, dispatches supported YouTube and TikTok
-  parsers, and writes normalized records to Postgres.
+  from S3, safely scans ZIP members, dispatches supported YouTube, TikTok, and
+  Instagram parsers, and writes normalized records to Postgres.
 - The backend stores normalized usage events for YouTube watch history, search
   history, likes, playlist/watch-later adds, comments, live chats, and
-  subscriptions, plus TikTok watch history where export source files are
-  available and parser support exists.
+  subscriptions, TikTok watch history where export source files are available,
+  and timestamped Instagram activity records such as story views, likes, saves,
+  watched videos, messages, and content creation records.
+- Instagram activity records are modeled as one timestamped export record per
+  interaction and carry a default `duration_seconds` value of `15` seconds for
+  estimated temporal usage metrics. Duplicate timestamps are preserved because
+  Instagram exports can contain multiple interactions in the same minute.
 - The backend stores privacy-minimized fields by default: IDs, timestamps,
   event types, hashed titles, hashed channel titles, hashed search terms, and
   count/sample-hash warnings.
@@ -112,7 +117,8 @@ docs/backend/versions/v5-hosted-backend-workers-and-deployment.md
 - Frontend-submitted raw SQL.
 - Creator-side YouTube metrics such as uploads, revenue, channel analytics, or
   studio metrics.
-- Instagram, Douyin, and unsupported TikTok source files beyond watch history.
+- Douyin, unsupported TikTok source files beyond watch history, and unsupported
+  Instagram source files beyond the path registry.
 - Redis, Celery, Kubernetes, Terraform, or a separate analytics warehouse for
   the hackathon MVP.
 - AI augmentation.

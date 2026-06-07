@@ -77,6 +77,7 @@ class UsageEventWrite:
     search_query_hash: str | None
     raw_status: str | None
     event_fingerprint: str
+    duration_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -413,6 +414,7 @@ class S3ZipImportWorker:
                     user_id=job.user_id,
                     source_path=source_path,
                 ),
+                duration_seconds=event.duration_seconds,
             )
             for event in parse_result.events
         ]
@@ -611,10 +613,7 @@ class PostgresImportRepository:
         if not events:
             return 0
 
-        row_placeholders = ", ".join(
-            f"({', '.join(['%s'] * 14)})"
-            for _ in events
-        )
+        row_placeholders = ", ".join(f"({', '.join(['%s'] * 15)})" for _ in events)
         parameters: list[object] = []
         for event in events:
             parameters.extend(
@@ -633,6 +632,7 @@ class PostgresImportRepository:
                     event.search_query_hash,
                     event.raw_status,
                     event.event_fingerprint,
+                    event.duration_seconds,
                 )
             )
 
@@ -653,7 +653,8 @@ class PostgresImportRepository:
                     title_hash,
                     search_query_hash,
                     raw_status,
-                    event_fingerprint
+                    event_fingerprint,
+                    duration_seconds
                 )
                 VALUES """ + row_placeholders + """
                 ON CONFLICT (user_id, event_fingerprint) DO NOTHING
