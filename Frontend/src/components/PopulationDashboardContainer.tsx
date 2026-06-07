@@ -14,6 +14,9 @@ import {
 import UploadZone from './UploadZone';
 import { usePopulationData } from '../hooks/usePopulationData';
 
+const IS_MOCK_MODE = import.meta.env.PUBLIC_MOCK_API === 'true';
+const API_BASE = IS_MOCK_MODE ? '' : (import.meta.env.PUBLIC_API_URL || '');
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -23,12 +26,13 @@ const queryClient = new QueryClient({
   },
 });
 
-const ALL_PLATFORMS = ['YouTube', 'Instagram', 'TikTok', 'Twitter', 'LinkedIn'];
+const ALL_PLATFORMS = ['YouTube', 'Instagram', 'TikTok', 'Spotify', 'Twitter', 'LinkedIn'];
 
 const PLATFORM_COLORS: Record<string, string> = {
   youtube: '#537D96',   // brand-navy
   instagram: '#EC8F8D', // brand-peach
   tiktok: '#44A194',    // brand-teal
+  spotify: '#5EAF81',   // brand-green
   twitter: '#8ba6b8',
   linkedin: '#66b8ad',
 };
@@ -99,7 +103,7 @@ function PopulationDashboardContent() {
     queryKey: ['probe', sessionToken],
     queryFn: async () => {
       if (!sessionToken) return null;
-      const res = await fetch('/api/query', {
+      const res = await fetch(`${API_BASE}/api/query`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -128,7 +132,7 @@ function PopulationDashboardContent() {
   const { data: importStatusData } = useQuery({
     queryKey: ['importStatus', currentImportId, sessionToken],
     queryFn: async () => {
-      const res = await fetch(`/api/imports/${currentImportId}`, {
+      const res = await fetch(`${API_BASE}/api/imports/${currentImportId}`, {
         headers: {
           'Authorization': `Bearer ${sessionToken}`
         }
@@ -155,9 +159,17 @@ function PopulationDashboardContent() {
     ? 'PROCESSING' 
     : (probeData?.rows && probeData.rows.length > 0 ? 'READY' : 'NOT_UPLOADED');
 
+  const paddedStartDate = useMemo(() => {
+    if (!startDate) return '';
+    const dateObj = new Date(startDate);
+    dateObj.setDate(dateObj.getDate() - 90);
+    return dateObj.toISOString().split('T')[0];
+  }, [startDate]);
+
   const readyPlatforms = React.useMemo(() => {
+    if (IS_MOCK_MODE) return ['youtube', 'instagram', 'tiktok', 'spotify'];
     return currentStatus === 'READY' ? ['youtube'] : [];
-  }, [currentStatus]);
+  }, [IS_MOCK_MODE, currentStatus]);
 
   // Fetch Population Analytics
   const {
@@ -166,17 +178,18 @@ function PopulationDashboardContent() {
     error: popError,
     refetch: refetchPop
   } = usePopulationData(
-    startDate, 
+    activePlatforms.filter(p => readyPlatforms.includes(p)),
+    paddedStartDate, 
     endDate, 
     useSyntheticData, 
     customPercentile,
-    readyPlatforms.length > 0 && activePlatforms.includes('youtube'), 
+    readyPlatforms.length > 0 && activePlatforms.some(p => readyPlatforms.includes(p)), 
     sessionToken
   );
 
   const handleUploadComplete = async (s3Key: string, s3Bucket: string) => {
     try {
-      const res = await fetch('/api/imports', {
+      const res = await fetch(`${API_BASE}/api/imports`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -198,7 +211,7 @@ function PopulationDashboardContent() {
   // Reset pipeline state locally & on mock server
   const handleResetPipeline = async () => {
     try {
-      await fetch('/api/upload-url'); // GET triggers state reset in mock backend
+      await fetch(`${API_BASE}/api/upload-url`); // GET triggers state reset in mock backend
       setStartDate('2026-05-08');
       setEndDate('2026-06-06');
       setTrendlinePeriod(7);
@@ -335,7 +348,7 @@ function PopulationDashboardContent() {
   // 4. Compute User SMA Trendline over the smoothed curves
   const decilesWithSMA = useMemo(() => {
     if (smoothedDeciles.length === 0) return [];
-    return smoothedDeciles.map((record, index) => {
+    const allSMA = smoothedDeciles.map((record, index) => {
       let sum = 0;
       let count = 0;
       const start = Math.max(0, index - trendlinePeriod + 1);
@@ -349,18 +362,19 @@ function PopulationDashboardContent() {
         smaHours
       };
     });
-  }, [smoothedDeciles, trendlinePeriod]);
+    // Filter to keep only the visible dates
+    return allSMA.filter(record => record.date >= startDate && record.date <= endDate);
+  }, [smoothedDeciles, trendlinePeriod, startDate, endDate]);
 
-  // 5. Group distribution data into 2-hour interval bins (0-24h)
+  // 5. Group distribution data into 1-hour interval bins (0-24h)
   const binData = useMemo(() => {
     if (!popData?.distribution) return [];
 
-    // Initialize 12 bins representing 0-24h
-    const bins = Array.from({ length: 12 }, (_, i) => {
-      const min = i * 2;
-      const max = (i + 1) * 2;
+    // Initialize 24 bins representing 0-24h
+    const bins = Array.from({ length: 24 }, (_, i) => {
+      const min = i;
+      const max = i + 1;
       return {
-        range: `${min}-${max}h`,
         min,
         max,
         density: 0,
@@ -371,7 +385,7 @@ function PopulationDashboardContent() {
     // Sum density into corresponding bins
     popData.distribution.forEach((item) => {
       const hr = item.hours;
-      const binIdx = Math.min(11, Math.floor(hr / 2));
+      const binIdx = Math.min(23, Math.floor(hr));
       if (binIdx >= 0) {
         bins[binIdx].density += item.density;
       }
@@ -379,19 +393,53 @@ function PopulationDashboardContent() {
 
     // Identify user's bin
     const userAvg = popData.userDailyAverageHours;
-    const userBinIdx = Math.min(11, Math.floor(userAvg / 2));
-    if (userBinIdx >= 0 && userBinIdx < 12) {
+    const userBinIdx = Math.min(23, Math.floor(userAvg));
+    if (userBinIdx >= 0 && userBinIdx < 24) {
       bins[userBinIdx].isUserBin = true;
     }
 
-    // Append "(You)" suffix to range for the user's bin to clearly mark it on the axis
-    return bins.map(b => ({
-      ...b,
-      range: b.isUserBin ? `${b.min}-${b.max}h (You)` : `${b.min}-${b.max}h`
-    }));
+    // Calculate total density to compute percentage distribution
+    const totalDensity = bins.reduce((sum, b) => sum + b.density, 0);
+
+    // Calculate percentage (so that the bars add up to 100%) and build range labels
+    return bins.map(b => {
+      const percentage = totalDensity > 0 ? parseFloat(((b.density / totalDensity) * 100).toFixed(1)) : 0;
+      return {
+        ...b,
+        percentage,
+        range: b.isUserBin ? `${b.min}-${b.max}h (You)` : `${b.min}-${b.max}h`
+      };
+    });
   }, [popData]);
 
-  const hasSelectedPlatforms = activePlatforms.includes('youtube');
+  // 6. Generate dynamic copy and badges based on user's consumption percentile for health-oriented insights
+  const percentileNuance = useMemo(() => {
+    if (!popData) return null;
+    const p = popData.userPercentile;
+    
+    if (p >= 75) {
+      return {
+        title: <>Your daily usage exceeds <span className="text-brand-peach">{p}%</span> of the population</>,
+        status: "High Consumption Bracket",
+        description: "Your watch time falls into the upper quartile. High media consumption can impact focus, sleep quality, and overall digital well-being. Consider setting mindful downtime goals."
+      };
+    } else if (p >= 40) {
+      return {
+        title: <>Your daily usage exceeds <span className="text-brand-teal">{p}%</span> of the population</>,
+        status: "Moderate Consumption Bracket",
+        description: "Your watch time aligns with the general population median. Regular screen breaks and active check-ins can help you maintain this balanced baseline."
+      };
+    } else {
+      const inversePct = 100 - p;
+      return {
+        title: <>Your daily usage is lower than <span className="text-brand-teal">{inversePct}%</span> of the population</>,
+        status: "Balanced Consumption Bracket",
+        description: "Your watch time is below the population average. Lower screen time provides cognitive rest, supports better sleep hygiene, and encourages physical presence."
+      };
+    }
+  }, [popData]);
+
+  const hasSelectedPlatforms = activePlatforms.some(p => readyPlatforms.includes(p));
 
   if (!sessionToken) {
     return (
@@ -598,6 +646,13 @@ function PopulationDashboardContent() {
         >
           Population Benchmark
         </a>
+        <a 
+          href="/risk"
+          className="px-4 py-3 text-sm font-bold border-b-2 border-transparent text-brand-navy/50 hover:text-brand-navy transition-all"
+          id="tab-mental-health-risk"
+        >
+          Mental Health Risk
+        </a>
       </div>
 
       {/* Collapsible Upload Zone Drawer */}
@@ -661,32 +716,27 @@ function PopulationDashboardContent() {
             <div className="absolute left-1/3 top-0 w-48 h-48 bg-brand-peach/15 rounded-full blur-2xl pointer-events-none"></div>
             
             <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
-              <div className="space-y-2">
+              <div className="space-y-2 flex-grow">
                 <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/10 border border-white/15 text-[10px] font-extrabold uppercase tracking-wider">
                   <Users className="w-3.5 h-3.5 text-brand-teal" />
                   Population Placement Analysis
                 </div>
                 {isPopLoading ? (
                   <h2 className="text-2xl sm:text-3xl font-black tracking-tight leading-tight animate-pulse">Calculating Standings...</h2>
-                ) : popData ? (
-                  <h2 className="text-2xl sm:text-3xl font-black tracking-tight leading-tight">
-                    You are in the <span className="text-brand-peach">Top {100 - popData.userPercentile}%</span> of Viewers
-                  </h2>
+                ) : percentileNuance ? (
+                  <>
+                    <h2 className="text-2xl sm:text-3xl font-black tracking-tight leading-tight">
+                      {percentileNuance.title}
+                    </h2>
+                    <div className="inline-block px-2.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wider rounded-md border border-white/20 bg-white/5 mt-1.5">
+                      {percentileNuance.status}
+                    </div>
+                  </>
                 ) : null}
-                <p className="text-xs text-white/70 max-w-xl leading-relaxed">
-                  Comparing your average usage hours relative to {useSyntheticData ? ' ~10,000 active profile logs' : ' the actual users currently active in this workspace'}.
+                <p className="text-xs text-white/70 max-w-xl leading-relaxed pt-1">
+                  {percentileNuance ? percentileNuance.description : ""}
                 </p>
               </div>
-
-              {!isPopLoading && popData && (
-                <div className="bg-white/10 backdrop-blur-md rounded-2xl p-4 sm:p-5 border border-white/15 min-w-[200px] text-center shrink-0">
-                  <span className="text-[10px] uppercase font-extrabold tracking-wider text-white/60 block">Cohort Standing</span>
-                  <span className="text-4xl font-black text-brand-teal mt-1 block">
-                    {popData.userPercentile}th
-                  </span>
-                  <span className="text-[9px] uppercase tracking-wider text-white/40 block mt-0.5">Percentile Rank</span>
-                </div>
-              )}
             </div>
           </div>
 
@@ -895,15 +945,15 @@ function PopulationDashboardContent() {
                     <div className="flex flex-wrap items-center gap-3">
                       {ALL_PLATFORMS.map((platform) => {
                         const key = platform.toLowerCase();
-                        const isYouTube = key === 'youtube';
+                        const isSupported = key === 'youtube' || key === 'instagram' || key === 'tiktok' || key === 'spotify';
 
-                        if (!isYouTube) {
+                        if (!isSupported) {
                           return (
                             <button
                               key={platform}
                               disabled={true}
                               className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold border border-transparent bg-brand-navy/5 text-brand-navy/35 cursor-not-allowed"
-                              title={`${platform} is unsupported in v5 (hosted YouTube-only demo)`}
+                              title={`${platform} is unsupported in this version`}
                             >
                               <span 
                                 className="w-2.5 h-2.5 rounded-full" 
@@ -917,7 +967,7 @@ function PopulationDashboardContent() {
                           );
                         }
                         
-                        const datasetInfo = { status: currentStatus };
+                        const datasetInfo = { status: readyPlatforms.includes(key) ? 'READY' : 'NOT_UPLOADED' };
                         const isReady = datasetInfo.status === 'READY';
                         const isActive = activePlatforms.includes(key) && isReady;
 
@@ -963,7 +1013,7 @@ function PopulationDashboardContent() {
                         <Filter className="w-10 h-10 text-brand-peach mb-3" />
                         <h4 className="font-bold text-brand-navy text-sm">No Platforms Selected</h4>
                         <p className="text-xs text-brand-navy/60 max-w-xs mt-1 leading-relaxed">
-                          Please toggle YouTube at the checklist to display the population comparison timeline.
+                          Please toggle at least one social media source in the checklist filter to display the population comparison timeline.
                         </p>
                       </div>
                     ) : isPopLoading || !popData ? (
@@ -1119,11 +1169,11 @@ function PopulationDashboardContent() {
                     Watch Time Distribution
                   </h3>
                   <p className="text-xs text-brand-navy/60 leading-relaxed mb-6">
-                    A horizontal bar chart showing user distribution in 2-hour cohorts. Your position is highlighted in peach.
+                    A horizontal bar chart showing user distribution in 1-hour cohorts. Your position is highlighted in peach.
                   </p>
                 </div>
 
-                <div className="h-[360px] w-full">
+                <div className="h-[480px] w-full">
                   {isPopLoading || !popData ? (
                     <div className="h-full flex items-center justify-center">
                       <RefreshCw className="w-6 h-6 animate-spin text-brand-teal" />
@@ -1143,7 +1193,8 @@ function PopulationDashboardContent() {
                           fontWeight="bold"
                           tickLine={false}
                           axisLine={false}
-                          label={{ value: 'Density (Users)', position: 'insideBottom', offset: -5, fontSize: 9, fill: '#537D96', fontWeight: 'bold' }}
+                          tickFormatter={(val) => `${val}%`}
+                          label={{ value: 'Percentage of Cohort (%)', position: 'insideBottom', offset: -5, fontSize: 9, fill: '#537D96', fontWeight: 'bold' }}
                         />
                         <YAxis 
                           dataKey="range"
@@ -1163,8 +1214,14 @@ function PopulationDashboardContent() {
                                 <div className="bg-white p-3 rounded-2xl shadow-lg border border-brand-navy/15 text-xs font-semibold text-brand-navy space-y-1.5 min-w-[155px]">
                                   <p className="font-extrabold border-b border-brand-navy/5 pb-1 text-brand-navy">{data.range}</p>
                                   <p className="flex justify-between gap-4">
-                                    <span>Density:</span>
+                                    <span>Cohort Ratio:</span>
                                     <span className="font-mono font-bold text-brand-teal">
+                                      {data.percentage}%
+                                    </span>
+                                  </p>
+                                  <p className="flex justify-between gap-4 text-brand-navy/60 text-[10px]">
+                                    <span>User Count:</span>
+                                    <span className="font-mono">
                                       {popData.useSyntheticData ? `${data.density} active users` : `${data.density} actual user(s)`}
                                     </span>
                                   </p>
@@ -1181,9 +1238,9 @@ function PopulationDashboardContent() {
                           }}
                         />
                         <Bar 
-                          dataKey="density" 
+                          dataKey="percentage" 
                           radius={[0, 4, 4, 0]}
-                          barSize={14}
+                          barSize={10}
                         >
                           {binData.map((entry, index) => (
                             <Cell 

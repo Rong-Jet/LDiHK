@@ -16,6 +16,7 @@ export const OPTIONS: APIRoute = async () => {
 };
 
 export const GET: APIRoute = async () => {
+  const isMockMode = import.meta.env.PUBLIC_MOCK_API === 'true';
   const hasAwsKeys = !!(
     (import.meta.env.AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID) && 
     (import.meta.env.AWS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY) && 
@@ -24,7 +25,7 @@ export const GET: APIRoute = async () => {
   );
 
   return new Response(
-    JSON.stringify({ isMock: !hasAwsKeys }),
+    JSON.stringify({ isMock: isMockMode || !hasAwsKeys }),
     {
       status: 200,
       headers: {
