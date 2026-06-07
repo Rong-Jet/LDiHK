@@ -1,0 +1,18 @@
+{
+  "file_scan_exclusions": [
+    "**/.git",
+    "**/.svn",
+    "**/.hg",
+    "**/.jj",
+    "**/CVS",
+    "**/.DS_Store",
+    "**/Thumbs.db",
+    "**/.classpath",
+    "**/.settings",
+    "**/.venv",
+    "**/.uv-cache",
+    "**/__pycache__",
+    "**/data/processed",
+    "**/data/watch-history.html"
+  ]
+}

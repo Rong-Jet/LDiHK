@@ -21,6 +21,14 @@ v2-multi-user-ingestion.md
 v3-duration-estimation.md
 ```
 
+## Current Version Index
+
+- `v1-youtube-usage-pipeline-api.md`
+- `v2-youtube-temporal-api.md`
+- `v3-sql-duration-query-api.md`
+- `v4-youtube-takeout-s3-postgres-backend.md`
+- `v5-hosted-backend-workers-and-deployment.md`
+
 ## Required Structure
 
 Every version file must use these sections, in this order:
