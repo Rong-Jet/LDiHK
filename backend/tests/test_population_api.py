@@ -26,21 +26,26 @@ class PopulationConnection:
 
     def execute(self, sql: str, parameters: list[object]):
         self.calls.append((sql, parameters))
-        if "population_user_daily" in sql:
+        if "user_duration_stats" in sql and "GROUP BY date" in sql:
             return FakeCursor(
-                ["date", "watch_hours"],
+                ["date", "estimated_watch_seconds"],
                 [
-                    ("2026-06-01", Decimal("1.0")),
-                    ("2026-06-02", Decimal("2.0")),
+                    ("2026-06-01", 3600),
+                    ("2026-06-02", 7200),
                 ],
             )
-        if "population_user_hourly" in sql:
+        if "user_duration_stats" in sql and "GROUP BY hour" in sql:
             return FakeCursor(
-                ["hour", "watch_hours"],
+                ["hour", "estimated_watch_seconds"],
                 [
-                    (0, Decimal("0.25")),
-                    (23, Decimal("0.5")),
+                    (0, 1800),
+                    (23, 3600),
                 ],
+            )
+        if "events_counted" in sql:
+            return FakeCursor(
+                ["events_counted"],
+                [(0,)],
             )
         if "population_daily_percentiles" in sql:
             return FakeCursor(
@@ -103,8 +108,10 @@ class PopulationConnection:
 class EmptyUserPopulationConnection(PopulationConnection):
     def execute(self, sql: str, parameters: list[object]):
         self.calls.append((sql, parameters))
-        if "population_user_daily" in sql:
-            return FakeCursor(["date", "watch_hours"], [])
+        if "user_duration_stats" in sql and "GROUP BY date" in sql:
+            return FakeCursor(["date", "estimated_watch_seconds"], [])
+        if "events_counted" in sql:
+            return FakeCursor(["events_counted"], [(0,)])
         raise AssertionError(f"Unexpected query after not-ready user: {sql}")
 
 
@@ -166,12 +173,12 @@ class PopulationApiTests(unittest.TestCase):
             {"hour": "23:00", "populationAvg": 0.4, "userAvg": 0.5},
         )
         self.assertTrue(connection.closed)
-        self.assertEqual(len(connection.calls), 6)
+        self.assertEqual(len(connection.calls), 8)
         self.assertIn(
             "(ue.is_synthetic = true OR u.is_synthetic = false)",
-            connection.calls[2][0],
+            connection.calls[4][0],
         )
-        self.assertIn("ue.platform = 'youtube'", connection.calls[2][0])
+        self.assertIn("ue.platform = 'youtube'", connection.calls[4][0])
 
     def test_population_query_rejects_non_youtube_platforms(self):
         app = create_app(query_connection_factory=PopulationConnection)
@@ -242,7 +249,7 @@ class PopulationApiTests(unittest.TestCase):
             },
         )
         self.assertTrue(connection.closed)
-        self.assertEqual(len(connection.calls), 1)
+        self.assertEqual(len(connection.calls), 2)
 
 
 if __name__ == "__main__":

@@ -24,7 +24,12 @@ MAX_RESULT_LIMIT = 1000
 ALLOW_IDENTIFIER_DIMENSIONS_ENV = "ALLOW_IDENTIFIER_DIMENSIONS"
 QUERY_BUCKET_TIMEZONE_ENV = "QUERY_BUCKET_TIMEZONE"
 DEFAULT_QUERY_BUCKET_TIMEZONE = "UTC"
-SUPPORTED_DATASETS = {"youtube_usage", "usage_analytics"}
+SUPPORTED_DATASETS = {
+    "youtube_usage",
+    "instagram_usage",
+    "tiktok_usage",
+    "usage_analytics",
+}
 
 ALLOWED_METRICS = {
     "event_count",
@@ -272,6 +277,15 @@ def validate_query_request(request_payload: object) -> StructuredQuery:
     if "user_id" in normalized_filters and normalized_filters["user_id"] != user_id:
         raise QueryValidationError("invalid_user_filter")
     normalized_filters["user_id"] = user_id
+
+    # Automatically map dataset to platform filter for platform-specific datasets
+    if dataset == "youtube_usage":
+        normalized_filters["platform"] = "youtube"
+    elif dataset == "instagram_usage":
+        normalized_filters["platform"] = "instagram"
+    elif dataset == "tiktok_usage":
+        normalized_filters["platform"] = "tiktok"
+
     _validate_date_filters(normalized_filters)
     _validate_value_filters(normalized_filters)
 

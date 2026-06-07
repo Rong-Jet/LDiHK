@@ -118,7 +118,7 @@ function RiskDashboardContent() {
           ...authHeaders(sessionToken),
         },
         body: JSON.stringify({
-          dataset: 'youtube_usage',
+          dataset: 'usage_analytics',
           metrics: ['event_count'],
           dimensions: ['date'],
           filters: {
@@ -170,7 +170,7 @@ function RiskDashboardContent() {
 
   const readyPlatforms = isMockApiMode
     ? ['youtube', 'instagram', 'tiktok', 'spotify']
-    : (currentStatus === 'READY' ? ['youtube'] : []);
+    : (currentStatus === 'READY' ? ['youtube', 'instagram', 'tiktok'] : []);
 
   // Discovered Date Bounds
   const discoveredBounds = React.useMemo(() => {
@@ -1158,7 +1158,7 @@ function RiskDashboardContent() {
                       }}
                     />
                     <Area
-                      type="linear"
+                      type="monotone"
                       dataKey="riskScore"
                       stroke="#EC8F8D"
                       strokeWidth={2.5}

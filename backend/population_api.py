@@ -141,36 +141,30 @@ def _fetch_user_daily_hours(
     *,
     ldihk_id: str,
 ) -> list[dict[str, object]]:
-    return _fetch_rows(
-        connection,
-        f"""
-            /* population_user_daily */
-            SELECT
-                to_char(ue.occurred_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS date,
-                COALESCE(SUM({_estimated_watch_seconds_sql()}), 0)::numeric
-                    / 3600 AS watch_hours
-            FROM usage_events ue
-            JOIN users u
-              ON u.id = ue.user_id
-            LEFT JOIN youtube_videos yv
-              ON yv.video_id = ue.video_id
-            WHERE u.external_id = %s
-              AND ue.is_synthetic = false
-              AND ue.platform = 'youtube'
-              AND ue.event_type = 'watch'
-              AND ue.occurred_at >= (%s::date::timestamp AT TIME ZONE 'UTC')
-              AND ue.occurred_at < (
-                  (%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'UTC'
-              )
-            GROUP BY 1
-            ORDER BY 1
-        """,
-        [
-            ldihk_id,
-            request.start_date.isoformat(),
-            request.end_date.isoformat(),
-        ],
-    )
+    from backend.query_api import query_youtube_usage
+    payload = {
+        "dataset": "youtube_usage",
+        "user_id": ldihk_id,
+        "metrics": ["estimated_watch_seconds"],
+        "dimensions": ["date"],
+        "filters": {
+            "start_date": request.start_date.isoformat(),
+            "end_date": request.end_date.isoformat(),
+        },
+        "options": {
+            "include_zero_buckets": True,
+            "limit": request.day_count,
+        }
+    }
+    res = query_youtube_usage(connection, payload)
+    rows = res.get("rows", [])
+    return [
+        {
+            "date": row["date"],
+            "watch_hours": float(row.get("estimated_watch_seconds", 0)) / 3600.0
+        }
+        for row in rows
+    ]
 
 
 def _fetch_user_hourly_hours(
@@ -179,37 +173,89 @@ def _fetch_user_hourly_hours(
     *,
     ldihk_id: str,
 ) -> list[dict[str, object]]:
-    return _fetch_rows(
-        connection,
-        f"""
-            /* population_user_hourly */
+    from backend.query_api import query_youtube_usage
+    payload = {
+        "dataset": "youtube_usage",
+        "user_id": ldihk_id,
+        "metrics": ["estimated_watch_seconds"],
+        "dimensions": ["hour"],
+        "filters": {
+            "start_date": request.start_date.isoformat(),
+            "end_date": request.end_date.isoformat(),
+        },
+        "options": {
+            "include_zero_buckets": False,
+            "limit": 24,
+        }
+    }
+    res = query_youtube_usage(connection, payload)
+    rows = res.get("rows", [])
+    return [
+        {
+            "hour": row["hour"],
+            "watch_hours": float(row.get("estimated_watch_seconds", 0)) / request.day_count / 3600.0
+        }
+        for row in rows
+    ]
+
+
+def _clipped_events_cte(population_scope: str) -> str:
+    return f"""
+        clipped_events AS (
             SELECT
-                EXTRACT(HOUR FROM ue.occurred_at AT TIME ZONE 'UTC')::int AS hour,
-                COALESCE(SUM({_estimated_watch_seconds_sql()}), 0)::numeric
-                    / %s / 3600 AS watch_hours
+                ue.user_id,
+                ue.occurred_at,
+                ue.platform,
+                ue.event_type,
+                COALESCE(
+                    ue.duration_seconds::numeric,
+                    CASE
+                        WHEN yv.availability_status = 'available'
+                         AND yv.duration_seconds IS NOT NULL
+                        THEN yv.duration_seconds::numeric
+                        ELSE NULL::numeric
+                    END,
+                    CASE
+                        WHEN ue.product = 'shorts' THEN 60::numeric
+                        ELSE 600::numeric
+                    END
+                ) AS base_duration,
+                LEAD(ue.occurred_at) OVER (
+                    PARTITION BY ue.user_id, ue.platform, ue.event_type
+                    ORDER BY ue.occurred_at
+                ) AS next_occurred_at
             FROM usage_events ue
-            JOIN users u
-              ON u.id = ue.user_id
-            LEFT JOIN youtube_videos yv
-              ON yv.video_id = ue.video_id
-            WHERE u.external_id = %s
-              AND ue.is_synthetic = false
+            JOIN users u ON u.id = ue.user_id
+            LEFT JOIN youtube_videos yv ON yv.video_id = ue.video_id
+            WHERE {population_scope}
               AND ue.platform = 'youtube'
               AND ue.event_type = 'watch'
               AND ue.occurred_at >= (%s::date::timestamp AT TIME ZONE 'UTC')
-              AND ue.occurred_at < (
-                  (%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'UTC'
-              )
-            GROUP BY 1
-            ORDER BY 1
-        """,
-        [
-            request.day_count,
-            ldihk_id,
-            request.start_date.isoformat(),
-            request.end_date.isoformat(),
-        ],
-    )
+              AND ue.occurred_at < ((%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'UTC')
+        ),
+        events_with_duration AS (
+            SELECT
+                user_id,
+                occurred_at,
+                platform,
+                event_type,
+                CASE
+                    WHEN base_duration IS NOT NULL
+                     AND event_type = 'watch'
+                     AND occurred_at IS NOT NULL
+                     AND next_occurred_at IS NOT NULL
+                    THEN LEAST(
+                        base_duration,
+                        GREATEST(
+                            0::numeric,
+                            EXTRACT(EPOCH FROM next_occurred_at - occurred_at)::numeric
+                        )
+                    )
+                    ELSE base_duration
+                END AS estimated_watch_seconds
+            FROM clipped_events
+        )
+    """
 
 
 def _fetch_population_daily_percentiles(
@@ -221,24 +267,14 @@ def _fetch_population_daily_percentiles(
         connection,
         f"""
             /* population_daily_percentiles */
-            WITH daily AS (
+            WITH {_clipped_events_cte(population_scope)},
+            daily AS (
                 SELECT
-                    (ue.occurred_at AT TIME ZONE 'UTC')::date AS watch_date,
-                    u.id AS population_user_id,
-                    COALESCE(SUM({_estimated_watch_seconds_sql()}), 0)::numeric
+                    (occurred_at AT TIME ZONE 'UTC')::date AS watch_date,
+                    user_id AS population_user_id,
+                    COALESCE(SUM(estimated_watch_seconds), 0)::numeric
                         / 3600 AS watch_hours
-                FROM usage_events ue
-                JOIN users u
-                  ON u.id = ue.user_id
-                LEFT JOIN youtube_videos yv
-                  ON yv.video_id = ue.video_id
-                WHERE {population_scope}
-                  AND ue.platform = 'youtube'
-                  AND ue.event_type = 'watch'
-                  AND ue.occurred_at >= (%s::date::timestamp AT TIME ZONE 'UTC')
-                  AND ue.occurred_at < (
-                      (%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'UTC'
-                  )
+                FROM events_with_duration
                 GROUP BY 1, 2
             )
             SELECT
@@ -276,38 +312,19 @@ def _fetch_population_hourly_averages(
         connection,
         f"""
             /* population_hourly_averages */
-            WITH population_users AS (
-                SELECT DISTINCT u.id AS population_user_id
-                FROM usage_events ue
-                JOIN users u
-                  ON u.id = ue.user_id
-                WHERE {population_scope}
-                  AND ue.platform = 'youtube'
-                  AND ue.event_type = 'watch'
-                  AND ue.occurred_at >= (%s::date::timestamp AT TIME ZONE 'UTC')
-                  AND ue.occurred_at < (
-                      (%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'UTC'
-                  )
+            WITH {_clipped_events_cte(population_scope)},
+            population_users AS (
+                SELECT DISTINCT user_id AS population_user_id
+                FROM events_with_duration
             ),
             hourly_seconds AS (
                 SELECT
-                    u.id AS population_user_id,
-                    EXTRACT(HOUR FROM ue.occurred_at AT TIME ZONE 'UTC')::int
+                    user_id AS population_user_id,
+                    EXTRACT(HOUR FROM occurred_at AT TIME ZONE 'UTC')::int
                         AS hour,
-                    COALESCE(SUM({_estimated_watch_seconds_sql()}), 0)::numeric
+                    COALESCE(SUM(estimated_watch_seconds), 0)::numeric
                         AS watch_seconds
-                FROM usage_events ue
-                JOIN users u
-                  ON u.id = ue.user_id
-                LEFT JOIN youtube_videos yv
-                  ON yv.video_id = ue.video_id
-                WHERE {population_scope}
-                  AND ue.platform = 'youtube'
-                  AND ue.event_type = 'watch'
-                  AND ue.occurred_at >= (%s::date::timestamp AT TIME ZONE 'UTC')
-                  AND ue.occurred_at < (
-                      (%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'UTC'
-                  )
+                FROM events_with_duration
                 GROUP BY 1, 2
             ),
             hours AS (
@@ -331,8 +348,6 @@ def _fetch_population_hourly_averages(
         [
             request.start_date.isoformat(),
             request.end_date.isoformat(),
-            request.start_date.isoformat(),
-            request.end_date.isoformat(),
             request.day_count,
         ],
     )
@@ -347,23 +362,13 @@ def _fetch_population_distribution(
         connection,
         f"""
             /* population_distribution */
-            WITH population_averages AS (
+            WITH {_clipped_events_cte(population_scope)},
+            population_averages AS (
                 SELECT
-                    u.id AS population_user_id,
-                    COALESCE(SUM({_estimated_watch_seconds_sql()}), 0)::numeric
+                    user_id AS population_user_id,
+                    COALESCE(SUM(estimated_watch_seconds), 0)::numeric
                         / %s / 3600 AS average_hours
-                FROM usage_events ue
-                JOIN users u
-                  ON u.id = ue.user_id
-                LEFT JOIN youtube_videos yv
-                  ON yv.video_id = ue.video_id
-                WHERE {population_scope}
-                  AND ue.platform = 'youtube'
-                  AND ue.event_type = 'watch'
-                  AND ue.occurred_at >= (%s::date::timestamp AT TIME ZONE 'UTC')
-                  AND ue.occurred_at < (
-                      (%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'UTC'
-                  )
+                FROM events_with_duration
                 GROUP BY 1
             )
             SELECT
@@ -374,9 +379,9 @@ def _fetch_population_distribution(
             ORDER BY 1
         """,
         [
-            request.day_count,
             request.start_date.isoformat(),
             request.end_date.isoformat(),
+            request.day_count,
         ],
     )
 
@@ -390,28 +395,18 @@ def _fetch_population_average_hours(
         connection,
         f"""
             /* population_average_hours */
+            WITH {_clipped_events_cte(population_scope)}
             SELECT
-                COALESCE(SUM({_estimated_watch_seconds_sql()}), 0)::numeric
+                COALESCE(SUM(estimated_watch_seconds), 0)::numeric
                     / %s / 3600 AS average_hours
-            FROM usage_events ue
-            JOIN users u
-              ON u.id = ue.user_id
-            LEFT JOIN youtube_videos yv
-              ON yv.video_id = ue.video_id
-            WHERE {population_scope}
-              AND ue.platform = 'youtube'
-              AND ue.event_type = 'watch'
-              AND ue.occurred_at >= (%s::date::timestamp AT TIME ZONE 'UTC')
-              AND ue.occurred_at < (
-                  (%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'UTC'
-              )
-            GROUP BY u.id
+            FROM events_with_duration
+            GROUP BY user_id
             ORDER BY average_hours
         """,
         [
-            request.day_count,
             request.start_date.isoformat(),
             request.end_date.isoformat(),
+            request.day_count,
         ],
     )
 

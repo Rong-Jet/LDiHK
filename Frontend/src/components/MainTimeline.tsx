@@ -396,7 +396,7 @@ export default function MainTimeline({
               {/* Stacked Areas in hours */}
               {activePlatforms.includes('youtube') && (
                 <Area
-                  type="linear"
+                  type="monotone"
                   dataKey="youtubeHours"
                   stackId="1"
                   stroke="#537D96"
@@ -406,7 +406,7 @@ export default function MainTimeline({
               )}
               {activePlatforms.includes('instagram') && (
                 <Area
-                  type="linear"
+                  type="monotone"
                   dataKey="instagramHours"
                   stackId="1"
                   stroke="#EC8F8D"
@@ -416,7 +416,7 @@ export default function MainTimeline({
               )}
               {activePlatforms.includes('tiktok') && (
                 <Area
-                  type="linear"
+                  type="monotone"
                   dataKey="tiktokHours"
                   stackId="1"
                   stroke="#44A194"
@@ -426,7 +426,7 @@ export default function MainTimeline({
               )}
               {activePlatforms.includes('spotify') && (
                 <Area
-                  type="linear"
+                  type="monotone"
                   dataKey="spotifyHours"
                   stackId="1"
                   stroke="#5EAF81"
@@ -436,7 +436,7 @@ export default function MainTimeline({
               )}
               {activePlatforms.includes('twitter') && (
                 <Area
-                  type="linear"
+                  type="monotone"
                   dataKey="twitterHours"
                   stackId="1"
                   stroke="#8ba6b8"
@@ -446,7 +446,7 @@ export default function MainTimeline({
               )}
               {activePlatforms.includes('linkedin') && (
                 <Area
-                  type="linear"
+                  type="monotone"
                   dataKey="linkedinHours"
                   stackId="1"
                   stroke="#66b8ad"

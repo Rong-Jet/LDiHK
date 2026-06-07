@@ -111,7 +111,7 @@ function DashboardContent() {
           ...authHeaders(sessionToken),
         },
         body: JSON.stringify({
-          dataset: 'youtube_usage',
+          dataset: 'usage_analytics',
           metrics: ['event_count'],
           dimensions: ['date'],
           filters: {
@@ -231,7 +231,7 @@ function DashboardContent() {
   // Filter which platforms are actually uploaded and ready to query
   const readyPlatforms = React.useMemo(() => {
     if (isMockApiMode) return ['youtube', 'instagram', 'tiktok', 'spotify'];
-    return currentStatus === 'READY' ? ['youtube'] : [];
+    return currentStatus === 'READY' ? ['youtube', 'instagram', 'tiktok'] : [];
   }, [currentStatus]);
 
   // Only query active platforms that are actually ready

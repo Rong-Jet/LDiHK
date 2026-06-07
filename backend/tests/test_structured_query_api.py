@@ -481,6 +481,7 @@ class StructuredQueryApiTests(unittest.TestCase):
                 "2026-06-01",
                 "2026-06-06",
                 "watch'; DROP TABLE usage_events; --",
+                "youtube",
                 "youtube_music",
                 MAX_RESULT_LIMIT,
             ],

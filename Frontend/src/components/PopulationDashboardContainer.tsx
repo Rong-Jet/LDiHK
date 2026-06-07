@@ -130,7 +130,7 @@ function PopulationDashboardContent() {
           ...authHeaders(sessionToken),
         },
         body: JSON.stringify({
-          dataset: 'youtube_usage',
+          dataset: 'usage_analytics',
           metrics: ['event_count'],
           dimensions: ['date'],
           filters: {
@@ -193,7 +193,7 @@ function PopulationDashboardContent() {
 
   const readyPlatforms = React.useMemo(() => {
     if (isMockApiMode) return ['youtube', 'instagram', 'tiktok', 'spotify'];
-    return currentStatus === 'READY' ? ['youtube'] : [];
+    return currentStatus === 'READY' ? ['youtube', 'instagram', 'tiktok'] : [];
   }, [currentStatus]);
 
   // Fetch Population Analytics
@@ -857,7 +857,7 @@ function PopulationDashboardContent() {
                       </div>
 
                       {/* 2. Custom Percentile Line Controls */}
-                      {IS_MOCK_MODE && (
+                      {hasPopulationData && (
                         <div className="space-y-2">
                           <label className="text-[10px] uppercase tracking-wider font-extrabold text-brand-navy/60 flex items-center gap-1.5 justify-between">
                             <span className="flex items-center gap-1.5">
@@ -1021,24 +1021,24 @@ function PopulationDashboardContent() {
                             }}
                           />
 
-                          {/* Shaded Areas representing Cohort Bands (Mock mode only) */}
-                          {IS_MOCK_MODE && (
+                          {/* Shaded Areas representing Cohort Bands */}
+                          {hasPopulationData && (
                             <>
                               <Area
                                 name="top10"
-                                type="linear"
+                                type="monotone"
                                 dataKey="top10"
                                 fill="#44A194"
                                 fillOpacity={0.06}
-                                stroke="transparent"
+                                stroke="none"
                               />
                               <Area
                                 name="median"
-                                type="linear"
+                                type="monotone"
                                 dataKey="median"
                                 fill="#537D96"
                                 fillOpacity={0.09}
-                                stroke="transparent"
+                                stroke="none"
                               />
                             </>
                           )}
@@ -1046,7 +1046,7 @@ function PopulationDashboardContent() {
                           {/* Solid line representing User Watch hours */}
                           <Line
                             name="user"
-                            type="linear"
+                            type="monotone"
                             dataKey="user"
                             stroke="#EC8F8D"
                             strokeWidth={3}
@@ -1054,11 +1054,11 @@ function PopulationDashboardContent() {
                             activeDot={{ r: 6, stroke: '#FFFFFF', strokeWidth: 2 }}
                           />
 
-                          {/* Dashed line representing custom percentile if toggled (Mock mode only) */}
-                          {IS_MOCK_MODE && showCustomPercentile && (
+                          {/* Dashed line representing custom percentile if toggled */}
+                          {hasPopulationData && showCustomPercentile && (
                             <Line
                               name="customPercentileHours"
-                              type="linear"
+                              type="monotone"
                               dataKey="customPercentileHours"
                               stroke="#44A194"
                               strokeWidth={2}
@@ -1079,13 +1079,13 @@ function PopulationDashboardContent() {
                         <span className="w-3.5 h-3.5 bg-brand-peach rounded"></span>
                         <span>Your Watch Time</span>
                       </div>
-                      {IS_MOCK_MODE && (
+                      {hasPopulationData && (
                         <div className="flex items-center gap-1.5">
                           <span className="w-3.5 h-3.5 bg-brand-navy/15 rounded"></span>
                           <span>Median Cohort Shading</span>
                         </div>
                       )}
-                      {IS_MOCK_MODE && showCustomPercentile && (
+                      {hasPopulationData && showCustomPercentile && (
                         <div className="flex items-center gap-1.5">
                           <span className="w-3.5 h-1 border-t-2 border-dashed border-brand-teal"></span>
                           <span>{customPercentile}th Percentile Benchmark</span>
