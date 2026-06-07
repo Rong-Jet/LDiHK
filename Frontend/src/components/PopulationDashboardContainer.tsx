@@ -8,7 +8,8 @@ import {
 } from 'lucide-react';
 import { 
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, 
-  ReferenceLine, ComposedChart, Line, Legend, CartesianGrid 
+  ReferenceLine, ComposedChart, Line, Legend, CartesianGrid,
+  BarChart, Bar, Cell
 } from 'recharts';
 import UploadZone from './UploadZone';
 import { usePopulationData } from '../hooks/usePopulationData';
@@ -349,6 +350,46 @@ function PopulationDashboardContent() {
       };
     });
   }, [smoothedDeciles, trendlinePeriod]);
+
+  // 5. Group distribution data into 2-hour interval bins (0-24h)
+  const binData = useMemo(() => {
+    if (!popData?.distribution) return [];
+
+    // Initialize 12 bins representing 0-24h
+    const bins = Array.from({ length: 12 }, (_, i) => {
+      const min = i * 2;
+      const max = (i + 1) * 2;
+      return {
+        range: `${min}-${max}h`,
+        min,
+        max,
+        density: 0,
+        isUserBin: false,
+      };
+    });
+
+    // Sum density into corresponding bins
+    popData.distribution.forEach((item) => {
+      const hr = item.hours;
+      const binIdx = Math.min(11, Math.floor(hr / 2));
+      if (binIdx >= 0) {
+        bins[binIdx].density += item.density;
+      }
+    });
+
+    // Identify user's bin
+    const userAvg = popData.userDailyAverageHours;
+    const userBinIdx = Math.min(11, Math.floor(userAvg / 2));
+    if (userBinIdx >= 0 && userBinIdx < 12) {
+      bins[userBinIdx].isUserBin = true;
+    }
+
+    // Append "(You)" suffix to range for the user's bin to clearly mark it on the axis
+    return bins.map(b => ({
+      ...b,
+      range: b.isUserBin ? `${b.min}-${b.max}h (You)` : `${b.min}-${b.max}h`
+    }));
+  }, [popData]);
 
   const hasSelectedPlatforms = activePlatforms.includes('youtube');
 
@@ -1070,7 +1111,7 @@ function PopulationDashboardContent() {
                 </div>
               </div>
 
-              {/* Bell Curve distribution (1/3 width on xl) */}
+              {/* Watch Time Distribution (1/3 width on xl) */}
               <div className="bg-white p-6 rounded-3xl border border-brand-navy/10 shadow-sm flex flex-col justify-between">
                 <div>
                   <h3 className="font-extrabold text-brand-navy text-sm uppercase tracking-wider flex items-center gap-2 mb-2">
@@ -1078,81 +1119,81 @@ function PopulationDashboardContent() {
                     Watch Time Distribution
                   </h3>
                   <p className="text-xs text-brand-navy/60 leading-relaxed mb-6">
-                    A bell curve showcasing the concentration of user averages. The dashed line marks your position.
+                    A horizontal bar chart showing user distribution in 2-hour cohorts. Your position is highlighted in peach.
                   </p>
                 </div>
 
-                <div className="h-[280px] w-full">
+                <div className="h-[360px] w-full">
                   {isPopLoading || !popData ? (
                     <div className="h-full flex items-center justify-center">
                       <RefreshCw className="w-6 h-6 animate-spin text-brand-teal" />
                     </div>
                   ) : (
                     <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart
-                        data={popData.distribution}
-                        margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
+                      <BarChart
+                        layout="vertical"
+                        data={binData}
+                        margin={{ top: 5, right: 15, left: -15, bottom: 5 }}
                       >
-                        <defs>
-                          <linearGradient id="popCurveGrad" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#44A194" stopOpacity={0.4}/>
-                            <stop offset="95%" stopColor="#537D96" stopOpacity={0.0}/>
-                          </linearGradient>
-                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#537D96" strokeOpacity={0.07} />
                         <XAxis 
-                          dataKey="hours" 
+                          type="number"
                           stroke="#537D96" 
                           fontSize={9} 
                           fontWeight="bold"
                           tickLine={false}
                           axisLine={false}
-                          label={{ value: 'Daily Hours', position: 'insideBottom', offset: -5, fontSize: 9, fill: '#537D96', fontWeight: 'bold' }}
+                          label={{ value: 'Density (Users)', position: 'insideBottom', offset: -5, fontSize: 9, fill: '#537D96', fontWeight: 'bold' }}
                         />
                         <YAxis 
+                          dataKey="range"
+                          type="category"
                           stroke="#537D96" 
                           fontSize={9} 
                           fontWeight="bold"
                           tickLine={false}
                           axisLine={false}
+                          width={75}
                         />
                         <Tooltip 
                           content={({ active, payload }) => {
                             if (active && payload && payload.length) {
                               const data = payload[0].payload;
                               return (
-                                <div className="bg-brand-navy text-white p-2.5 rounded-xl shadow-lg border border-white/10 text-[10px] space-y-1">
-                                  <p className="font-black">Avg: {data.hours} hours</p>
-                                  <p className="text-brand-teal font-medium">
-                                    {popData.useSyntheticData ? `${data.density} active users` : `${data.density} actual user(s)`}
+                                <div className="bg-white p-3 rounded-2xl shadow-lg border border-brand-navy/15 text-xs font-semibold text-brand-navy space-y-1.5 min-w-[155px]">
+                                  <p className="font-extrabold border-b border-brand-navy/5 pb-1 text-brand-navy">{data.range}</p>
+                                  <p className="flex justify-between gap-4">
+                                    <span>Density:</span>
+                                    <span className="font-mono font-bold text-brand-teal">
+                                      {popData.useSyntheticData ? `${data.density} active users` : `${data.density} actual user(s)`}
+                                    </span>
                                   </p>
+                                  {data.isUserBin && (
+                                    <p className="text-brand-peach font-black text-[10px] uppercase tracking-wider mt-1 flex items-center gap-1">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-brand-peach animate-pulse"></span>
+                                      Your Cohort Standing
+                                    </p>
+                                  )}
                                 </div>
                               );
                             }
                             return null;
                           }}
                         />
-                        <Area 
-                          type="monotone" 
+                        <Bar 
                           dataKey="density" 
-                          stroke="#44A194" 
-                          strokeWidth={2}
-                          fillOpacity={1} 
-                          fill="url(#popCurveGrad)" 
-                        />
-                        <ReferenceLine 
-                          x={popData.userDailyAverageHours} 
-                          stroke="#EC8F8D" 
-                          strokeWidth={2}
-                          strokeDasharray="4 4"
-                          label={{ 
-                            value: `You (${popData.userDailyAverageHours}h)`, 
-                            position: 'top', 
-                            fill: '#EC8F8D', 
-                            fontSize: 9, 
-                            fontWeight: 'black',
-                          }} 
-                        />
-                      </AreaChart>
+                          radius={[0, 4, 4, 0]}
+                          barSize={14}
+                        >
+                          {binData.map((entry, index) => (
+                            <Cell 
+                              key={`cell-${index}`} 
+                              fill={entry.isUserBin ? '#EC8F8D' : '#44A194'}
+                              fillOpacity={entry.isUserBin ? 0.95 : 0.75}
+                            />
+                          ))}
+                        </Bar>
+                      </BarChart>
                     </ResponsiveContainer>
                   )}
                 </div>
