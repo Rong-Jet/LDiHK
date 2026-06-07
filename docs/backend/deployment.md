@@ -38,6 +38,16 @@ the services listed below.
 | `ENRICHMENT_RETRY_BASE_SECONDS` | No | Enrichment worker | Base retry delay after retriable YouTube API failures. |
 | `LOG_LEVEL` | No | Web, import worker, enrichment worker, migrations | Runtime logging level. |
 | `TEST_DATABASE_URL` | No | Tests | Optional live Postgres target for integration tests only. |
+| `BACKEND_BASE_URL` | Hosted smoke | Smoke script | Hosted web API base URL, for example `https://your-service.onrender.com`. |
+| `SMOKE_LDIHK_ID` | Hosted smoke | Smoke script | Bearer identity used for the end-to-end smoke run. Defaults to a generated `smoke-...` id when omitted. |
+| `SMOKE_WRONG_LDIHK_ID` | Hosted smoke | Smoke script | Optional different bearer identity for the ownership negative check. |
+| `SMOKE_S3_KEY` | Hosted smoke | Smoke script | Optional existing S3 key. Defaults to `uploads/<SMOKE_LDIHK_ID>/hosted-smoke-youtube-takeout.zip`. |
+| `SMOKE_EXPECTED_EVENT_COUNT` | Hosted smoke | Smoke script | Expected minimum event rows from the tiny fixture. Default `1`. |
+| `SMOKE_EXPECTED_WATCH_COUNT` | Hosted smoke | Smoke script | Expected minimum watch rows for duration enrichment. Default `1`. |
+| `SMOKE_IMPORT_TIMEOUT_SECONDS` | Hosted smoke | Smoke script | Import status polling timeout. Default `180`. |
+| `SMOKE_ENRICHMENT_TIMEOUT_SECONDS` | Hosted smoke | Smoke script | Duration enrichment polling timeout. Default `240`. |
+| `SMOKE_POLL_INTERVAL_SECONDS` | Hosted smoke | Smoke script | Poll interval for import and enrichment checks. Default `5`. |
+| `SMOKE_HTTP_TIMEOUT_SECONDS` | Hosted smoke | Smoke script | Per-request HTTP timeout. Default `30`. |
 
 Set `DATABASE_URL` on every backend service. Set S3 variables on the import
 worker, and also set `S3_BUCKET` on the web service when bucket validation is
@@ -269,8 +279,43 @@ fixture routed through the real comments/live-chat and playlist parsers:
 uv run python -m unittest backend.tests.test_deployment_smoke
 ```
 
-Use hosted smoke after V5-T08 lands to verify Render, Supabase, S3, and YouTube
-API configuration end to end.
+The hosted end-to-end smoke script verifies Render web, Render workers,
+Supabase Postgres, S3 import, bearer identity, duration enrichment, structured
+queries, dedupe, and ownership enforcement together:
+
+```sh
+uv run python backend/scripts/smoke_hosted_youtube_takeout.py \
+  --base-url "$BACKEND_BASE_URL" \
+  --ldihk-id "$SMOKE_LDIHK_ID" \
+  --s3-bucket "$S3_BUCKET" \
+  --upload-fixture
+```
+
+`--upload-fixture` uploads a tiny non-private Takeout ZIP under
+`uploads/<SMOKE_LDIHK_ID>/hosted-smoke-youtube-takeout.zip` using the configured
+AWS credentials. To reuse an existing object instead, omit `--upload-fixture`
+and set `SMOKE_S3_KEY` or pass `--s3-key`.
+
+If Render background workers are already running, the script waits for import
+and enrichment completion. For a one-off smoke from a machine with
+`DATABASE_URL`, AWS credentials, and `YOUTUBE_API_KEY`, run the worker commands
+from the smoke script:
+
+```sh
+uv run python backend/scripts/smoke_hosted_youtube_takeout.py \
+  --base-url "$BACKEND_BASE_URL" \
+  --ldihk-id "$SMOKE_LDIHK_ID" \
+  --s3-bucket "$S3_BUCKET" \
+  --upload-fixture \
+  --run-migrations \
+  --run-import-worker-once \
+  --run-enrichment-worker-once
+```
+
+Passing smoke output prints each checkpoint and finishes with JSON containing
+the import IDs, S3 key, event-count rows, duration quality, estimated watch
+seconds, and the event count after the dedupe rerun. Failures include the
+specific route or worker command that failed and the last observed payload.
 
 ## Provider References
 
