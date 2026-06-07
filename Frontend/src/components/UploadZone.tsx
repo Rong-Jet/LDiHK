@@ -1,5 +1,7 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { UploadCloud, CheckCircle2, AlertTriangle, RefreshCw, Database, Lock, Shield, Copy } from 'lucide-react';
+
+const API_BASE = import.meta.env.PUBLIC_API_URL || '';
 
 interface UploadZoneProps {
   onUploadComplete: (s3Key: string, s3Bucket: string) => void;
@@ -29,6 +31,38 @@ function generateCoolId(): string {
   return `ldihk-${adj}-${noun}-${verb}`;
 }
 
+function parseS3BucketAndKey(url: string, headers: any): { bucket: string, key: string } {
+  let key = headers?.['x-amz-s3-key'] || '';
+  let bucket = '';
+
+  try {
+    const urlObj = new URL(url);
+    const hostname = urlObj.hostname;
+    const pathname = urlObj.pathname;
+
+    if (hostname.includes('.s3')) {
+      bucket = hostname.split('.s3')[0];
+      if (!key) {
+        key = decodeURIComponent(pathname.substring(1));
+      }
+    } else {
+      const parts = pathname.substring(1).split('/');
+      bucket = parts[0];
+      if (!key) {
+        key = decodeURIComponent(parts.slice(1).join('/'));
+      }
+    }
+  } catch (e) {
+    console.error("Failed to parse S3 URL:", e);
+  }
+
+  if (key.includes('?')) {
+    key = key.split('?')[0];
+  }
+
+  return { bucket, key };
+}
+
 export default function UploadZone({ onUploadComplete, sessionToken, onSessionGenerated }: UploadZoneProps) {
   const [dragActive, setDragActive] = useState(false);
   const [status, setStatus] = useState<'IDLE' | 'UPLOADING' | 'SUCCESS' | 'ERROR'>('IDLE');
@@ -46,6 +80,20 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
   const fileInputRef = useRef<HTMLInputElement>(null);
   const registerFormRef = useRef<HTMLFormElement>(null);
   const [generatedIdForForm, setGeneratedIdForForm] = useState('');
+  const [isMock, setIsMock] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    fetch('/api/uploader-info')
+      .then((res) => {
+        if (!res.ok) throw new Error();
+        return res.json();
+      })
+      .then((data) => setIsMock(data.isMock))
+      .catch((err) => {
+        console.error('Failed to retrieve uploader info:', err);
+        setIsMock(true);
+      });
+  }, []);
 
   const formatFileSize = (bytes: number) => {
     if (bytes === 0) return '0 Bytes';
@@ -195,7 +243,10 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
         throw new Error('Failed to retrieve upload configuration credentials.');
       }
       
-      const { url, method, headers } = await response.json();
+      const { url, method, headers, isMock: respIsMock } = await response.json();
+      if (respIsMock !== undefined) {
+        setIsMock(respIsMock);
+      }
 
       // 2. Perform direct binary PUT upload bypassing local web server
       const xhr = new XMLHttpRequest();
@@ -223,9 +274,10 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
         if (xhr.status >= 200 && xhr.status < 300) {
           setStatus('SUCCESS');
           setProgress(100);
-          const s3Key = headers?.['x-amz-s3-key'] || `uploads/${activeToken}/${file.name}`;
-          const s3Bucket = 'ldihk-ingress-bucket';
-          onUploadComplete(s3Key, s3Bucket);
+          const { bucket, key } = parseS3BucketAndKey(url, headers);
+          const finalBucket = bucket || 'ldihk-ingress-bucket';
+          const finalKey = key || headers?.['x-amz-s3-key'] || `uploads/${activeToken}/${file.name}`;
+          onUploadComplete(finalKey, finalBucket);
         } else {
           setStatus('ERROR');
           setErrorMessage(`Server responded with status code: ${xhr.status}`);
@@ -276,6 +328,20 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
         onDragOver={handleDrag}
         onDrop={handleDrop}
       >
+        {isMock !== null && (
+          <div className="absolute top-4 right-4 z-10">
+            <span className={`inline-flex items-center gap-1.5 text-[9px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full border shadow-sm ${
+              isMock 
+                ? 'bg-amber-50/80 text-amber-800 border-amber-200' 
+                : 'bg-emerald-50/80 text-emerald-800 border-emerald-200'
+            }`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${
+                isMock ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500 animate-pulse'
+              }`}></span>
+              {isMock ? 'Mock Ingestion' : 'AWS S3 Live Ingestion'}
+            </span>
+          </div>
+        )}
         {status === 'IDLE' && (
           <div className="flex flex-col items-center justify-center py-8 text-center">
             <div className="w-14 h-14 rounded-2xl bg-white border border-brand-navy/10 flex items-center justify-center text-brand-teal mb-4 shadow-sm">

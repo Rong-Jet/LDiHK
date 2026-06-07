@@ -2,6 +2,8 @@ import type { APIRoute } from 'astro';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 export const prerender = false;
 
@@ -28,7 +30,7 @@ export const OPTIONS: APIRoute = async () => {
 };
 
 export const GET: APIRoute = async () => {
-  // Reset state to initial mock state (YouTube & Instagram ready)
+  // Reset state to initial mock state (YouTube ready)
   const statePath = path.join(os.tmpdir(), 'ldihk_state.json');
   try {
     await fs.writeFile(statePath, JSON.stringify(INITIAL_STATE, null, 2));
@@ -75,10 +77,68 @@ export const POST: APIRoute = async ({ request }) => {
   const filename = body.filename || 'data.zip';
   const contentType = body.contentType || 'application/zip';
   const urlObj = new URL(request.url);
-
   const s3Key = `uploads/${ldihkId}/${filename}`;
 
-  // Return S3 pre-signed upload credentials under v5 spec mapping
+  // AWS Configuration lookup
+  const awsAccessKeyId = import.meta.env.AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID;
+  const awsSecretAccessKey = import.meta.env.AWS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY;
+  const awsRegion = import.meta.env.AWS_REGION || process.env.AWS_REGION;
+  const s3Bucket = import.meta.env.S3_BUCKET || process.env.S3_BUCKET;
+
+  const hasAwsKeys = !!(awsAccessKeyId && awsSecretAccessKey && awsRegion && s3Bucket);
+
+  if (hasAwsKeys) {
+    try {
+      const s3Client = new S3Client({
+        region: awsRegion,
+        credentials: {
+          accessKeyId: awsAccessKeyId,
+          secretAccessKey: awsSecretAccessKey,
+        }
+      });
+
+      const command = new PutObjectCommand({
+        Bucket: s3Bucket,
+        Key: s3Key,
+        ContentType: contentType,
+      });
+
+      // Generate a real AWS S3 pre-signed PUT URL valid for 15 minutes (900 seconds)
+      const presignedUrl = await getSignedUrl(s3Client, command, { expiresIn: 900 });
+
+      return new Response(
+        JSON.stringify({
+          url: presignedUrl,
+          method: 'PUT',
+          headers: {
+            'Content-Type': contentType,
+          },
+          isMock: false
+        }),
+        {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+          },
+        }
+      );
+    } catch (err: any) {
+      console.error('Failed to generate S3 pre-signed URL:', err);
+      return new Response(
+        JSON.stringify({ error: 's3_signature_failure', message: err.message }),
+        {
+          status: 500,
+          headers: {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+          },
+        }
+      );
+    }
+  }
+
+  // Fallback: Return S3 pre-signed upload credentials under mock uploader
   return new Response(
     JSON.stringify({
       url: `${urlObj.origin}/api/mock-s3-upload`,
@@ -89,6 +149,7 @@ export const POST: APIRoute = async ({ request }) => {
         'x-amz-meta-ldihkid': ldihkId,
         'x-amz-s3-key': s3Key
       },
+      isMock: true
     }),
     {
       status: 200,

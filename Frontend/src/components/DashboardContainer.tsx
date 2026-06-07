@@ -10,6 +10,8 @@ import DeepDive from './DeepDive';
 import BehavioralHeatmap from './BehavioralHeatmap';
 import { useAnalyticsData } from '../hooks/useAnalyticsData';
 
+const API_BASE = import.meta.env.PUBLIC_API_URL || '';
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -53,6 +55,7 @@ function DashboardContent() {
 
   const handleLogout = () => {
     localStorage.removeItem('ldihk_session_token');
+    localStorage.removeItem('ldihk_current_import_id');
     setSessionToken(null);
     setLoginIdInput('');
     setUploadCompleted(false);
@@ -77,14 +80,19 @@ function DashboardContent() {
   // Trendline Moving Average Period (days)
   const [trendlinePeriod, setTrendlinePeriod] = useState(7);
 
-  const [currentImportId, setCurrentImportId] = useState<string | null>(null);
+  const [currentImportId, setCurrentImportId] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('ldihk_current_import_id') || null;
+    }
+    return null;
+  });
 
   // Session Probe Query: check if youtube_usage data is ready on mount/login
   const { data: probeData, refetch: refetchProbe } = useQuery({
     queryKey: ['probe', sessionToken],
     queryFn: async () => {
       if (!sessionToken) return null;
-      const res = await fetch('/api/query', {
+      const res = await fetch(`${API_BASE}/api/query`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -95,11 +103,11 @@ function DashboardContent() {
           metrics: ['event_count'],
           dimensions: ['date'],
           filters: {
-            start_date: '2026-05-08',
-            end_date: '2026-06-06',
+            start_date: '2015-01-01',
+            end_date: '2026-12-31',
           },
           options: {
-            limit: 1
+            include_zero_buckets: false
           }
         })
       });
@@ -113,7 +121,7 @@ function DashboardContent() {
   const { data: importStatusData } = useQuery({
     queryKey: ['importStatus', currentImportId, sessionToken],
     queryFn: async () => {
-      const res = await fetch(`/api/imports/${currentImportId}`, {
+      const res = await fetch(`${API_BASE}/api/imports/${currentImportId}`, {
         headers: {
           'Authorization': `Bearer ${sessionToken}`
         }
@@ -130,7 +138,8 @@ function DashboardContent() {
 
   // Effect to resolve queue progress and update probe results
   useEffect(() => {
-    if (importStatusData?.status === 'completed') {
+    if (importStatusData?.status === 'completed' || importStatusData?.status === 'failed') {
+      localStorage.removeItem('ldihk_current_import_id');
       refetchProbe();
       setCurrentImportId(null);
     }
@@ -140,33 +149,32 @@ function DashboardContent() {
     ? 'PROCESSING' 
     : (probeData?.rows && probeData.rows.length > 0 ? 'READY' : 'NOT_UPLOADED');
 
+  // Discovered Date Bounds
+  const discoveredBounds = React.useMemo(() => {
+    if (!probeData?.rows || probeData.rows.length === 0) {
+      return { minDate: '2026-05-08', maxDate: '2026-06-06' };
+    }
+    const dates = probeData.rows.map((r: any) => r.date).sort();
+    return {
+      minDate: dates[0],
+      maxDate: dates[dates.length - 1],
+    };
+  }, [probeData]);
+
   const datasets = React.useMemo(() => {
     return {
       youtube: {
         status: currentStatus,
-        min_date: '2026-05-08',
-        max_date: '2026-06-06',
+        min_date: discoveredBounds.minDate,
+        max_date: discoveredBounds.maxDate,
       }
     };
-  }, [currentStatus]);
+  }, [currentStatus, discoveredBounds]);
 
   // Derive global min/max date bounds across all ready platforms
   const dateBounds = React.useMemo(() => {
-    let min: string | null = null;
-    let max: string | null = null;
-
-    Object.values(datasets).forEach((info: any) => {
-      if (info.status === 'READY' && info.min_date && info.max_date) {
-        if (!min || info.min_date < min) min = info.min_date;
-        if (!max || info.max_date > max) max = info.max_date;
-      }
-    });
-
-    return {
-      minDate: min || '2026-05-08',
-      maxDate: max || '2026-06-06',
-    };
-  }, [datasets]);
+    return discoveredBounds;
+  }, [discoveredBounds]);
 
   // Filter which platforms are actually uploaded and ready to query
   const readyPlatforms = React.useMemo(() => {
@@ -181,8 +189,21 @@ function DashboardContent() {
   // Automatically update start and end dates when date bounds are discovered
   React.useEffect(() => {
     if (dateBounds.minDate && dateBounds.maxDate) {
-      setStartDate(dateBounds.minDate);
-      setEndDate(dateBounds.maxDate);
+      const [y, m, d] = dateBounds.maxDate.split('-').map(Number);
+      const maxDateObj = new Date(Date.UTC(y, m - 1, d));
+      const minDateObj = new Date(dateBounds.minDate);
+      const diffDays = Math.round((maxDateObj.getTime() - minDateObj.getTime()) / (1000 * 3600 * 24));
+
+      if (diffDays > 90) {
+        // Set visible window to the last 30 days of the dataset
+        const defaultStart = new Date(maxDateObj);
+        defaultStart.setUTCDate(defaultStart.getUTCDate() - 29);
+        setStartDate(defaultStart.toISOString().split('T')[0]);
+        setEndDate(dateBounds.maxDate);
+      } else {
+        setStartDate(dateBounds.minDate);
+        setEndDate(dateBounds.maxDate);
+      }
     }
   }, [dateBounds.minDate, dateBounds.maxDate]);
 
@@ -199,7 +220,7 @@ function DashboardContent() {
 
   const handleUploadComplete = async (s3Key: string, s3Bucket: string) => {
     try {
-      const res = await fetch('/api/imports', {
+      const res = await fetch(`${API_BASE}/api/imports`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -212,6 +233,7 @@ function DashboardContent() {
       });
       if (!res.ok) throw new Error('Failed to register import');
       const data = await res.json();
+      localStorage.setItem('ldihk_current_import_id', data.import_id);
       setCurrentImportId(data.import_id);
     } catch (err) {
       console.error('Error starting import:', err);
@@ -231,6 +253,7 @@ function DashboardContent() {
       // Wipe queries from cache
       queryClient.setQueryData(['probe', sessionToken], null);
       queryClient.setQueryData(['insights'], null);
+      localStorage.removeItem('ldihk_current_import_id');
       setCurrentImportId(null);
       
       // Force status refetch to align
@@ -404,8 +427,12 @@ function DashboardContent() {
               }`}
             ></span>
             Pipeline Status:{' '}
-            <span className="uppercase text-brand-teal">
-              {currentStatus === 'PROCESSING' ? 'Processing Data...' : 'Active'}
+            <span className={`uppercase font-extrabold ${currentStatus === 'READY' ? 'text-brand-teal' : currentStatus === 'PROCESSING' ? 'text-brand-peach' : 'text-brand-navy/40'}`}>
+              {currentStatus === 'PROCESSING' 
+                ? 'Processing Data...' 
+                : currentStatus === 'READY' 
+                ? 'Active' 
+                : 'Awaiting Upload'}
             </span>
           </div>
 
@@ -445,6 +472,24 @@ function DashboardContent() {
             Log Out
           </button>
         </div>
+      </div>
+
+      {/* View Switcher Sub-Navigation Tabs */}
+      <div className="mb-8 border-b border-brand-navy/10 flex gap-4 text-left">
+        <a 
+          href="/dashboard"
+          className="px-4 py-3 text-sm font-extrabold border-b-2 border-brand-teal text-brand-teal transition-all"
+          id="tab-personal-insights"
+        >
+          Personal Insights
+        </a>
+        <a 
+          href="/population"
+          className="px-4 py-3 text-sm font-bold border-b-2 border-transparent text-brand-navy/50 hover:text-brand-navy transition-all"
+          id="tab-population-benchmark"
+        >
+          Population Benchmark
+        </a>
       </div>
 
       {/* Collapsible Upload Zone Drawer */}
