@@ -1,15 +1,26 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Iterable, Sequence
+from datetime import datetime, timedelta, timezone
+from typing import Iterable, Mapping, Sequence
 
 from backend.enrichment.youtube_api import MAX_VIDEO_IDS_PER_REQUEST
 
 
 DEFAULT_MAX_DURATION_SECONDS = 5400
 YOUTUBE_DATA_API_SOURCE = "youtube_data_api"
+ENRICHMENT_JOB_TYPE_YOUTUBE_DURATIONS = "youtube_video_durations"
+
+ENRICHMENT_JOB_STATUS_QUEUED = "queued"
+ENRICHMENT_JOB_STATUS_RUNNING = "running"
+ENRICHMENT_JOB_STATUS_COMPLETED = "completed"
+ENRICHMENT_JOB_STATUS_FAILED = "failed"
+
+ENRICHMENT_WORKER_STATUS_IDLE = "idle"
+ENRICHMENT_WORKER_STATUS_COMPLETED = "completed"
+ENRICHMENT_WORKER_STATUS_FAILED = "failed"
 
 AVAILABLE = "available"
 DELETED_OR_UNAVAILABLE = "deleted_or_unavailable"
@@ -48,6 +59,242 @@ class DurationEnrichmentSummary:
     unavailable_video_count: int
     failed_video_count: int
     api_call_count: int
+
+
+@dataclass(frozen=True)
+class EnrichmentJob:
+    id: str
+    job_type: str
+    payload_json: Mapping[str, object]
+    attempts: int
+
+
+@dataclass(frozen=True)
+class EnrichmentWorkerRunResult:
+    job_id: str | None
+    status: str
+    summary: DurationEnrichmentSummary | None = None
+    error_message: str | None = None
+
+
+class DurationApiBatchError(RuntimeError):
+    pass
+
+
+class YoutubeDurationEnrichmentWorker:
+    def __init__(
+        self,
+        *,
+        repository: PostgresEnrichmentRepository,
+        client,
+        max_duration_seconds: int = DEFAULT_MAX_DURATION_SECONDS,
+        batch_size: int = MAX_VIDEO_IDS_PER_REQUEST,
+        retry_base_seconds: int = 300,
+        now_fn=None,
+    ) -> None:
+        if retry_base_seconds < 1:
+            raise ValueError("retry_base_seconds must be positive")
+        self.repository = repository
+        self.client = client
+        self.max_duration_seconds = max_duration_seconds
+        self.batch_size = batch_size
+        self.retry_base_seconds = retry_base_seconds
+        self.now_fn = _utc_now if now_fn is None else now_fn
+
+    def process_one(self) -> EnrichmentWorkerRunResult:
+        job = self.repository.claim_next_job()
+        if job is None:
+            return EnrichmentWorkerRunResult(
+                job_id=None,
+                status=ENRICHMENT_WORKER_STATUS_IDLE,
+            )
+
+        try:
+            video_ids = _video_ids_from_job_payload(job.payload_json)
+            summary = enrich_youtube_video_ids(
+                self.repository.connection,
+                self.client,
+                video_ids,
+                max_duration_seconds=self.max_duration_seconds,
+                batch_size=self.batch_size,
+                commit=False,
+                raise_on_api_error=True,
+            )
+            self.repository.complete_job(job.id)
+        except DurationApiBatchError as error:
+            error_message = str(error)
+            self.repository.fail_job_for_retry(
+                job.id,
+                error_message=error_message,
+                run_after=self._next_run_after(job.attempts),
+            )
+            return EnrichmentWorkerRunResult(
+                job_id=job.id,
+                status=ENRICHMENT_WORKER_STATUS_FAILED,
+                error_message=error_message,
+            )
+        except Exception as error:
+            self.repository.rollback()
+            error_message = _last_error(error)
+            self.repository.fail_job_for_retry(
+                job.id,
+                error_message=error_message,
+                run_after=self._next_run_after(job.attempts),
+            )
+            return EnrichmentWorkerRunResult(
+                job_id=job.id,
+                status=ENRICHMENT_WORKER_STATUS_FAILED,
+                error_message=error_message,
+            )
+
+        return EnrichmentWorkerRunResult(
+            job_id=job.id,
+            status=ENRICHMENT_WORKER_STATUS_COMPLETED,
+            summary=summary,
+        )
+
+    def repair_once(self) -> EnrichmentWorkerRunResult:
+        summary = enrich_missing_youtube_durations(
+            self.repository.connection,
+            self.client,
+            max_duration_seconds=self.max_duration_seconds,
+            batch_size=self.batch_size,
+            limit=self.batch_size,
+            commit=True,
+        )
+        if summary.requested_video_count == 0:
+            return EnrichmentWorkerRunResult(
+                job_id=None,
+                status=ENRICHMENT_WORKER_STATUS_IDLE,
+                summary=summary,
+            )
+        return EnrichmentWorkerRunResult(
+            job_id=None,
+            status=ENRICHMENT_WORKER_STATUS_COMPLETED,
+            summary=summary,
+        )
+
+    def _next_run_after(self, previous_attempts: int) -> datetime:
+        backoff_seconds = self.retry_base_seconds * (2**previous_attempts)
+        return self.now_fn() + timedelta(seconds=backoff_seconds)
+
+
+class PostgresEnrichmentRepository:
+    def __init__(self, connection) -> None:
+        self.connection = connection
+
+    def claim_next_job(
+        self,
+        *,
+        job_type: str = ENRICHMENT_JOB_TYPE_YOUTUBE_DURATIONS,
+    ) -> EnrichmentJob | None:
+        placeholder = _placeholder(self.connection)
+        now_value = _timestamp_value(self.connection, _utc_now())
+        locking_clause = "" if _uses_sqlite_placeholders(self.connection) else (
+            "FOR UPDATE SKIP LOCKED"
+        )
+        try:
+            row = self.connection.execute(
+                f"""
+                SELECT id, job_type, payload_json, attempts
+                FROM enrichment_jobs
+                WHERE job_type = {placeholder}
+                  AND status IN ({placeholder}, {placeholder})
+                  AND run_after <= {placeholder}
+                ORDER BY run_after, created_at
+                LIMIT 1
+                {locking_clause}
+                """,
+                (
+                    job_type,
+                    ENRICHMENT_JOB_STATUS_QUEUED,
+                    ENRICHMENT_JOB_STATUS_FAILED,
+                    now_value,
+                ),
+            ).fetchone()
+            if row is None:
+                self.connection.commit()
+                return None
+
+            job_id = str(row[0])
+            started_at = _timestamp_value(self.connection, _utc_now())
+            self.connection.execute(
+                f"""
+                UPDATE enrichment_jobs
+                SET status = {placeholder},
+                    started_at = {placeholder},
+                    finished_at = NULL,
+                    error_message = NULL
+                WHERE id = {placeholder}
+                """,
+                (ENRICHMENT_JOB_STATUS_RUNNING, started_at, job_id),
+            )
+            self.connection.commit()
+            return EnrichmentJob(
+                id=job_id,
+                job_type=str(row[1]),
+                payload_json=_decode_payload(row[2]),
+                attempts=int(row[3]),
+            )
+        except Exception:
+            self.connection.rollback()
+            raise
+
+    def complete_job(self, job_id: str) -> None:
+        placeholder = _placeholder(self.connection)
+        finished_at = _timestamp_value(self.connection, _utc_now())
+        try:
+            self.connection.execute(
+                f"""
+                UPDATE enrichment_jobs
+                SET status = {placeholder},
+                    finished_at = {placeholder},
+                    error_message = NULL
+                WHERE id = {placeholder}
+                """,
+                (ENRICHMENT_JOB_STATUS_COMPLETED, finished_at, job_id),
+            )
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+
+    def fail_job_for_retry(
+        self,
+        job_id: str,
+        *,
+        error_message: str,
+        run_after: datetime,
+    ) -> None:
+        placeholder = _placeholder(self.connection)
+        finished_at = _timestamp_value(self.connection, _utc_now())
+        run_after_value = _timestamp_value(self.connection, run_after)
+        try:
+            self.connection.execute(
+                f"""
+                UPDATE enrichment_jobs
+                SET status = {placeholder},
+                    attempts = attempts + 1,
+                    run_after = {placeholder},
+                    finished_at = {placeholder},
+                    error_message = {placeholder}
+                WHERE id = {placeholder}
+                """,
+                (
+                    ENRICHMENT_JOB_STATUS_FAILED,
+                    run_after_value,
+                    finished_at,
+                    error_message[:1000],
+                    job_id,
+                ),
+            )
+            self.connection.commit()
+        except Exception:
+            self.connection.rollback()
+            raise
+
+    def rollback(self) -> None:
+        self.connection.rollback()
 
 
 def parse_youtube_duration(duration: str) -> int:
@@ -153,6 +400,7 @@ def enrich_youtube_video_ids(
     max_duration_seconds: int = DEFAULT_MAX_DURATION_SECONDS,
     batch_size: int = MAX_VIDEO_IDS_PER_REQUEST,
     commit: bool = True,
+    raise_on_api_error: bool = False,
 ) -> DurationEnrichmentSummary:
     if batch_size < 1 or batch_size > MAX_VIDEO_IDS_PER_REQUEST:
         raise ValueError("batch_size must be between 1 and 50")
@@ -187,6 +435,10 @@ def enrich_youtube_video_ids(
                     ),
                     fetched_at=fetched_at,
                 )
+            if raise_on_api_error:
+                if commit:
+                    connection.commit()
+                raise DurationApiBatchError(last_error) from error
             continue
 
         returned_by_id = {
@@ -391,6 +643,12 @@ def _uses_sqlite_placeholders(connection) -> bool:
     return type(connection).__module__.startswith("sqlite3")
 
 
+def _timestamp_value(connection, value: datetime) -> object:
+    if _uses_sqlite_placeholders(connection):
+        return value.isoformat()
+    return value
+
+
 def _last_error(error: Exception) -> str:
     message = str(error).strip()
     if not message:
@@ -400,3 +658,24 @@ def _last_error(error: Exception) -> str:
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc).replace(microsecond=0)
+
+
+def _decode_payload(payload: object) -> Mapping[str, object]:
+    if isinstance(payload, Mapping):
+        return payload
+    if isinstance(payload, bytes):
+        payload = payload.decode("utf-8")
+    if isinstance(payload, str):
+        decoded = json.loads(payload)
+        if isinstance(decoded, Mapping):
+            return decoded
+    raise ValueError("enrichment job payload_json must be a JSON object")
+
+
+def _video_ids_from_job_payload(payload: Mapping[str, object]) -> list[str]:
+    video_ids = payload.get("video_ids")
+    if not isinstance(video_ids, list):
+        raise ValueError("enrichment job payload_json.video_ids must be a list")
+    return _dedupe_video_ids(
+        video_id for video_id in video_ids if isinstance(video_id, str)
+    )

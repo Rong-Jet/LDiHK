@@ -62,6 +62,7 @@ class FakeImportRepository:
         self.usage_events: list[UsageEventWrite] = []
         self.subscriptions: list[SubscriptionWrite] = []
         self.import_warnings: list[ImportWarningWrite] = []
+        self.enrichment_jobs: list[tuple[str, list[str]]] = []
         self.event_insert_results = event_insert_results or []
         self.subscription_upsert_results = subscription_upsert_results or []
         self.fail_on_import_warning = fail_on_import_warning
@@ -88,6 +89,7 @@ class FakeImportRepository:
                 self.usage_events,
                 self.subscriptions,
                 self.import_warnings,
+                self.enrichment_jobs,
                 self.event_insert_results,
                 self.subscription_upsert_results,
                 self.records_seen,
@@ -105,6 +107,7 @@ class FakeImportRepository:
                 self.usage_events,
                 self.subscriptions,
                 self.import_warnings,
+                self.enrichment_jobs,
                 self.event_insert_results,
                 self.subscription_upsert_results,
                 self.records_seen,
@@ -202,6 +205,22 @@ class FakeImportRepository:
         self.records_seen = records_seen
         self.records_imported = records_imported
         self.warnings_count = warnings_count
+
+    def enqueue_enrichment_for_import(self, *, import_id: str) -> int:
+        video_ids = sorted(
+            {
+                event.video_id
+                for event in self.usage_events
+                if event.import_id == import_id
+                and event.platform == "youtube"
+                and event.product == "youtube"
+                and event.event_type == "watch"
+                and event.video_id is not None
+            }
+        )
+        if video_ids:
+            self.enrichment_jobs.append((import_id, video_ids))
+        return len(video_ids)
 
     def mark_import_failed(
         self,
@@ -374,6 +393,33 @@ class S3ZipWorkerTests(unittest.TestCase):
         self.assertNotIn("Private Query", serialized_writes)
         self.assertNotIn("Private Channel", serialized_writes)
         self.assertNotIn("Private warning sample", serialized_writes)
+
+    def test_completed_import_queues_distinct_watch_video_ids_for_enrichment(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_zip = Path(tmpdir) / "takeout.zip"
+            write_zip(source_zip, {"watch-history.html": b"history"})
+            job = ImportJob(
+                id="import-9",
+                user_id="user-1",
+                s3_bucket="bucket",
+                s3_key="uploads/user-1/takeout.zip",
+            )
+            repository = FakeImportRepository(job)
+            worker = S3ZipImportWorker(
+                repository=repository,
+                s3_client=FakeS3Client(source_zip),
+                dispatch_member=fake_dispatch_member,
+                parser_loader=lambda dispatch: parser_with_duplicate_watch_videos,
+            )
+
+            result = worker.process_one()
+
+        self.assertEqual(result.status, IMPORT_STATUS_COMPLETED)
+        self.assertEqual(repository.status, "completed")
+        self.assertEqual(
+            repository.enrichment_jobs,
+            [("import-9", ["video-1", "video-2"])],
+        )
 
     def test_imported_counts_use_actual_persistence_results(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -763,6 +809,30 @@ def parser_with_duplicate_warnings(content: bytes, *, source_path: str) -> Parse
             ParseWarning(code="duplicate_warning", sample="same private sample"),
         ],
         records_seen=2,
+    )
+
+
+def parser_with_duplicate_watch_videos(content: bytes, *, source_path: str) -> ParseResult:
+    return ParseResult(
+        events=[
+            private_event(),
+            private_event(),
+            ParsedEvent(
+                event_type="watch",
+                product="youtube",
+                occurred_at=datetime(2026, 6, 6, 8, 54, tzinfo=timezone.utc),
+                video_id="video-2",
+            ),
+            ParsedEvent(
+                event_type="comment",
+                product="youtube",
+                occurred_at=datetime(2026, 6, 6, 8, 55, tzinfo=timezone.utc),
+                video_id="comment-video",
+            ),
+        ],
+        subscriptions=[],
+        warnings=[],
+        records_seen=4,
     )
 
 

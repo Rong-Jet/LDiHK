@@ -411,6 +411,7 @@ class SmokeWorkerRepository:
         self.usage_events: list[UsageEventWrite] = []
         self.subscriptions: list[SubscriptionWrite] = []
         self.import_warnings: list[ImportWarningWrite] = []
+        self.enrichment_jobs: list[tuple[str, list[str]]] = []
         self.records_seen = 0
         self.records_imported = 0
         self.warnings_count = 0
@@ -489,6 +490,22 @@ class SmokeWorkerRepository:
         self.records_seen = records_seen
         self.records_imported = records_imported
         self.warnings_count = warnings_count
+
+    def enqueue_enrichment_for_import(self, *, import_id: str) -> int:
+        video_ids = sorted(
+            {
+                event.video_id
+                for event in self.usage_events
+                if event.import_id == import_id
+                and event.platform == "youtube"
+                and event.product == "youtube"
+                and event.event_type == "watch"
+                and event.video_id is not None
+            }
+        )
+        if video_ids:
+            self.enrichment_jobs.append((import_id, video_ids))
+        return len(video_ids)
 
     def mark_import_failed(
         self,
