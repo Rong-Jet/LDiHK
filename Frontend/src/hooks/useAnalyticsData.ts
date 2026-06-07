@@ -53,6 +53,7 @@ const API_BASE = IS_MOCK_MODE ? '' : (import.meta.env.PUBLIC_API_URL || '');
 // Fetch helper that runs POST queries in parallel for active platforms with date range filters
 const fetchCombinedPlatforms = async (
   platforms: string[],
+  paddedStartDate: string,
   startDate: string,
   endDate: string,
   sessionToken: string
@@ -61,7 +62,7 @@ const fetchCombinedPlatforms = async (
     return { dailyResults: [], hourlyResults: [] };
   }
 
-  // 1. Fetch daily records
+  // 1. Fetch daily records (padded for smooth SMA calculation)
   const dailyPromises = platforms.map(async (platform) => {
     const res = await fetch(`${API_BASE}/api/query`, {
       method: 'POST',
@@ -74,7 +75,7 @@ const fetchCombinedPlatforms = async (
         metrics: ['event_count', 'estimated_watch_seconds'],
         dimensions: ['date'],
         filters: {
-          start_date: startDate,
+          start_date: paddedStartDate,
           end_date: endDate,
         },
       }),
@@ -84,7 +85,7 @@ const fetchCombinedPlatforms = async (
     return { platform, rows: data.rows as DailyRow[] };
   });
 
-  // 2. Fetch hourly aggregates
+  // 2. Fetch hourly aggregates (strictly for visible interval)
   const hourlyPromises = platforms.map(async (platform) => {
     const res = await fetch(`${API_BASE}/api/query`, {
       method: 'POST',
@@ -133,9 +134,9 @@ export function useAnalyticsData(
 
   // Query to fetch data only when uploader is completed and API is READY
   const { data, isLoading, error, refetch } = useQuery<CombinedQueryResult>({
-    queryKey: ['insights', activePlatforms.join(','), paddedStartDate, endDate, sessionToken],
-    queryFn: () => fetchCombinedPlatforms(activePlatforms, paddedStartDate, endDate, sessionToken),
-    enabled: isReady && activePlatforms.length > 0 && !!paddedStartDate && !!endDate,
+    queryKey: ['insights', activePlatforms.join(','), paddedStartDate, startDate, endDate, sessionToken],
+    queryFn: () => fetchCombinedPlatforms(activePlatforms, paddedStartDate, startDate, endDate, sessionToken),
+    enabled: isReady && activePlatforms.length > 0 && !!paddedStartDate && !!startDate && !!endDate,
   });
 
   // Merge daily records, apply timeline-duration-scaled smoothing, and calculate SMA
@@ -213,13 +214,6 @@ export function useAnalyticsData(
     const visibleDaysCount = Math.max(1, Math.round((endUTC - startUTC) / (1000 * 3600 * 24)) + 1);
 
     let smoothWindow = 1; // raw (no smoothing) by default
-    if (visibleDaysCount > 1825) {
-      smoothWindow = 60; // 60-day rolling average for 5Y+
-    } else if (visibleDaysCount > 365) {
-      smoothWindow = 30; // 30-day rolling average for 1Y+
-    } else if (visibleDaysCount > 30) {
-      smoothWindow = 7;  // 7-day rolling average for >30 Days
-    }
 
     // Apply rolling average smoothing to raw platform curves
     const smoothed = rawMapped.map((record, index) => {
@@ -309,7 +303,7 @@ export function useAnalyticsData(
     return chartData.reduce((sum, record) => sum + record.totalHours, 0);
   }, [chartData]);
 
-  // Aggregate hourly watch time and divide by number of days to get average daily watchtime per hour (based on visible dates)
+  // Aggregate hourly watch time and divide by number of days to get average daily watchtime per hour (based on visible range)
   const hourlyHeatmapData = useMemo(() => {
     const hourlyAggregateSecs = new Array(24).fill(0);
 

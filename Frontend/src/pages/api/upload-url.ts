@@ -81,9 +81,9 @@ export const POST: APIRoute = async ({ request }) => {
 
   // AWS Configuration lookup
   const isMockMode = import.meta.env.PUBLIC_MOCK_API === 'true';
-  const awsAccessKeyId = import.meta.env.AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID;
-  const awsSecretAccessKey = import.meta.env.AWS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY;
-  const awsRegion = import.meta.env.AWS_REGION || process.env.AWS_REGION;
+  const awsAccessKeyId = import.meta.env.CUSTOM_AWS_ACCESS_KEY_ID || process.env.CUSTOM_AWS_ACCESS_KEY_ID;
+  const awsSecretAccessKey = import.meta.env.CUSTOM_AWS_SECRET_ACCESS_KEY || process.env.CUSTOM_AWS_SECRET_ACCESS_KEY;
+  const awsRegion = import.meta.env.CUSTOM_AWS_REGION || process.env.CUSTOM_AWS_REGION;
   const s3Bucket = import.meta.env.S3_BUCKET || process.env.S3_BUCKET;
 
   const hasAwsKeys = !isMockMode && !!(awsAccessKeyId && awsSecretAccessKey && awsRegion && s3Bucket);

@@ -22,8 +22,10 @@ export interface HourlyAverageRow {
 
 export interface PopulationQueryResult {
   ready: boolean;
-  userPercentile: number;
-  userDailyAverageHours: number;
+  /** true when the backend served real population comparison data, false when unavailable */
+  hasPopulationData?: boolean;
+  userPercentile: number | null;
+  userDailyAverageHours: number | null;
   useSyntheticData: boolean;
   customPercentile: number;
   distribution: DistributionRow[];
@@ -31,18 +33,16 @@ export interface PopulationQueryResult {
   hourlyAverages: HourlyAverageRow[];
 }
 
-const IS_MOCK_MODE = import.meta.env.PUBLIC_MOCK_API === 'true';
-const API_BASE = IS_MOCK_MODE ? '' : (import.meta.env.PUBLIC_API_URL || '');
-
 const fetchPopulationData = async (
   platforms: string[],
   startDate: string,
   endDate: string,
   useSyntheticData: boolean,
   customPercentile: number,
-  sessionToken: string
+  sessionToken: string,
+  visibleStartDate: string
 ): Promise<PopulationQueryResult> => {
-  const res = await fetch(`${API_BASE}/api/population`, {
+  const res = await fetch('/api/population', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -53,7 +53,8 @@ const fetchPopulationData = async (
       startDate,
       endDate,
       useSyntheticData,
-      customPercentile
+      customPercentile,
+      visibleStartDate
     })
   });
 
@@ -71,11 +72,12 @@ export function usePopulationData(
   useSyntheticData: boolean,
   customPercentile: number,
   isReady: boolean,
-  sessionToken: string | null
+  sessionToken: string | null,
+  visibleStartDate: string
 ) {
   return useQuery<PopulationQueryResult>({
-    queryKey: ['population', platforms.join(','), startDate, endDate, useSyntheticData, customPercentile, sessionToken],
-    queryFn: () => fetchPopulationData(platforms, startDate, endDate, useSyntheticData, customPercentile, sessionToken || ''),
+    queryKey: ['population', platforms.join(','), platforms.join(','), startDate, endDate, useSyntheticData, customPercentile, sessionToken, visibleStartDate],
+    queryFn: () => fetchPopulationData(platforms, startDate, endDate, useSyntheticData, customPercentile, sessionToken || '', visibleStartDate),
     enabled: isReady && !!startDate && !!endDate && !!sessionToken && platforms.length > 0,
   });
 }
