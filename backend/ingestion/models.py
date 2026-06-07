@@ -10,6 +10,7 @@ class ParsedEvent:
     event_type: str
     product: str
     occurred_at: datetime | None
+    platform: str = "youtube"
     video_id: str | None = None
     channel_id: str | None = None
     title: str | None = None
@@ -17,6 +18,7 @@ class ParsedEvent:
     raw_status: str | None = None
     native_id: str | None = None
     sequence: int = 0
+    duration_seconds: int | None = None
 
 
 @dataclass(frozen=True)

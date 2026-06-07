@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from bs4 import BeautifulSoup
+from lxml import etree
 
 from backend.ingestion.models import ParseResult, ParseWarning, ParsedEvent
 
@@ -114,14 +115,16 @@ TITLE_PREFIXES = (
     "Visited ",
     "Listened to ",
 )
+HTML_PARSE_CHUNK_BYTES = 64 * 1024
 
 
 def parse_watch_history(content: bytes, *, source_path: str) -> ParseResult:
-    text, warnings = _decode_content(content)
-    if _is_json_source(source_path, text):
+    if _is_json_source(source_path, content):
+        text, warnings = _decode_content(content)
         result = _parse_json_history(text)
     else:
-        result = _parse_html_history(text)
+        warnings = []
+        result = _parse_html_history(content)
 
     return ParseResult(
         events=result.events,
@@ -131,24 +134,75 @@ def parse_watch_history(content: bytes, *, source_path: str) -> ParseResult:
     )
 
 
-def _parse_html_history(text: str) -> ParseResult:
-    soup = BeautifulSoup(text, "lxml")
-    cards = soup.select("div.outer-cell")
+def _parse_html_history(content: bytes) -> ParseResult:
+    parser = etree.HTMLPullParser(events=("end",), tag="div", recover=True)
     events: list[ParsedEvent] = []
     warnings: list[ParseWarning] = []
+    records_seen = 0
 
-    for sequence, card in enumerate(cards, start=1):
-        event, record_warnings = _parse_html_card(card, sequence=sequence)
-        warnings.extend(record_warnings)
-        if event is not None:
-            events.append(event)
+    for chunk_start in range(0, len(content), HTML_PARSE_CHUNK_BYTES):
+        parser.feed(content[chunk_start : chunk_start + HTML_PARSE_CHUNK_BYTES])
+        records_seen = _consume_html_cards(
+            parser,
+            records_seen=records_seen,
+            events=events,
+            warnings=warnings,
+        )
+
+    parser.close()
+    records_seen = _consume_html_cards(
+        parser,
+        records_seen=records_seen,
+        events=events,
+        warnings=warnings,
+    )
 
     return ParseResult(
         events=events,
         subscriptions=[],
         warnings=warnings,
-        records_seen=len(cards),
+        records_seen=records_seen,
     )
+
+
+def _consume_html_cards(
+    parser: etree.HTMLPullParser,
+    *,
+    records_seen: int,
+    events: list[ParsedEvent],
+    warnings: list[ParseWarning],
+) -> int:
+    for _, element in parser.read_events():
+        if not _is_outer_cell_element(element):
+            continue
+
+        records_seen += 1
+        card_html = etree.tostring(element, encoding="unicode", method="html")
+        card_soup = BeautifulSoup(card_html, "lxml")
+        card = card_soup.select_one("div.outer-cell") or card_soup
+        event, record_warnings = _parse_html_card(card, sequence=records_seen)
+        warnings.extend(record_warnings)
+        if event is not None:
+            events.append(event)
+        _clear_parsed_element(element)
+
+    return records_seen
+
+
+def _is_outer_cell_element(element: etree._Element) -> bool:
+    if element.tag != "div":
+        return False
+    classes = set((element.get("class") or "").split())
+    return "outer-cell" in classes
+
+
+def _clear_parsed_element(element: etree._Element) -> None:
+    element.clear()
+    parent = element.getparent()
+    if parent is None:
+        return
+    while element.getprevious() is not None:
+        del parent[0]
 
 
 def _parse_html_card(
@@ -303,10 +357,10 @@ def _decode_content(content: bytes) -> tuple[str, list[ParseWarning]]:
         )
 
 
-def _is_json_source(source_path: str, text: str) -> bool:
+def _is_json_source(source_path: str, content: bytes) -> bool:
     if source_path.replace("\\", "/").lower().endswith(".json"):
         return True
-    return text.lstrip().startswith(("[", "{"))
+    return content.lstrip().startswith((b"[", b"{"))
 
 
 def _json_records(payload: Any) -> list[Any] | None:

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import io
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +23,7 @@ from backend.ingestion.worker import (
     SubscriptionWrite,
     UsageEventWrite,
 )
+from backend.scripts import smoke_hosted_youtube_takeout as hosted_smoke
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -45,6 +48,7 @@ class DeploymentSmokeTests(unittest.TestCase):
         self.assertIn("backend/scripts/run_worker.py", deployment_doc)
         self.assertIn("backend/scripts/run_enrichment_worker.py", deployment_doc)
         self.assertIn("backend/scripts/run_migrations.py", deployment_doc)
+        self.assertIn("backend/scripts/smoke_hosted_youtube_takeout.py", deployment_doc)
         self.assertIn("one Docker image", deployment_doc)
 
         for variable in (
@@ -68,6 +72,16 @@ class DeploymentSmokeTests(unittest.TestCase):
             "ENRICHMENT_RETRY_BASE_SECONDS",
             "LOG_LEVEL",
             "TEST_DATABASE_URL",
+            "BACKEND_BASE_URL",
+            "SMOKE_LDIHK_ID",
+            "SMOKE_WRONG_LDIHK_ID",
+            "SMOKE_S3_KEY",
+            "SMOKE_EXPECTED_EVENT_COUNT",
+            "SMOKE_EXPECTED_WATCH_COUNT",
+            "SMOKE_IMPORT_TIMEOUT_SECONDS",
+            "SMOKE_ENRICHMENT_TIMEOUT_SECONDS",
+            "SMOKE_POLL_INTERVAL_SECONDS",
+            "SMOKE_HTTP_TIMEOUT_SECONDS",
         ):
             self.assertRegex(env_example, rf"(?m)^{variable}=")
 
@@ -332,6 +346,133 @@ class DeploymentSmokeTests(unittest.TestCase):
             [("smoke-bucket", "uploads/smoke_user/takeout.zip")],
         )
 
+    def test_hosted_smoke_script_fixture_contains_single_watch_record(self):
+        fixture_bytes = hosted_smoke.build_smoke_fixture_zip()
+
+        with ZipFile(io.BytesIO(fixture_bytes)) as zip_file:
+            names = zip_file.namelist()
+            payload = json.loads(zip_file.read(names[0]).decode("utf-8"))
+
+        self.assertEqual(
+            names,
+            ["Takeout/YouTube and YouTube Music/history/watch-history.json"],
+        )
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["header"], "YouTube")
+        self.assertIn(hosted_smoke.SMOKE_VIDEO_ID, payload[0]["titleUrl"])
+
+    def test_hosted_smoke_script_runs_full_fake_hosted_flow(self):
+        http_client = FakeHostedSmokeHttpClient()
+        s3_uploader = FakeHostedSmokeS3Uploader()
+        commands: list[list[str]] = []
+        messages: list[str] = []
+
+        report = hosted_smoke.run_hosted_smoke(
+            hosted_smoke.HostedSmokeConfig(
+                base_url="https://backend.example.test",
+                ldihk_id="smoke_user",
+                wrong_ldihk_id="intruder",
+                s3_bucket="smoke-bucket",
+                upload_fixture=True,
+                run_migrations=True,
+                run_import_worker_once=True,
+                run_enrichment_worker_once=True,
+                poll_interval_seconds=0,
+            ),
+            http_client=http_client,
+            s3_uploader=s3_uploader,
+            command_runner=lambda command: fake_successful_command(command, commands),
+            sleep_fn=lambda _seconds: None,
+            emit=messages.append,
+        )
+
+        self.assertEqual(
+            report.s3_key,
+            "uploads/smoke_user/hosted-smoke-youtube-takeout.zip",
+        )
+        self.assertEqual(report.event_count_total, 1)
+        self.assertEqual(report.estimated_watch_seconds, 213)
+        self.assertEqual(report.duration_quality["events_with_api_duration"], 1)
+        self.assertEqual(report.event_count_after_rerun, 1)
+        self.assertEqual(
+            report.support_commands,
+            ["migrations", "import worker", "enrichment worker", "import worker"],
+        )
+        self.assertEqual(
+            s3_uploader.uploads[0][:2],
+            ("smoke-bucket", "uploads/smoke_user/hosted-smoke-youtube-takeout.zip"),
+        )
+        self.assertGreater(s3_uploader.uploads[0][2], 0)
+
+        request_summary = [
+            (request.method, request.path, request.bearer_token)
+            for request in http_client.requests
+        ]
+        self.assertIn(("GET", "/health", None), request_summary)
+        self.assertIn(("POST", "/api/imports", "smoke_user"), request_summary)
+        self.assertIn(("GET", "/api/imports/import-1", "intruder"), request_summary)
+        self.assertIn(("POST", "/api/query", "smoke_user"), request_summary)
+        self.assertTrue(any("dedupe ok" in message for message in messages))
+        self.assertIn("run_migrations.py", commands[0][1])
+        self.assertIn("run_worker.py", commands[1][1])
+        self.assertIn("run_enrichment_worker.py", commands[2][1])
+
+    def test_hosted_smoke_script_fails_fast_when_health_check_fails(self):
+        http_client = FakeHostedSmokeHttpClient(health_status=503)
+
+        with self.assertRaisesRegex(
+            hosted_smoke.SmokeFailure,
+            r"GET /health returned HTTP 503",
+        ):
+            hosted_smoke.run_hosted_smoke(
+                hosted_config(),
+                http_client=http_client,
+                sleep_fn=lambda _seconds: None,
+                emit=None,
+            )
+
+    def test_hosted_smoke_script_reports_failed_import_status(self):
+        http_client = FakeHostedSmokeHttpClient(failed_import_id="import-1")
+
+        with self.assertRaisesRegex(
+            hosted_smoke.SmokeFailure,
+            r"Import import-1 failed: worker exploded",
+        ):
+            hosted_smoke.run_hosted_smoke(
+                hosted_config(),
+                http_client=http_client,
+                sleep_fn=lambda _seconds: None,
+                emit=None,
+            )
+
+    def test_hosted_smoke_script_requires_wrong_bearer_denial(self):
+        http_client = FakeHostedSmokeHttpClient(wrong_bearer_status=200)
+
+        with self.assertRaisesRegex(
+            hosted_smoke.SmokeFailure,
+            "Wrong bearer could read another import status",
+        ):
+            hosted_smoke.run_hosted_smoke(
+                hosted_config(wrong_ldihk_id="intruder"),
+                http_client=http_client,
+                sleep_fn=lambda _seconds: None,
+                emit=None,
+            )
+
+    def test_hosted_smoke_script_rejects_duplicate_analytics_after_rerun(self):
+        http_client = FakeHostedSmokeHttpClient(rerun_event_count=2)
+
+        with self.assertRaisesRegex(
+            hosted_smoke.SmokeFailure,
+            "Import rerun changed analytics event count",
+        ):
+            hosted_smoke.run_hosted_smoke(
+                hosted_config(),
+                http_client=http_client,
+                sleep_fn=lambda _seconds: None,
+                emit=None,
+            )
+
 
 class MigrationSmokeConnection:
     def __init__(self) -> None:
@@ -376,6 +517,8 @@ class SmokeApiImportRepository:
         s3_bucket: str,
         s3_key: str,
         s3_etag: str | None,
+        age: int | None = None,
+        sex: str | None = None,
     ) -> ApiImportJob:
         self.created_s3_keys.append(s3_key)
         return ApiImportJob(
@@ -492,12 +635,21 @@ class SmokeWorkerRepository:
         self.usage_events.append(event)
         return True
 
+    def insert_usage_events(self, events: list[UsageEventWrite]) -> int:
+        for event in events:
+            self.insert_usage_event(event)
+        return len(events)
+
     def upsert_subscription(self, subscription: SubscriptionWrite) -> bool:
         self.subscriptions.append(subscription)
         return True
 
     def insert_import_warning(self, warning: ImportWarningWrite) -> None:
         self.import_warnings.append(warning)
+
+    def insert_import_warnings(self, warnings: list[ImportWarningWrite]) -> None:
+        for warning in warnings:
+            self.insert_import_warning(warning)
 
     def update_import_counts(
         self,
@@ -531,7 +683,6 @@ class SmokeWorkerRepository:
                 for event in self.usage_events
                 if event.import_id == import_id
                 and event.platform == "youtube"
-                and event.product == "youtube"
                 and event.event_type == "watch"
                 and event.video_id is not None
             }
@@ -571,6 +722,203 @@ def write_zip(zip_path: Path, files: dict[str, bytes]) -> None:
     with ZipFile(zip_path, "w") as zip_file:
         for path, content in files.items():
             zip_file.writestr(path, content)
+
+
+@dataclass(frozen=True)
+class HostedSmokeHttpRequest:
+    method: str
+    path: str
+    json_body: object | None
+    bearer_token: str | None
+
+
+class FakeHostedSmokeHttpClient:
+    def __init__(
+        self,
+        *,
+        health_status: int = 200,
+        failed_import_id: str | None = None,
+        wrong_bearer_status: int = 404,
+        rerun_event_count: int = 1,
+    ) -> None:
+        self.health_status = health_status
+        self.failed_import_id = failed_import_id
+        self.wrong_bearer_status = wrong_bearer_status
+        self.rerun_event_count = rerun_event_count
+        self.requests: list[HostedSmokeHttpRequest] = []
+        self.created_imports: list[str] = []
+        self.event_query_count = 0
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: object | None = None,
+        bearer_token: str | None = None,
+    ) -> hosted_smoke.HttpResponse:
+        self.requests.append(
+            HostedSmokeHttpRequest(
+                method=method,
+                path=path,
+                json_body=json_body,
+                bearer_token=bearer_token,
+            )
+        )
+        if method == "GET" and path == "/health":
+            return hosted_smoke.HttpResponse(
+                self.health_status,
+                {"status": "ok"} if self.health_status == 200 else {"status": "down"},
+            )
+        if method == "POST" and path == "/api/imports":
+            import_id = f"import-{len(self.created_imports) + 1}"
+            self.created_imports.append(import_id)
+            return hosted_smoke.HttpResponse(
+                201,
+                {
+                    "import_id": import_id,
+                    "ldihk_id": bearer_token,
+                    "status": "queued",
+                },
+            )
+        if method == "GET" and path.startswith("/api/imports/"):
+            import_id = path.rsplit("/", 1)[-1]
+            if bearer_token != "smoke_user":
+                return hosted_smoke.HttpResponse(
+                    self.wrong_bearer_status,
+                    {"error": "import_not_found"},
+                )
+            if import_id == self.failed_import_id:
+                return hosted_smoke.HttpResponse(
+                    200,
+                    import_status_payload(
+                        import_id,
+                        status="failed",
+                        records_seen=1,
+                        records_imported=0,
+                        error_message="worker exploded",
+                    ),
+                )
+            imported = 0 if import_id == "import-2" else 1
+            return hosted_smoke.HttpResponse(
+                200,
+                import_status_payload(
+                    import_id,
+                    status="completed",
+                    records_seen=1,
+                    records_imported=imported,
+                ),
+            )
+        if method == "POST" and path == "/api/query":
+            if not isinstance(json_body, dict):
+                return hosted_smoke.HttpResponse(400, {"error": "invalid_request"})
+            metrics = json_body.get("metrics")
+            if metrics == ["event_count"]:
+                self.event_query_count += 1
+                count = (
+                    self.rerun_event_count
+                    if self.event_query_count >= 2
+                    else 1
+                )
+                return hosted_smoke.HttpResponse(
+                    200,
+                    query_payload(
+                        rows=[{"event_type": "watch", "event_count": count}],
+                    ),
+                )
+            if metrics == ["estimated_watch_seconds"]:
+                return hosted_smoke.HttpResponse(
+                    200,
+                    query_payload(
+                        rows=[{"estimated_watch_seconds": 213}],
+                        quality={
+                            "events_counted": 1,
+                            "events_with_api_duration": 1,
+                            "events_with_user_average_estimate": 0,
+                            "events_with_global_default_estimate": 0,
+                            "videos_unavailable": 0,
+                            "videos_capped": 0,
+                        },
+                    ),
+                )
+        raise AssertionError(f"unexpected request: {method} {path}")
+
+
+class FakeHostedSmokeS3Uploader:
+    def __init__(self) -> None:
+        self.uploads: list[tuple[str, str, int]] = []
+
+    def upload_zip(self, bucket: str, key: str, body: bytes) -> None:
+        self.uploads.append((bucket, key, len(body)))
+
+
+def hosted_config(**overrides) -> hosted_smoke.HostedSmokeConfig:
+    values = {
+        "base_url": "https://backend.example.test",
+        "ldihk_id": "smoke_user",
+        "wrong_ldihk_id": "wrong_user",
+        "s3_bucket": "smoke-bucket",
+        "poll_interval_seconds": 0,
+    }
+    values.update(overrides)
+    return hosted_smoke.HostedSmokeConfig(**values)
+
+
+def fake_successful_command(
+    command: list[str] | tuple[str, ...],
+    commands: list[list[str]],
+) -> subprocess.CompletedProcess[str]:
+    command_list = list(command)
+    commands.append(command_list)
+    return subprocess.CompletedProcess(command_list, 0, stdout="ok", stderr="")
+
+
+def import_status_payload(
+    import_id: str,
+    *,
+    status: str,
+    records_seen: int,
+    records_imported: int,
+    error_message: str | None = None,
+) -> dict[str, object]:
+    return {
+        "import_id": import_id,
+        "ldihk_id": "smoke_user",
+        "status": status,
+        "records_seen": records_seen,
+        "records_imported": records_imported,
+        "warnings_count": 0,
+        "error_message": error_message,
+        "created_at": "2026-06-06T08:00:00+00:00",
+        "started_at": "2026-06-06T08:00:01+00:00",
+        "finished_at": "2026-06-06T08:00:02+00:00",
+    }
+
+
+def query_payload(
+    *,
+    rows: list[dict[str, object]],
+    quality: dict[str, int] | None = None,
+) -> dict[str, object]:
+    return {
+        "schema_version": "youtube_usage.structured_query.v1",
+        "dataset": "youtube_usage",
+        "ldihk_id": "smoke_user",
+        "duration_strategy": {
+            "kind": "api_user_average_global_default",
+        },
+        "query": {},
+        "quality": quality
+        or {
+            "events_counted": 1,
+            "events_with_api_duration": 0,
+            "events_with_user_average_estimate": 0,
+            "events_with_global_default_estimate": 1,
+            "videos_unavailable": 1,
+            "videos_capped": 0,
+        },
+        "rows": rows,
+    }
 
 
 if __name__ == "__main__":

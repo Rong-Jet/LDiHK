@@ -22,12 +22,6 @@ docs/backend/versions/v4-youtube-takeout-s3-postgres-backend.md
 docs/backend/versions/v5-hosted-backend-workers-and-deployment.md
 ```
 
-Frontend handoff contract:
-
-```text
-docs/backend/frontend-api-spec.md
-```
-
 ## Current Delivery
 
 - The backend exposes a health endpoint.
@@ -39,18 +33,25 @@ docs/backend/frontend-api-spec.md
 - The backend creates queued import jobs in Postgres.
 - The backend exposes import status through `GET /api/imports/{import_id}`.
 - The import worker polls Postgres, claims queued imports, downloads ZIP files
-  from S3, safely scans ZIP members, dispatches supported YouTube parsers, and
-  writes normalized records to Postgres.
-- The backend stores normalized usage events for watch history, search history,
-  likes, playlist/watch-later adds, comments, live chats, and subscriptions
-  where Takeout source files are available and parser support exists.
+  from S3, safely scans ZIP members, dispatches supported YouTube, TikTok, and
+  Instagram parsers, and writes normalized records to Postgres.
+- The backend stores normalized usage events for YouTube watch history, search
+  history, likes, playlist/watch-later adds, comments, live chats, and
+  subscriptions, TikTok watch history where export source files are available,
+  and timestamped Instagram activity records such as story views, likes, saves,
+  watched videos, messages, and content creation records.
+- Instagram activity records are modeled as one timestamped export record per
+  interaction and carry a default `duration_seconds` value of `15` seconds for
+  estimated temporal usage metrics. Duplicate timestamps are preserved because
+  Instagram exports can contain multiple interactions in the same minute.
 - The backend stores privacy-minimized fields by default: IDs, timestamps,
   event types, hashed titles, hashed channel titles, hashed search terms, and
   count/sample-hash warnings.
 - The backend does not store raw ZIP contents, raw watched titles, raw search
   terms, raw comments, or raw Takeout HTML by default.
 - The backend exposes `POST /api/query` for structured, allowlisted,
-  parameterized dashboard queries.
+  parameterized dashboard queries across real YouTube imports and seeded
+  synthetic multi-platform population data.
 - The frontend must not submit raw SQL.
 - Duration enrichment primitives exist for YouTube Data API duration and
   availability lookup, but hosted asynchronous enrichment wiring is a v5
@@ -73,87 +74,14 @@ docs/backend/frontend-api-spec.md
 - The query endpoint can power:
   - daily watch counts
   - estimated watch seconds
+  - estimated usage seconds across platforms
   - hourly heatmap data
   - event counts by type
+  - platform, profile, and synthetic-population comparisons
   - subscription count
   - top channels by event count
   - top videos by event count when identifier dimensions are enabled
 - A hosted smoke test proves Render + Supabase + S3 + YouTube API configuration.
-
-## Required API Outcomes
-
-Health:
-
-```text
-GET /health
-```
-
-Import creation:
-
-```text
-POST /api/imports
-```
-
-Request:
-
-```json
-{
-  "s3_bucket": "existing-bucket",
-  "s3_key": "uploads/demo-user-123/takeout.zip",
-  "s3_etag": "optional-etag"
-}
-```
-
-Response:
-
-```json
-{
-  "import_id": "uuid",
-  "ldihk_id": "demo-user-123",
-  "status": "queued"
-}
-```
-
-Import status:
-
-```text
-GET /api/imports/{import_id}
-```
-
-Structured query:
-
-```text
-POST /api/query
-```
-
-Request:
-
-```json
-{
-  "dataset": "youtube_usage",
-  "metrics": ["event_count", "estimated_watch_seconds"],
-  "dimensions": ["date", "hour"],
-  "filters": {
-    "start_date": "2026-06-01",
-    "end_date": "2026-06-07",
-    "event_type": "watch"
-  },
-  "options": {
-    "include_zero_buckets": true,
-    "limit": 500
-  }
-}
-```
-
-Response includes:
-
-- `schema_version`
-- `dataset`
-- `ldihk_id`
-- `duration_strategy`
-- `query`
-- `quality`
-- `rows`
 
 ## Privacy And Safety Requirements
 
@@ -173,7 +101,7 @@ Response includes:
 
 - Use one Docker image for web and workers.
 - Use Supabase Postgres or equivalent hosted Postgres.
-- Use an existing S3 bucket for frontend-uploaded Takeout ZIP files.
+- Use an existing S3 bucket for frontend-uploaded export ZIP files.
 - Use Render Web Service for the API.
 - Use Render Background Workers for import and enrichment loops.
 - Run migrations before long-lived services handle traffic.
@@ -189,7 +117,8 @@ Response includes:
 - Frontend-submitted raw SQL.
 - Creator-side YouTube metrics such as uploads, revenue, channel analytics, or
   studio metrics.
-- Instagram, TikTok, and Douyin support.
+- Douyin, unsupported TikTok source files beyond watch history, and unsupported
+  Instagram source files beyond the path registry.
 - Redis, Celery, Kubernetes, Terraform, or a separate analytics warehouse for
   the hackathon MVP.
 - AI augmentation.

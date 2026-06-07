@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { 
-  AreaChart, Area, Line, XAxis, YAxis, CartesianGrid, 
+  AreaChart, Area, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer 
 } from 'recharts';
 import { Calendar, Filter, Layers, CheckSquare, Square, ChevronDown, ChevronUp } from 'lucide-react';
@@ -17,10 +17,6 @@ interface MainTimelineProps {
   startDate: string;
   endDate: string;
   setDateRange: (start: string, end: string) => void;
-
-  // Dynamic Trendline Period (number of days)
-  trendlinePeriod: number;
-  setTrendlinePeriod: (period: number) => void;
 
   datasets?: Record<string, { status: string; min_date?: string; max_date?: string }>;
   dateBounds?: { minDate: string; maxDate: string };
@@ -45,10 +41,49 @@ const PLATFORM_LABELS: Record<string, string> = {
   twitterHours: 'Twitter/X',
   linkedinHours: 'LinkedIn',
   totalHours: 'Total Active Time',
-  smaHours: 'Dynamic SMA',
 };
 
-const REFERENCE_DATE = '2026-06-06';
+const FALLBACK_REFERENCE_DATE = '2026-06-06';
+const PRESETS = ['1D', '7D', '15D', '30D', '1Y', '5Y', 'all'];
+
+const parseUtcDate = (dateString: string) => {
+  const [year, month, day] = dateString.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day));
+};
+
+const formatUtcDate = (date: Date) => date.toISOString().split('T')[0];
+
+const clampStartDate = (start: string, minDate?: string) => (
+  minDate && start < minDate ? minDate : start
+);
+
+const getPresetRange = (preset: string, referenceDate: string, minDate?: string) => {
+  const refDateObj = parseUtcDate(referenceDate);
+  let start = referenceDate;
+
+  if (preset === '7D') {
+    refDateObj.setUTCDate(refDateObj.getUTCDate() - 6);
+    start = formatUtcDate(refDateObj);
+  } else if (preset === '15D') {
+    refDateObj.setUTCDate(refDateObj.getUTCDate() - 14);
+    start = formatUtcDate(refDateObj);
+  } else if (preset === '30D') {
+    refDateObj.setUTCDate(refDateObj.getUTCDate() - 29);
+    start = formatUtcDate(refDateObj);
+  } else if (preset === '1Y') {
+    refDateObj.setUTCFullYear(refDateObj.getUTCFullYear() - 1);
+    refDateObj.setUTCDate(refDateObj.getUTCDate() + 1);
+    start = formatUtcDate(refDateObj);
+  } else if (preset === '5Y') {
+    refDateObj.setUTCFullYear(refDateObj.getUTCFullYear() - 5);
+    refDateObj.setUTCDate(refDateObj.getUTCDate() + 1);
+    start = formatUtcDate(refDateObj);
+  } else if (preset === 'all') {
+    start = minDate || referenceDate;
+  }
+
+  return { start: clampStartDate(start, minDate), end: referenceDate };
+};
 
 export default function MainTimeline({
   data,
@@ -59,60 +94,58 @@ export default function MainTimeline({
   startDate,
   endDate,
   setDateRange,
-  trendlinePeriod,
-  setTrendlinePeriod,
   datasets,
   dateBounds,
 }: MainTimelineProps) {
-  const [showSMA, setShowSMA] = useState(true);
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+
+  const activeDateBounds = useMemo(() => {
+    const readyBounds = activePlatforms
+      .map((platform) => datasets?.[platform])
+      .filter((dataset): dataset is { status: string; min_date: string; max_date: string } => (
+        dataset?.status === 'READY' && !!dataset.min_date && !!dataset.max_date
+      ));
+
+    if (readyBounds.length === 0) {
+      return dateBounds || { minDate: FALLBACK_REFERENCE_DATE, maxDate: FALLBACK_REFERENCE_DATE };
+    }
+
+    const intersectionMin = readyBounds
+      .map((dataset) => dataset.min_date)
+      .sort()
+      .at(-1) || FALLBACK_REFERENCE_DATE;
+    const intersectionMax = readyBounds
+      .map((dataset) => dataset.max_date)
+      .sort()[0] || FALLBACK_REFERENCE_DATE;
+
+    if (intersectionMin <= intersectionMax) {
+      return { minDate: intersectionMin, maxDate: intersectionMax };
+    }
+
+    const unionDates = readyBounds.flatMap((dataset) => [dataset.min_date, dataset.max_date]).sort();
+    return {
+      minDate: unionDates[0] || FALLBACK_REFERENCE_DATE,
+      maxDate: unionDates.at(-1) || FALLBACK_REFERENCE_DATE,
+    };
+  }, [activePlatforms, datasets, dateBounds]);
+
+  const referenceDate = activeDateBounds.maxDate || dateBounds?.maxDate || endDate || FALLBACK_REFERENCE_DATE;
 
   // Determine active preset label based on startDate
   const activePreset = useMemo(() => {
-    if (endDate !== REFERENCE_DATE) return 'custom';
-    
-    if (startDate === REFERENCE_DATE) return '1D';
-    if (startDate === '2026-05-31') return '7D';
-    if (startDate === '2026-05-23') return '15D';
-    if (startDate === '2026-05-08') return '30D';
-    if (startDate === '2025-06-07') return '1Y';
-    if (startDate === '2021-06-07') return '5Y';
-    if (startDate === '2016-06-06') return 'all';
-    
+    if (endDate !== referenceDate) return 'custom';
+
+    for (const preset of PRESETS) {
+      const range = getPresetRange(preset, referenceDate, activeDateBounds.minDate);
+      if (startDate === range.start) return preset;
+    }
+
     return 'custom';
-  }, [startDate, endDate]);
+  }, [activeDateBounds.minDate, endDate, referenceDate, startDate]);
 
   // Handle Preset Click
   const applyPreset = (preset: string) => {
-    const end = REFERENCE_DATE;
-    let start = REFERENCE_DATE;
-
-    const refDateObj = new Date(REFERENCE_DATE);
-
-    if (preset === '1D') {
-      start = REFERENCE_DATE;
-    } else if (preset === '7D') {
-      refDateObj.setDate(refDateObj.getDate() - 6);
-      start = refDateObj.toISOString().split('T')[0];
-    } else if (preset === '15D') {
-      refDateObj.setDate(refDateObj.getDate() - 14);
-      start = refDateObj.toISOString().split('T')[0];
-    } else if (preset === '30D') {
-      refDateObj.setDate(refDateObj.getDate() - 29);
-      start = refDateObj.toISOString().split('T')[0];
-    } else if (preset === '1Y') {
-      refDateObj.setFullYear(refDateObj.getFullYear() - 1);
-      refDateObj.setDate(refDateObj.getDate() + 1);
-      start = refDateObj.toISOString().split('T')[0];
-    } else if (preset === '5Y') {
-      refDateObj.setFullYear(refDateObj.getFullYear() - 5);
-      refDateObj.setDate(refDateObj.getDate() + 1);
-      start = refDateObj.toISOString().split('T')[0];
-    } else if (preset === 'all') {
-      refDateObj.setFullYear(refDateObj.getFullYear() - 10);
-      start = refDateObj.toISOString().split('T')[0];
-    }
-
+    const { start, end } = getPresetRange(preset, referenceDate, activeDateBounds.minDate);
     setDateRange(start, end);
   };
 
@@ -125,11 +158,17 @@ export default function MainTimeline({
       }
     } else {
       setActivePlatforms([...activePlatforms, key]);
+      const datasetInfo = datasets?.[key];
+      const hasOverlap = datasetInfo?.min_date && datasetInfo?.max_date
+        ? datasetInfo.min_date <= endDate && datasetInfo.max_date >= startDate
+        : true;
+
+      if (datasetInfo?.status === 'READY' && datasetInfo.min_date && datasetInfo.max_date && !hasOverlap) {
+        const { start, end } = getPresetRange('30D', datasetInfo.max_date, datasetInfo.min_date);
+        setDateRange(start, end);
+      }
     }
   };
-
-  const selectAll = () => setActivePlatforms(ALL_PLATFORMS.map(p => p.toLowerCase()));
-  const clearAll = () => setActivePlatforms(['tiktok']);
 
   const hasSelectedPlatforms = activePlatforms.length > 0;
   const hasData = data.length > 0;
@@ -180,18 +219,6 @@ export default function MainTimeline({
             {showAdvancedFilters ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
           </button>
 
-          {/* SMA Toggle */}
-          <button
-            onClick={() => setShowSMA(!showSMA)}
-            className={`px-4 py-2 rounded-xl text-xs font-bold border transition-all flex items-center gap-2 ${
-              showSMA
-                ? 'bg-brand-peach/10 border-brand-peach/30 text-brand-navy'
-                : 'bg-white border-brand-navy/10 text-brand-navy/60 hover:border-brand-navy/20'
-            }`}
-          >
-            <span className={`w-2 h-2 rounded-full ${showSMA ? 'bg-brand-peach' : 'bg-brand-navy/30'}`}></span>
-            Trendline
-          </button>
         </div>
       </div>
 
@@ -208,8 +235,8 @@ export default function MainTimeline({
               <input
                 type="date"
                 value={startDate}
-                min={dateBounds?.minDate}
-                max={dateBounds?.maxDate}
+                min={activeDateBounds.minDate}
+                max={activeDateBounds.maxDate}
                 onChange={(e) => setDateRange(e.target.value, endDate)}
                 className="bg-white border border-brand-navy/15 rounded-xl px-3 py-2 text-xs font-bold text-brand-navy focus:outline-none focus:ring-1 focus:ring-brand-teal w-full"
               />
@@ -217,8 +244,8 @@ export default function MainTimeline({
               <input
                 type="date"
                 value={endDate}
-                min={dateBounds?.minDate}
-                max={dateBounds?.maxDate}
+                min={activeDateBounds.minDate}
+                max={activeDateBounds.maxDate}
                 onChange={(e) => setDateRange(startDate, e.target.value)}
                 className="bg-white border border-brand-navy/15 rounded-xl px-3 py-2 text-xs font-bold text-brand-navy focus:outline-none focus:ring-1 focus:ring-brand-teal w-full"
               />
@@ -226,25 +253,6 @@ export default function MainTimeline({
             <span className="text-[9px] text-brand-navy/40 block">Queries backend to update chart & matrix scope.</span>
           </div>
 
-          {/* Custom Trendline Period Selector */}
-          <div className="space-y-2">
-            <label className="text-[10px] uppercase tracking-wider font-extrabold text-brand-navy/60 flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-brand-peach"></span>
-              Moving Average Trendline Period
-            </label>
-            <div className="flex items-center gap-3">
-              <input
-                type="number"
-                min="1"
-                max="120"
-                value={trendlinePeriod}
-                onChange={(e) => setTrendlinePeriod(Math.max(1, parseInt(e.target.value) || 7))}
-                className="bg-white border border-brand-navy/15 rounded-xl px-3 py-2 text-xs font-bold text-brand-navy focus:outline-none focus:ring-1 focus:ring-brand-teal w-24 text-center"
-              />
-              <span className="text-xs font-bold text-brand-navy/70">Days Moving Average</span>
-            </div>
-            <span className="text-[9px] text-brand-navy/40 block">Configure the interval size used for the dynamic trendline computation.</span>
-          </div>
         </div>
       )}
 
@@ -428,9 +436,6 @@ export default function MainTimeline({
                 labelClassName="font-extrabold text-brand-navy text-xs mb-2 block border-b border-brand-navy/5 pb-1"
                 formatter={(value: any, name: string) => {
                   if (value === null || value === undefined) return null;
-                  if (name === 'smaHours') {
-                    return [`${value} hrs`, `${trendlinePeriod}-Day SMA`];
-                  }
                   if (PLATFORM_LABELS[name]) {
                     return [`${value} hrs`, PLATFORM_LABELS[name]];
                   }
@@ -500,18 +505,6 @@ export default function MainTimeline({
                 />
               )}
 
-              {/* Overlay SMA trendline of total active watch hours if toggled */}
-              {showSMA && (
-                <Line
-                  type="monotone"
-                  dataKey="smaHours"
-                  stroke="#537D96"
-                  strokeWidth={2}
-                  strokeDasharray="4 4"
-                  dot={false}
-                  activeDot={false}
-                />
-              )}
             </AreaChart>
           </ResponsiveContainer>
         )}
@@ -522,14 +515,8 @@ export default function MainTimeline({
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-1.5">
             <span className="w-3.5 h-3.5 bg-brand-teal/80 border border-brand-teal/40 rounded"></span>
-            <span>Stacked Platform Allocations (Smoothed)</span>
+            <span>Stacked Platform Allocations</span>
           </div>
-          {showSMA && (
-            <div className="flex items-center gap-1.5">
-              <span className="w-3.5 h-1 border-t-2 border-dashed border-brand-navy"></span>
-              <span>{trendlinePeriod}-Day SMA of Total Hours</span>
-            </div>
-          )}
         </div>
         {selectedDate && (
           <div className="text-brand-teal font-extrabold">

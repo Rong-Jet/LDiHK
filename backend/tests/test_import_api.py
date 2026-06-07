@@ -15,7 +15,7 @@ def auth_headers(ldihk_id: str = "demo_user") -> dict[str, str]:
 class InMemoryImportRepository:
     def __init__(self) -> None:
         self.imports: dict[str, ImportJob] = {}
-        self.created_payloads: list[dict[str, str | None]] = []
+        self.created_payloads: list[dict[str, object]] = []
 
     def create_import(
         self,
@@ -24,6 +24,8 @@ class InMemoryImportRepository:
         s3_bucket: str,
         s3_key: str,
         s3_etag: str | None,
+        age: int | None = None,
+        sex: str | None = None,
     ) -> ImportJob:
         import_id = f"import-{len(self.imports) + 1}"
         created_at = datetime(2026, 6, 6, 8, 0, tzinfo=timezone.utc)
@@ -46,6 +48,8 @@ class InMemoryImportRepository:
                 "s3_bucket": s3_bucket,
                 "s3_key": s3_key,
                 "s3_etag": s3_etag,
+                "age": age,
+                "sex": sex,
             }
         )
         return job
@@ -150,6 +154,38 @@ class ImportApiTests(unittest.TestCase):
                     "s3_bucket": "existing-bucket",
                     "s3_key": "uploads/demo_user/takeout.zip",
                     "s3_etag": "optional-etag",
+                    "age": None,
+                    "sex": None,
+                }
+            ],
+        )
+
+    def test_create_import_accepts_profile_fields_for_user_creation(self):
+        repository = InMemoryImportRepository()
+        app = create_app(imports_repository=repository)
+
+        response = app.test_client().post(
+            "/api/imports",
+            headers=auth_headers(),
+            json={
+                "s3_bucket": "existing-bucket",
+                "s3_key": "uploads/demo_user/takeout.zip",
+                "age": 23,
+                "sex": "Male",
+            },
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            repository.created_payloads,
+            [
+                {
+                    "user_id": "demo_user",
+                    "s3_bucket": "existing-bucket",
+                    "s3_key": "uploads/demo_user/takeout.zip",
+                    "s3_etag": None,
+                    "age": 23,
+                    "sex": "male",
                 }
             ],
         )
@@ -176,6 +212,8 @@ class ImportApiTests(unittest.TestCase):
                     "s3_bucket": "existing-bucket",
                     "s3_key": "uploads/demo_user/takeout.zip",
                     "s3_etag": None,
+                    "age": None,
+                    "sex": None,
                 }
             ],
         )
@@ -211,6 +249,9 @@ class ImportApiTests(unittest.TestCase):
                 "created_at": "2026-06-06T08:00:00+00:00",
                 "started_at": None,
                 "finished_at": None,
+                "enrichment_status": None,
+                "enrichment_started_at": None,
+                "enrichment_finished_at": None,
             },
         )
 
@@ -271,6 +312,34 @@ class ImportApiTests(unittest.TestCase):
                 "fields": {
                     "s3_bucket": "required",
                     "s3_etag": "must_be_string",
+                },
+            },
+        )
+        self.assertEqual(repository.created_payloads, [])
+
+    def test_create_import_rejects_invalid_profile_fields(self):
+        repository = InMemoryImportRepository()
+        app = create_app(imports_repository=repository)
+
+        response = app.test_client().post(
+            "/api/imports",
+            headers=auth_headers(),
+            json={
+                "s3_bucket": "existing-bucket",
+                "s3_key": "uploads/demo_user/takeout.zip",
+                "age": "23",
+                "sex": "robot",
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.get_json(),
+            {
+                "error": "invalid_payload",
+                "fields": {
+                    "age": "must_be_integer",
+                    "sex": "invalid_value",
                 },
             },
         )

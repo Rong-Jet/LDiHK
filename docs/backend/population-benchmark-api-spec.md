@@ -1,10 +1,18 @@
-# LDiHK Population Benchmark API Specification
+# LDiHK Population Benchmark Implementation Notes
 
 ## Status
 
-Draft for Population Benchmark backend integration.
+Non-authoritative implementation notes for Population Benchmark backend
+integration.
 
-This document details the API contract, schema updates, and pre-aggregated caching strategies required to move the Population Benchmark dashboard from frontend-side mocks to real-data aggregates. It is optimized to handle a large volume of users (including synthetically generated profiles in the database) without running heavy scans on every page load.
+Do not duplicate endpoint schemas in this file. Keep this document focused on
+database shape, scalability, and query compilation strategy.
+
+This document details schema updates and pre-aggregated caching strategies
+required to move the Population Benchmark dashboard from frontend-side mocks to
+real-data aggregates. It is optimized to handle a large volume of users
+(including synthetically generated profiles in the database) without running
+heavy scans on every page load.
 
 ---
 
@@ -26,7 +34,7 @@ ALTER TABLE users ADD COLUMN is_synthetic BOOLEAN NOT NULL DEFAULT FALSE;
 Calculating daily watch time percentiles (`percentile_cont`) and hourly averages across thousands of users over several months requires scanning millions of events in the `usage_events` table. Running this on every page load causes significant latency and database locks.
 
 ### The Solution: Pre-Aggregated Cache Tables
-Since population statistics do not need real-time up-to-the-second precision, the backend must use pre-aggregated datasets. 
+Since population statistics do not need real-time up-to-the-second precision, the backend must use pre-aggregated datasets.
 
 A scheduled background job (or post-import trigger) will pre-compute and store population averages in cache tables. When a user requests their benchmark standing, the API queries their personal data in real-time and maps it against the cached O(1) population values.
 
@@ -73,81 +81,10 @@ CREATE TABLE IF NOT EXISTS population_distribution_cache (
 
 ---
 
-## 3. Endpoints
+## 3. API Contract
 
-### Query Population Analytics
-
-```text
-POST /api/population
-```
-
-#### Headers:
-
-```text
-Authorization: Bearer <LDiHKID>
-Content-Type: application/json
-```
-
-#### Request Body:
-
-```json
-{
-  "startDate": "2026-05-08",
-  "endDate": "2026-06-06",
-  "includeSynthetic": true,
-  "customPercentile": 90
-}
-```
-
-* **`startDate`**: Inclusive date lower bound in `YYYY-MM-DD`.
-* **`endDate`**: Inclusive date upper bound in `YYYY-MM-DD`.
-* **`includeSynthetic`**: Boolean. If `true`, compares the user against all profiles (including synthetic). If `false`, restricts comparison to real/local profiles (`is_synthetic = FALSE`).
-* **`customPercentile`**: Integer between 1 and 99. The custom percentile line to plot on the timeline.
-
-#### Response:
-
-```json
-{
-  "ready": true,
-  "userPercentile": 73,
-  "userDailyAverageHours": 3.12,
-  "useSyntheticData": true,
-  "customPercentile": 90,
-  "distribution": [
-    { "hours": 0, "density": 15 },
-    { "hours": 1, "density": 85 },
-    { "hours": 2, "density": 245 },
-    { "hours": 3, "density": 380 },
-    { "hours": 4, "density": 210 },
-    { "hours": 5, "density": 95 },
-    { "hours": 6, "density": 25 },
-    { "hours": 7, "density": 5 },
-    { "hours": 8, "density": 1 }
-  ],
-  "deciles": [
-    {
-      "date": "2026-06-01",
-      "user": 2.8,
-      "median": 2.3,
-      "top10": 4.1,
-      "bottom10": 0.8,
-      "customPercentileHours": 4.1
-    }
-  ],
-  "hourlyAverages": [
-    {
-      "hour": "00:00",
-      "populationAvg": 0.352,
-      "userAvg": 0.125
-    },
-    {
-      "hour": "01:00",
-      "populationAvg": 0.110,
-      "userAvg": 0.050
-    }
-  ]
-}
-```
+The `/api/population` endpoint contract is maintained with the frontend
+integration contract.
 
 ---
 
@@ -155,7 +92,7 @@ Content-Type: application/json
 
 When `/api/population` is called:
 1. **User Standings**: Calculate the active user's daily watch time timeline and average over the requested date range (this query runs in real-time as it is fast for a single user).
-2. **Retrieve Cache**: Fetch percentile, distribution, and hourly averages from the cache tables matching the `includeSynthetic` flag and selected dates.
+2. **Retrieve Cache/Population Aggregates**: Fetch percentile, distribution, and hourly averages for YouTube matching the `includeSynthetic` flag and selected dates. The initial backend may compute these directly from indexed `usage_events`; cache tables remain the scaling target.
 3. **Linear Interpolation (Custom Percentile Line)**:
    If `customPercentile` is requested, the backend performs linear interpolation over the cached cohort boundaries:
    - For `customPercentile = 90`, fetch directly from `top10`.
@@ -166,10 +103,4 @@ When `/api/population` is called:
 
 ## 5. Error Codes
 
-- `missing_authorization`: Missing Bearer identity.
-- `invalid_authorization`: Malformed or expired Bearer token.
-- `invalid_date_range`: `startDate` is greater than `endDate`.
-- `invalid_date_filter`: Malformed dates.
-- `invalid_custom_percentile`: Percentile value is not between 1 and 99.
-- `database_unavailable`: Database config or connection issues.
-- `population_data_not_ready`: Cache tables are empty or not populated.
+Population endpoint error codes are part of the frontend integration contract.

@@ -9,9 +9,7 @@ import MainTimeline from './MainTimeline';
 import DeepDive from './DeepDive';
 import BehavioralHeatmap from './BehavioralHeatmap';
 import { useAnalyticsData } from '../hooks/useAnalyticsData';
-
-const IS_MOCK_MODE = import.meta.env.PUBLIC_MOCK_API === 'true';
-const API_BASE = IS_MOCK_MODE ? '' : (import.meta.env.PUBLIC_API_URL || '');
+import { apiRoutes, authHeaders, isMockApiMode, jsonHeaders } from '../lib/api';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -22,6 +20,25 @@ const queryClient = new QueryClient({
   },
 });
 
+const isPendingEnrichment = (importStatus: any) => (
+  importStatus?.status === 'completed'
+  && (importStatus?.enrichment_status === 'queued' || importStatus?.enrichment_status === 'running')
+);
+
+const isResolvedImportStatus = (importStatus: any) => (
+  importStatus?.status === 'failed'
+  || (importStatus?.status === 'completed' && !isPendingEnrichment(importStatus))
+);
+
+const shouldPollImportStatus = (importStatus: any) => (
+  importStatus?.status === 'queued'
+  || importStatus?.status === 'running'
+  || isPendingEnrichment(importStatus)
+);
+
+const LIVE_QUERY_PLATFORMS = ['youtube', 'instagram', 'tiktok'];
+const MOCK_QUERY_PLATFORMS = ['youtube', 'instagram', 'tiktok', 'spotify'];
+
 function DashboardContent() {
   const queryClient = useQueryClient();
   const [uploadCompleted, setUploadCompleted] = useState(false);
@@ -31,6 +48,12 @@ function DashboardContent() {
   const [sessionToken, setSessionToken] = useState<string | null>(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('ldihk_session_token') || null;
+    }
+    return null;
+  });
+  const [currentImportId, setCurrentImportId] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('ldihk_current_import_id') || null;
     }
     return null;
   });
@@ -61,6 +84,7 @@ function DashboardContent() {
     setLoginIdInput('');
     setUploadCompleted(false);
     setSelectedDate(null);
+    setCurrentImportId(null);
     queryClient.clear(); // Clear TanStack Query cache
   };
 
@@ -74,35 +98,25 @@ function DashboardContent() {
 
   const [activePlatforms, setActivePlatforms] = useState<string[]>(['youtube']);
 
-  // Date Range Scope (defaults to past 30 days relative to 2026-06-06 reference date)
+  // Date Range Scope (defaults are replaced by discovered live bounds after probing)
   const [startDate, setStartDate] = useState('2026-05-08');
   const [endDate, setEndDate] = useState('2026-06-06');
-
-  // Trendline Moving Average Period (days)
-  const [trendlinePeriod, setTrendlinePeriod] = useState(7);
-
-  const [currentImportId, setCurrentImportId] = useState<string | null>(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('ldihk_current_import_id') || null;
-    }
-    return null;
-  });
 
   // Session Probe Query: check if youtube_usage data is ready on mount/login
   const { data: probeData, refetch: refetchProbe } = useQuery({
     queryKey: ['probe', sessionToken],
     queryFn: async () => {
       if (!sessionToken) return null;
-      const res = await fetch(`${API_BASE}/api/query`, {
+      const res = await fetch(apiRoutes.query(), {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${sessionToken}`
+          ...jsonHeaders,
+          ...authHeaders(sessionToken),
         },
         body: JSON.stringify({
-          dataset: 'youtube_usage',
+          dataset: 'usage_analytics',
           metrics: ['event_count'],
-          dimensions: ['date'],
+          dimensions: ['date', 'platform'],
           filters: {
             start_date: '2015-01-01',
             end_date: '2026-12-31',
@@ -122,9 +136,9 @@ function DashboardContent() {
   const { data: importStatusData } = useQuery({
     queryKey: ['importStatus', currentImportId, sessionToken],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/api/imports/${currentImportId}`, {
+      const res = await fetch(apiRoutes.importStatus(currentImportId || ''), {
         headers: {
-          'Authorization': `Bearer ${sessionToken}`
+          ...authHeaders(sessionToken),
         }
       });
       if (!res.ok) throw new Error('Import status query failed');
@@ -132,23 +146,49 @@ function DashboardContent() {
     },
     enabled: !!currentImportId && !!sessionToken,
     refetchInterval: (query) => {
-      const status = query.state.data?.status;
-      return (status === 'queued' || status === 'running') ? 1000 : false;
+      return shouldPollImportStatus(query.state.data) ? 1000 : false;
     },
   });
 
   // Effect to resolve queue progress and update probe results
   useEffect(() => {
-    if (importStatusData?.status === 'completed' || importStatusData?.status === 'failed') {
+    if (isResolvedImportStatus(importStatusData)) {
       localStorage.removeItem('ldihk_current_import_id');
+      queryClient.invalidateQueries({ queryKey: ['insights'] });
       refetchProbe();
       setCurrentImportId(null);
     }
-  }, [importStatusData?.status, refetchProbe]);
+  }, [
+    importStatusData?.status,
+    importStatusData?.enrichment_status,
+    queryClient,
+    refetchProbe,
+  ]);
 
-  const currentStatus = currentImportId 
+  const isPipelineProcessing = currentImportId && !isResolvedImportStatus(importStatusData);
+  const hasLiveQueryableRows = probeData?.rows?.some((row: any) => (
+    typeof row.platform === 'string' && LIVE_QUERY_PLATFORMS.includes(row.platform.toLowerCase())
+  )) ?? false;
+  const currentStatus = isPipelineProcessing
     ? 'PROCESSING' 
-    : (probeData?.rows && probeData.rows.length > 0 ? 'READY' : 'NOT_UPLOADED');
+    : (hasLiveQueryableRows ? 'READY' : 'NOT_UPLOADED');
+  const processingTitle = importStatusData?.status === 'queued'
+    ? 'Worker Queueing Import...'
+    : isPendingEnrichment(importStatusData)
+      ? 'Enriching Video Durations...'
+      : 'Extracting and Normalizing Takeout...';
+  const processingDescription = isPendingEnrichment(importStatusData)
+    ? 'The archive import is complete. The duration worker is fetching video metadata before final analytics are shown.'
+    : 'Our background ingestion worker is processing your YouTube archive. This will flatten daily history logs, map hourly watch boundaries, and build timeline analytics.';
+  const recordsSeen = importStatusData?.records_seen || 0;
+  const recordsImported = importStatusData?.records_imported || 0;
+  const progressPercent = importStatusData?.status === 'queued'
+    ? 10
+    : isPendingEnrichment(importStatusData)
+      ? 95
+      : recordsSeen > 0
+        ? Math.min(95, (recordsImported / recordsSeen) * 100)
+        : 20;
 
   // Discovered Date Bounds
   const discoveredBounds = React.useMemo(() => {
@@ -163,31 +203,60 @@ function DashboardContent() {
   }, [probeData]);
 
   const datasets = React.useMemo(() => {
-    const statusVal = IS_MOCK_MODE ? 'READY' : currentStatus;
     const bounds = discoveredBounds;
-    return {
+    const defaults = {
       youtube: {
-        status: statusVal,
+        status: 'NOT_UPLOADED',
         min_date: bounds.minDate,
         max_date: bounds.maxDate,
       },
       instagram: {
-        status: statusVal,
+        status: 'NOT_UPLOADED',
         min_date: bounds.minDate,
         max_date: bounds.maxDate,
       },
       tiktok: {
-        status: statusVal,
+        status: 'NOT_UPLOADED',
         min_date: bounds.minDate,
         max_date: bounds.maxDate,
       },
       spotify: {
-        status: statusVal,
+        status: 'NOT_UPLOADED',
         min_date: bounds.minDate,
         max_date: bounds.maxDate,
       }
     };
-  }, [IS_MOCK_MODE, currentStatus, discoveredBounds]);
+
+    if (isMockApiMode) {
+      return Object.fromEntries(
+        Object.entries(defaults).map(([platform, info]) => [
+          platform,
+          { ...info, status: 'READY' },
+        ])
+      );
+    }
+
+    if (!probeData?.rows) return defaults;
+
+    const next = { ...defaults };
+    probeData.rows.forEach((row: any) => {
+      const platform = typeof row.platform === 'string' ? row.platform.toLowerCase() : '';
+      if (!LIVE_QUERY_PLATFORMS.includes(platform)) return;
+      const date = typeof row.date === 'string' ? row.date : null;
+      const currentInfo = next[platform as keyof typeof next];
+      next[platform as keyof typeof next] = {
+        status: 'READY',
+        min_date: date && currentInfo.status !== 'READY'
+          ? date
+          : (date && date < currentInfo.min_date ? date : currentInfo.min_date),
+        max_date: date && currentInfo.status !== 'READY'
+          ? date
+          : (date && date > currentInfo.max_date ? date : currentInfo.max_date),
+      };
+    });
+
+    return next;
+  }, [probeData, discoveredBounds]);
 
   // Derive global min/max date bounds across all ready platforms
   const dateBounds = React.useMemo(() => {
@@ -196,9 +265,9 @@ function DashboardContent() {
 
   // Filter which platforms are actually uploaded and ready to query
   const readyPlatforms = React.useMemo(() => {
-    if (IS_MOCK_MODE) return ['youtube', 'instagram', 'tiktok', 'spotify'];
-    return currentStatus === 'READY' ? ['youtube'] : [];
-  }, [IS_MOCK_MODE, currentStatus]);
+    if (isMockApiMode) return MOCK_QUERY_PLATFORMS;
+    return LIVE_QUERY_PLATFORMS.filter((platform) => datasets[platform]?.status === 'READY');
+  }, [datasets]);
 
   // Only query active platforms that are actually ready
   const platformsToQuery = React.useMemo(() => {
@@ -210,7 +279,8 @@ function DashboardContent() {
     if (dateBounds.minDate && dateBounds.maxDate) {
       const [y, m, d] = dateBounds.maxDate.split('-').map(Number);
       const maxDateObj = new Date(Date.UTC(y, m - 1, d));
-      const minDateObj = new Date(dateBounds.minDate);
+      const [minY, minM, minD] = dateBounds.minDate.split('-').map(Number);
+      const minDateObj = new Date(Date.UTC(minY, minM - 1, minD));
       const diffDays = Math.round((maxDateObj.getTime() - minDateObj.getTime()) / (1000 * 3600 * 24));
 
       if (diffDays > 90) {
@@ -235,15 +305,15 @@ function DashboardContent() {
     isLoading: isInsightsLoading, 
     error: insightsError, 
     refetch: refetchInsights 
-  } = useAnalyticsData(platformsToQuery, startDate, endDate, trendlinePeriod, readyPlatforms.length > 0, sessionToken);
+  } = useAnalyticsData(platformsToQuery, startDate, endDate, readyPlatforms.length > 0, sessionToken);
 
-  const handleUploadComplete = async (s3Key: string, s3Bucket: string) => {
+  const handleUploadComplete = async (s3Key: string, s3Bucket: string, activeSessionToken: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/imports`, {
+      const res = await fetch(apiRoutes.imports(), {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${sessionToken}`
+          ...jsonHeaders,
+          ...authHeaders(activeSessionToken),
         },
         body: JSON.stringify({
           s3_bucket: s3Bucket,
@@ -256,18 +326,18 @@ function DashboardContent() {
       setCurrentImportId(data.import_id);
     } catch (err) {
       console.error('Error starting import:', err);
+      throw err;
     }
   };
 
   // Reset pipeline state locally & on mock server
   const handleResetPipeline = async () => {
     try {
-      await fetch(`${API_BASE}/api/upload-url`); // GET triggers state reset in mock backend
+      await fetch(apiRoutes.uploadUrl()); // GET triggers state reset in mock backend
       setUploadCompleted(false);
       setSelectedDate(null);
-      setStartDate('2026-05-08');
-      setEndDate('2026-06-06');
-      setTrendlinePeriod(7);
+      setStartDate(dateBounds.minDate);
+      setEndDate(dateBounds.maxDate);
       
       // Wipe queries from cache
       queryClient.setQueryData(['probe', sessionToken], null);
@@ -495,21 +565,21 @@ function DashboardContent() {
 
       {/* View Switcher Sub-Navigation Tabs */}
       <div className="mb-8 border-b border-brand-navy/10 flex gap-4 text-left">
-        <a 
+        <a
           href="/dashboard"
           className="px-4 py-3 text-sm font-extrabold border-b-2 border-brand-teal text-brand-teal transition-all"
           id="tab-personal-insights"
         >
           Personal Insights
         </a>
-        <a 
+        <a
           href="/population"
           className="px-4 py-3 text-sm font-bold border-b-2 border-transparent text-brand-navy/50 hover:text-brand-navy transition-all"
           id="tab-population-benchmark"
         >
           Population Benchmark
         </a>
-        <a 
+        <a
           href="/risk"
           className="px-4 py-3 text-sm font-bold border-b-2 border-transparent text-brand-navy/50 hover:text-brand-navy transition-all"
           id="tab-mental-health-risk"
@@ -562,22 +632,24 @@ function DashboardContent() {
           </div>
           <div>
             <h2 className="text-xl font-bold text-brand-navy">
-              {importStatusData?.status === 'queued' ? 'Worker Queueing Import...' : 'Extracting and Normalizing Takeout...'}
+              {processingTitle}
             </h2>
             <p className="text-xs text-brand-navy/60 mt-2 max-w-md mx-auto leading-relaxed">
-              Our background ingestion worker is processing your YouTube archive. This will flatten daily history logs, map hourly watch boundaries, and build trendlines.
+              {processingDescription}
             </p>
           </div>
 
           <div className="grid grid-cols-3 gap-4 bg-white/50 p-4 rounded-2xl border border-brand-navy/5 max-w-md mx-auto text-left">
             <div>
               <span className="text-[9px] uppercase tracking-wider font-extrabold text-brand-navy/50 block">Status</span>
-              <span className="text-xs font-black text-brand-teal capitalize">{importStatusData?.status || 'queued'}</span>
+              <span className="text-xs font-black text-brand-teal capitalize">
+                {isPendingEnrichment(importStatusData) ? 'enriching' : importStatusData?.status || 'queued'}
+              </span>
             </div>
             <div>
               <span className="text-[9px] uppercase tracking-wider font-extrabold text-brand-navy/50 block">Records Ingested</span>
               <span className="text-xs font-black text-brand-navy">
-                {importStatusData?.records_imported || 0} / {importStatusData?.records_seen || 0}
+                {recordsImported} / {recordsSeen}
               </span>
             </div>
             <div>
@@ -596,11 +668,7 @@ function DashboardContent() {
             <div className="w-full bg-brand-navy/10 h-1.5 rounded-full overflow-hidden">
               <div 
                 className="bg-brand-teal h-full rounded-full transition-all duration-300"
-                style={{ 
-                  width: importStatusData?.status === 'queued' 
-                    ? '10%' 
-                    : `${Math.min(95, ( (importStatusData?.records_imported || 0) / 238 ) * 100)}%` 
-                }}
+                style={{ width: `${progressPercent}%` }}
               ></div>
             </div>
           </div>
@@ -669,8 +737,6 @@ function DashboardContent() {
                       setStartDate(start);
                       setEndDate(end);
                     }}
-                    trendlinePeriod={trendlinePeriod}
-                    setTrendlinePeriod={setTrendlinePeriod}
                     datasets={datasets}
                     dateBounds={dateBounds}
                   />

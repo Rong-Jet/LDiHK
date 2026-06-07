@@ -11,18 +11,19 @@ Judges compare this against `git shortlog -sn`, so keep it honest.
 
 | Member | GitHub handle | Main contributions |
 |---|---|---|
-|  |  |  |
-|  |  |  |
-|  |  |  |
+| Rong-Jet Cheong | Rong-Jet | Backend (API, Data Parser, Database) |
+| Marlon Müller | FaultierFlash | Frontend (Design, Graphs, Hosting) |
+| Daniel Ritter | imperator-divinus | Data analysis (Algorithms, Research) |
+| Sanjit Srinivasan | sanjit-srini1007 | Business Research, Pitch Deck, Video Scripting |
 
 ---
 
 ## 2. What is fully working
 Features that run end-to-end on the live app, with real data and real logic. Be specific: name the feature, what input it takes, what output it produces.
 
-- 
-- 
-- 
+- Data upload for TikTok, Youtube, Instagram
+- Detailed Analysis with detailed analytics
+- Live hosting on semi-scalable infrastructure
 
 ---
 
@@ -33,9 +34,7 @@ Every shortcut. Examples: a login that accepts any password, a payment that alwa
 
 | What is faked | Where (file:line or folder) | Why we mocked it | What the real version would do |
 |---|---|---|---|
-|  |  |  |  |
-|  |  |  |  |
-|  |  |  |  |
+| opt-in Synthetic Data for populating comparison | somewhere in the depths of our SQL | We don't have the user base to compare individuals against, so we decided on giving a comparison | More users would give more data |
 
 If nothing is mocked, write: *"Nothing is mocked — every feature listed above uses real logic and real data."*
 
@@ -46,8 +45,10 @@ Everything the project calls or pretends to call. Mark each as real or mocked.
 
 | Service / API / dataset | Used for | Real call or mocked? | Auth (sandbox / test key / none) |
 |---|---|---|---|
-|  |  |  |  |
-|  |  |  |  |
+| YoutubeAPI | Enrichment of Youtube Data | Real call | public API |
+| Render |  |  |  |
+| Render |  |  |  |
+
 
 ---
 

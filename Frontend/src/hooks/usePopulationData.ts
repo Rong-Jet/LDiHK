@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { apiRoutes, authHeaders, jsonHeaders } from '../lib/api';
 
 export interface DistributionRow {
   hours: number;
@@ -8,52 +9,53 @@ export interface DistributionRow {
 export interface DecileRow {
   date: string;
   user: number;
-  median: number;
-  top10: number;
-  bottom10: number;
-  customPercentileHours: number;
+  median: number | null;
+  top10: number | null;
+  bottom10: number | null;
+  customPercentileHours: number | null;
 }
 
 export interface HourlyAverageRow {
   hour: string;
-  populationAvg: number;
-  userAvg: number;
+  populationAvg: number | null;
+  userAvg: number | null;
 }
 
 export interface PopulationQueryResult {
   ready: boolean;
-  userPercentile: number;
-  userDailyAverageHours: number;
-  useSyntheticData: boolean;
+  /** true when the backend served real population comparison data, false when unavailable */
+  hasPopulationData?: boolean;
+  userPercentile: number | null;
+  userDailyAverageHours: number | null;
+  includeSynthetic: boolean;
   customPercentile: number;
   distribution: DistributionRow[];
   deciles: DecileRow[];
   hourlyAverages: HourlyAverageRow[];
 }
 
-const IS_MOCK_MODE = import.meta.env.PUBLIC_MOCK_API === 'true';
-const API_BASE = IS_MOCK_MODE ? '' : (import.meta.env.PUBLIC_API_URL || '');
-
 const fetchPopulationData = async (
   platforms: string[],
   startDate: string,
   endDate: string,
-  useSyntheticData: boolean,
+  includeSynthetic: boolean,
   customPercentile: number,
-  sessionToken: string
+  sessionToken: string,
+  visibleStartDate: string
 ): Promise<PopulationQueryResult> => {
-  const res = await fetch(`${API_BASE}/api/population`, {
+  const res = await fetch(apiRoutes.population(), {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${sessionToken}`
+      ...jsonHeaders,
+      ...authHeaders(sessionToken),
     },
     body: JSON.stringify({
       platforms,
       startDate,
       endDate,
-      useSyntheticData,
-      customPercentile
+      includeSynthetic,
+      customPercentile,
+      visibleStartDate
     })
   });
 
@@ -68,14 +70,15 @@ export function usePopulationData(
   platforms: string[],
   startDate: string,
   endDate: string,
-  useSyntheticData: boolean,
+  includeSynthetic: boolean,
   customPercentile: number,
   isReady: boolean,
-  sessionToken: string | null
+  sessionToken: string | null,
+  visibleStartDate: string
 ) {
   return useQuery<PopulationQueryResult>({
-    queryKey: ['population', platforms.join(','), startDate, endDate, useSyntheticData, customPercentile, sessionToken],
-    queryFn: () => fetchPopulationData(platforms, startDate, endDate, useSyntheticData, customPercentile, sessionToken || ''),
+    queryKey: ['population', platforms.join(','), startDate, endDate, includeSynthetic, customPercentile, sessionToken, visibleStartDate],
+    queryFn: () => fetchPopulationData(platforms, startDate, endDate, includeSynthetic, customPercentile, sessionToken || '', visibleStartDate),
     enabled: isReady && !!startDate && !!endDate && !!sessionToken && platforms.length > 0,
   });
 }

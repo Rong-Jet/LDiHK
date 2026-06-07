@@ -275,6 +275,110 @@ class StructuredQueryApiTests(unittest.TestCase):
         self.assertEqual(query.dimensions, ["video_id"])
         self.assertIn("ue.video_id AS video_id", compiled.sql)
 
+    def test_platform_dimension_and_filter_are_allowed(self):
+        query = validate_query_request(
+            {
+                "dataset": "usage_analytics",
+                "user_id": "demo_user",
+                "metrics": ["event_count", "estimated_usage_seconds"],
+                "dimensions": ["platform"],
+                "filters": {"platform": ["youtube", "tiktok"]},
+            }
+        )
+
+        compiled = compile_aggregate_query(query)
+
+        self.assertEqual(query.dataset, "usage_analytics")
+        self.assertEqual(query.dimensions, ["platform"])
+        self.assertIn("ue.platform AS platform", compiled.sql)
+        self.assertIn("ue.platform = ANY(%s)", compiled.sql)
+        self.assertIn(
+            "COALESCE(ROUND(SUM(estimated_duration_seconds))::bigint, 0) "
+            "AS estimated_usage_seconds",
+            compiled.sql,
+        )
+        self.assertEqual(
+            compiled.parameters,
+            ["demo_user", 600, "demo_user", ["youtube", "tiktok"], 500],
+        )
+
+    def test_instagram_platform_default_duration_is_15_seconds(self):
+        query = validate_query_request(
+            {
+                "dataset": "usage_analytics",
+                "user_id": "demo_user",
+                "metrics": ["estimated_usage_seconds"],
+                "dimensions": ["platform"],
+                "filters": {"platform": "instagram"},
+            }
+        )
+
+        compiled = compile_aggregate_query(query)
+
+        self.assertIn("WHEN ue.platform = 'instagram' THEN 15::numeric", compiled.sql)
+
+    def test_platform_specific_datasets_apply_platform_filters(self):
+        cases = [
+            ("instagram_usage", "instagram"),
+            ("tiktok_usage", "tiktok"),
+        ]
+
+        for dataset, platform in cases:
+            with self.subTest(dataset=dataset):
+                query = validate_query_request(
+                    {
+                        "dataset": dataset,
+                        "user_id": "demo_user",
+                        "metrics": ["event_count", "estimated_watch_seconds"],
+                        "dimensions": ["date"],
+                        "filters": {
+                            "start_date": "2026-06-01",
+                            "end_date": "2026-06-06",
+                        },
+                    }
+                )
+
+                compiled = compile_aggregate_query(query)
+
+                self.assertEqual(query.filters["platform"], platform)
+                self.assertIn("ue.platform = %s", compiled.sql)
+                self.assertIn(platform, compiled.parameters)
+
+    def test_synthetic_filter_queries_population_without_exposing_user_ids(self):
+        query = validate_query_request(
+            {
+                "dataset": "usage_analytics",
+                "user_id": "demo_user",
+                "metrics": ["event_count"],
+                "dimensions": ["platform", "cohort"],
+                "filters": {"is_synthetic": True, "sex": "male"},
+            }
+        )
+
+        compiled = compile_aggregate_query(query)
+
+        self.assertIn("ue.is_synthetic = true", compiled.sql)
+        self.assertIn("u.sex = %s", compiled.sql)
+        self.assertNotIn("u.external_id = %s AND ue.is_synthetic = true", compiled.sql)
+        self.assertEqual(compiled.parameters, ["demo_user", 600, "male", 500])
+
+    def test_is_synthetic_dimension_compares_self_against_population(self):
+        query = validate_query_request(
+            {
+                "dataset": "usage_analytics",
+                "user_id": "demo_user",
+                "metrics": ["event_count"],
+                "dimensions": ["is_synthetic"],
+                "filters": {},
+            }
+        )
+
+        compiled = compile_aggregate_query(query)
+
+        self.assertIn("ue.is_synthetic AS is_synthetic", compiled.sql)
+        self.assertIn("(u.external_id = %s OR ue.is_synthetic = true)", compiled.sql)
+        self.assertEqual(compiled.parameters, ["demo_user", 600, "demo_user", 500])
+
     def test_identifier_dimensions_are_rejected_when_gate_is_disabled(self):
         for dimension in ("channel_id", "video_id"):
             with self.subTest(dimension=dimension), patch.dict(
@@ -404,6 +508,7 @@ class StructuredQueryApiTests(unittest.TestCase):
                 "2026-06-01",
                 "2026-06-06",
                 "watch'; DROP TABLE usage_events; --",
+                "youtube",
                 "youtube_music",
                 MAX_RESULT_LIMIT,
             ],
@@ -467,10 +572,17 @@ class StructuredQueryApiTests(unittest.TestCase):
         self.assertRegex(
             aggregate.sql,
             re.compile(
+                r"WHEN ue\.duration_seconds IS NOT NULL.*"
+                r"THEN ue\.duration_seconds::numeric.*"
                 r"WHEN yv\.availability_status = 'available'.*"
                 r"THEN yv\.duration_seconds::numeric.*"
-                r"WHEN uds\.avg_api_duration_seconds IS NOT NULL.*"
+                r"WHEN ue\.is_synthetic = false "
+                r"AND ue\.platform = 'youtube' "
+                r"AND uds\.avg_api_duration_seconds IS NOT NULL.*"
                 r"THEN uds\.avg_api_duration_seconds.*"
+                r"WHEN ue\.platform = 'youtube'.*"
+                r"AND ue\.product = 'shorts'.*"
+                r"THEN 60::numeric.*"
                 r"ELSE %s::numeric",
             ),
         )
@@ -486,6 +598,79 @@ class StructuredQueryApiTests(unittest.TestCase):
         self.assertIn(
             "COUNT(DISTINCT metric_channel_id)::bigint AS unique_channel_count",
             aggregate.sql,
+        )
+
+    def test_tiktok_duration_sql_uses_platform_default_not_youtube_user_average(self):
+        query = validate_query_request(
+            {
+                "dataset": "usage_analytics",
+                "user_id": "demo_user",
+                "metrics": ["estimated_watch_seconds"],
+                "dimensions": ["platform"],
+                "filters": {"platform": "tiktok"},
+            }
+        )
+
+        compiled = compile_aggregate_query(query)
+
+        self.assertIn("ue.platform = %s", compiled.sql)
+        self.assertIn("tiktok", compiled.parameters)
+        self.assertIn(
+            "WHEN ue.is_synthetic = false AND ue.platform = 'youtube' "
+            "AND uds.avg_api_duration_seconds IS NOT NULL "
+            "THEN uds.avg_api_duration_seconds",
+            compiled.sql,
+        )
+        self.assertIn("WHEN ue.platform = 'tiktok' THEN 60::numeric", compiled.sql)
+
+    def test_tiktok_watch_duration_sql_clips_to_next_tiktok_watch_start(self):
+        query = validate_query_request(
+            {
+                "dataset": "usage_analytics",
+                "user_id": "demo_user",
+                "metrics": ["estimated_watch_seconds"],
+                "dimensions": ["platform"],
+                "filters": {"platform": "tiktok"},
+            }
+        )
+
+        compiled = compile_aggregate_query(query)
+
+        self.assertIn("WHEN ue.platform = 'tiktok' THEN 60::numeric", compiled.sql)
+        self.assertIn("next_ue.platform = ue.platform", compiled.sql)
+        self.assertIn("next_ue.event_type = 'watch'", compiled.sql)
+        self.assertIn("next_ue.occurred_at > ue.occurred_at", compiled.sql)
+        self.assertIn(
+            "THEN LEAST( base_estimated_duration_seconds, "
+            "GREATEST( 0::numeric, EXTRACT(EPOCH FROM next_watch_started_at "
+            "- occurred_at)::numeric ) )",
+            compiled.sql,
+        )
+
+    def test_watch_duration_sql_clips_to_next_watch_start(self):
+        query = validate_query_request(
+            {
+                "dataset": "youtube_usage",
+                "user_id": "demo_user",
+                "metrics": ["estimated_watch_seconds", "api_watch_seconds"],
+                "dimensions": ["date"],
+                "filters": {},
+            }
+        )
+
+        compiled = compile_aggregate_query(query)
+
+        self.assertIn("event_base_rows AS", compiled.sql)
+        self.assertIn("MIN(next_ue.occurred_at)", compiled.sql)
+        self.assertIn("next_ue.user_id = ue.user_id", compiled.sql)
+        self.assertIn("next_ue.platform = ue.platform", compiled.sql)
+        self.assertIn("next_ue.event_type = 'watch'", compiled.sql)
+        self.assertIn("next_ue.occurred_at > ue.occurred_at", compiled.sql)
+        self.assertIn("LEAST( raw_api_duration_seconds", compiled.sql)
+        self.assertIn("LEAST( base_estimated_duration_seconds", compiled.sql)
+        self.assertIn(
+            "EXTRACT(EPOCH FROM next_watch_started_at - occurred_at)::numeric",
+            compiled.sql,
         )
 
     def test_duration_metrics_and_quality_are_watch_only_for_mixed_event_types(self):
