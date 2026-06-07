@@ -74,7 +74,8 @@ export const POST: APIRoute = async ({ request }) => {
     // Fallback if empty payload
   }
 
-  const filename = body.filename || 'data.zip';
+  const rawFilename = typeof body.filename === 'string' ? body.filename : 'data.zip';
+  const filename = rawFilename.replace(/[\/\\\x00-\x1F]+/g, '_').trim() || 'data.zip';
   const contentType = body.contentType || 'application/zip';
   const urlObj = new URL(request.url);
   const s3Key = `uploads/${ldihkId}/${filename}`;
@@ -82,8 +83,10 @@ export const POST: APIRoute = async ({ request }) => {
   // AWS Configuration lookup
   const awsAccessKeyId = import.meta.env.AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID;
   const awsSecretAccessKey = import.meta.env.AWS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY;
+  const awsSessionToken = import.meta.env.AWS_SESSION_TOKEN || process.env.AWS_SESSION_TOKEN;
   const awsRegion = import.meta.env.AWS_REGION || process.env.AWS_REGION;
   const s3Bucket = import.meta.env.S3_BUCKET || process.env.S3_BUCKET;
+  const backendApiBase = import.meta.env.PUBLIC_BACKEND_API_URL || import.meta.env.PUBLIC_API_URL || '';
 
   const hasAwsKeys = !!(awsAccessKeyId && awsSecretAccessKey && awsRegion && s3Bucket);
 
@@ -94,6 +97,7 @@ export const POST: APIRoute = async ({ request }) => {
         credentials: {
           accessKeyId: awsAccessKeyId,
           secretAccessKey: awsSecretAccessKey,
+          sessionToken: awsSessionToken || undefined,
         }
       });
 
@@ -113,6 +117,8 @@ export const POST: APIRoute = async ({ request }) => {
           headers: {
             'Content-Type': contentType,
           },
+          s3Bucket,
+          s3Key,
           isMock: false
         }),
         {
@@ -138,6 +144,22 @@ export const POST: APIRoute = async ({ request }) => {
     }
   }
 
+  if (backendApiBase) {
+    return new Response(
+      JSON.stringify({
+        error: 'upload_not_configured',
+        message: 'AWS upload credentials are required when PUBLIC_API_URL points at a backend.',
+      }),
+      {
+        status: 503,
+        headers: {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+        },
+      }
+    );
+  }
+
   // Fallback: Return S3 pre-signed upload credentials under mock uploader
   return new Response(
     JSON.stringify({
@@ -149,6 +171,8 @@ export const POST: APIRoute = async ({ request }) => {
         'x-amz-meta-ldihkid': ldihkId,
         'x-amz-s3-key': s3Key
       },
+      s3Bucket: 'local-mock-bucket',
+      s3Key,
       isMock: true
     }),
     {

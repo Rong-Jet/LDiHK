@@ -126,9 +126,6 @@ export default function MainTimeline({
     }
   };
 
-  const selectAll = () => setActivePlatforms(ALL_PLATFORMS.map(p => p.toLowerCase()));
-  const clearAll = () => setActivePlatforms(['tiktok']);
-
   const hasSelectedPlatforms = activePlatforms.length > 0;
   const hasData = data.length > 0;
 

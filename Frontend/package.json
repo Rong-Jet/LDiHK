@@ -1,5 +1,6 @@
 {
-  "name": "popular-pegasi",
+  "name": "ldihk-frontend",
+  "private": true,
   "type": "module",
   "version": "0.0.1",
   "engines": {

@@ -1,43 +1,72 @@
-# Astro Starter Kit: Minimal
+# LDiHK Frontend
+
+Astro + React dashboard for the hosted YouTube Takeout demo.
+
+## Quick Start
+
+Install dependencies:
 
 ```sh
-npm create astro@latest -- --template minimal
+npm install
 ```
 
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
+Configure local environment:
 
-## 🚀 Project Structure
+```sh
+cp .env.example .env
+```
 
-Inside of your Astro project, you'll see the following folders and files:
+Run the Astro dev server:
+
+```sh
+npm run dev
+```
+
+Astro serves the app at:
 
 ```text
-/
-├── public/
-├── src/
-│   └── pages/
-│       └── index.astro
-└── package.json
+http://localhost:4321
 ```
 
-Astro looks for `.astro` or `.md` files in the `src/pages/` directory. Each page is exposed as a route based on its file name.
+## Backend Integration
 
-There's nothing special about `src/components/`, but that's where we like to put any Astro/React/Vue/Svelte/Preact components.
+Browser calls to these backend endpoints go through `src/lib/api.ts`:
 
-Any static assets, like images, can be placed in the `public/` directory.
+```text
+POST /api/query
+POST /api/imports
+GET /api/imports/{import_id}
+```
 
-## 🧞 Commands
+Set `PUBLIC_API_URL` to the backend origin, for example:
 
-All commands are run from the root of the project, from a terminal:
+```sh
+PUBLIC_API_URL=http://127.0.0.1:8000
+```
 
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `npm install`             | Installs dependencies                            |
-| `npm run dev`             | Starts local dev server at `localhost:4321`      |
-| `npm run build`           | Build your production site to `./dist/`          |
-| `npm run preview`         | Preview your build locally, before deploying     |
-| `npm run astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `npm run astro -- --help` | Get help using the Astro CLI                     |
+Leave `PUBLIC_API_URL` empty to use the local Astro mock API routes during UI-only development.
 
-## 👀 Want to learn more?
+When `PUBLIC_API_URL` is set, the Astro upload helper requires `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, and `S3_BUCKET`; otherwise it fails before
+registering a mock upload with the real backend.
 
-Feel free to check [our documentation](https://docs.astro.build) or jump into our [Discord server](https://astro.build/chat).
+The upload helper routes remain same-origin because the Python backend accepts
+completed S3 object metadata but does not generate browser upload URLs:
+
+```text
+GET /api/uploader-info
+POST /api/upload-url
+PUT /api/mock-s3-upload
+POST /api/population
+```
+
+`POST /api/population` is frontend-only mock analytics; it is not part of the
+v5 backend API contract.
+
+## Contract Notes
+
+- Send the LDiHK demo identity only as `Authorization: Bearer <LDiHKID>`.
+- Do not send `ldihk_id`, `user_id`, or `person_id` in JSON bodies.
+- Upload ZIP objects under `uploads/<LDiHKID>/<filename>.zip`.
+- Query `dataset: "youtube_usage"` only for the current backend.
+- Use `estimated_watch_seconds`, not `watch_seconds`.

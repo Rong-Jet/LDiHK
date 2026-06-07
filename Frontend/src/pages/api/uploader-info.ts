@@ -16,6 +16,7 @@ export const OPTIONS: APIRoute = async () => {
 };
 
 export const GET: APIRoute = async () => {
+  const backendApiBase = import.meta.env.PUBLIC_BACKEND_API_URL || import.meta.env.PUBLIC_API_URL || '';
   const hasAwsKeys = !!(
     (import.meta.env.AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID) && 
     (import.meta.env.AWS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY) && 
@@ -24,7 +25,10 @@ export const GET: APIRoute = async () => {
   );
 
   return new Response(
-    JSON.stringify({ isMock: !hasAwsKeys }),
+    JSON.stringify({
+      isMock: !hasAwsKeys && !backendApiBase,
+      uploadConfigured: hasAwsKeys || !backendApiBase,
+    }),
     {
       status: 200,
       headers: {

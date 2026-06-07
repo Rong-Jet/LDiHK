@@ -1,10 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { UploadCloud, CheckCircle2, AlertTriangle, RefreshCw, Database, Lock, Shield, Copy } from 'lucide-react';
-
-const API_BASE = import.meta.env.PUBLIC_API_URL || '';
+import { apiRoutes, authHeaders, jsonHeaders } from '../lib/api';
 
 interface UploadZoneProps {
-  onUploadComplete: (s3Key: string, s3Bucket: string) => void;
+  onUploadComplete: (s3Key: string, s3Bucket: string, sessionToken: string) => Promise<void> | void;
   sessionToken: string | null;
   onSessionGenerated?: (newSessionToken: string) => void;
 }
@@ -83,7 +82,7 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
   const [isMock, setIsMock] = useState<boolean | null>(null);
 
   useEffect(() => {
-    fetch('/api/uploader-info')
+    fetch(apiRoutes.uploaderInfo())
       .then((res) => {
         if (!res.ok) throw new Error();
         return res.json();
@@ -227,11 +226,11 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
 
     try {
       // 1. Fetch pre-signed S3 upload url (mocked locally via authenticated POST)
-      const response = await fetch('/api/upload-url', {
+      const response = await fetch(apiRoutes.uploadUrl(), {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${activeToken}`
+          ...jsonHeaders,
+          ...authHeaders(activeToken),
         },
         body: JSON.stringify({
           filename: file.name,
@@ -243,7 +242,7 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
         throw new Error('Failed to retrieve upload configuration credentials.');
       }
       
-      const { url, method, headers, isMock: respIsMock } = await response.json();
+      const { url, method, headers, s3Bucket, s3Key, isMock: respIsMock } = await response.json();
       if (respIsMock !== undefined) {
         setIsMock(respIsMock);
       }
@@ -270,14 +269,20 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
       };
 
       // Handle response
-      xhr.onload = () => {
+      xhr.onload = async () => {
         if (xhr.status >= 200 && xhr.status < 300) {
-          setStatus('SUCCESS');
-          setProgress(100);
           const { bucket, key } = parseS3BucketAndKey(url, headers);
-          const finalBucket = bucket || 'ldihk-ingress-bucket';
-          const finalKey = key || headers?.['x-amz-s3-key'] || `uploads/${activeToken}/${file.name}`;
-          onUploadComplete(finalKey, finalBucket);
+          const finalBucket = s3Bucket || bucket || 'local-mock-bucket';
+          const finalKey = s3Key || key || headers?.['x-amz-s3-key'] || `uploads/${activeToken}/${file.name}`;
+          try {
+            await onUploadComplete(finalKey, finalBucket, activeToken);
+            setStatus('SUCCESS');
+            setProgress(100);
+          } catch (err: any) {
+            console.error('Error registering import:', err);
+            setStatus('ERROR');
+            setErrorMessage(err.message || 'Upload completed, but import registration failed.');
+          }
         } else {
           setStatus('ERROR');
           setErrorMessage(`Server responded with status code: ${xhr.status}`);

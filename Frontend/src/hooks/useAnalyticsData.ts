@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
+import { apiRoutes, authHeaders, jsonHeaders } from '../lib/api';
 
 export interface DailyRow {
   date: string;
@@ -45,8 +46,6 @@ export interface FlattenedTimelineRecord {
   smaHours: number;
 }
 
-const API_BASE = import.meta.env.PUBLIC_API_URL || '';
-
 // Fetch helper that runs POST queries in parallel for active platforms with date range filters
 const fetchCombinedPlatforms = async (
   platforms: string[],
@@ -60,11 +59,11 @@ const fetchCombinedPlatforms = async (
 
   // 1. Fetch daily records
   const dailyPromises = platforms.map(async (platform) => {
-    const res = await fetch(`${API_BASE}/api/query`, {
+    const res = await fetch(apiRoutes.query(), {
       method: 'POST',
       headers: { 
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${sessionToken}`
+        ...jsonHeaders,
+        ...authHeaders(sessionToken),
       },
       body: JSON.stringify({
         dataset: `${platform}_usage`,
@@ -83,11 +82,11 @@ const fetchCombinedPlatforms = async (
 
   // 2. Fetch hourly aggregates
   const hourlyPromises = platforms.map(async (platform) => {
-    const res = await fetch(`${API_BASE}/api/query`, {
+    const res = await fetch(apiRoutes.query(), {
       method: 'POST',
       headers: { 
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${sessionToken}`
+        ...jsonHeaders,
+        ...authHeaders(sessionToken),
       },
       body: JSON.stringify({
         dataset: `${platform}_usage`,

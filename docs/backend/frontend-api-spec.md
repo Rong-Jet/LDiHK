@@ -9,6 +9,18 @@ YouTube-only demo. It follows the current backend architecture: frontend uploads
 the ZIP to S3, tells the backend where the uploaded object is, polls import
 status, and queries analytics through a structured query endpoint.
 
+Frontend runtime convention:
+
+- Browser calls to backend-owned endpoints should use `PUBLIC_API_URL` as the
+  backend origin when it is configured.
+- Astro-only helper routes such as upload URL generation stay same-origin.
+- When `PUBLIC_API_URL` is configured, the frontend upload helper must have S3
+  credentials and the same `S3_BUCKET` value as the backend; local mock uploads
+  are only for UI-only development without a backend origin.
+- For local Astro development, the frontend origin is usually
+  `http://localhost:4321`; include that origin in backend CORS config outside
+  development defaults when deploying a non-local frontend.
+
 ## Identity
 
 All user-scoped requests include:

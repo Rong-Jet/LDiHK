@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { apiRoutes, authHeaders, jsonHeaders } from '../lib/api';
 
 export interface DistributionRow {
   hours: number;
@@ -38,11 +39,11 @@ const fetchPopulationData = async (
   customPercentile: number,
   sessionToken: string
 ): Promise<PopulationQueryResult> => {
-  const res = await fetch('/api/population', {
+  const res = await fetch(apiRoutes.population(), {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${sessionToken}`
+      ...jsonHeaders,
+      ...authHeaders(sessionToken),
     },
     body: JSON.stringify({
       startDate,

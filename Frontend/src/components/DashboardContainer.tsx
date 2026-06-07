@@ -9,8 +9,7 @@ import MainTimeline from './MainTimeline';
 import DeepDive from './DeepDive';
 import BehavioralHeatmap from './BehavioralHeatmap';
 import { useAnalyticsData } from '../hooks/useAnalyticsData';
-
-const API_BASE = import.meta.env.PUBLIC_API_URL || '';
+import { apiRoutes, authHeaders, jsonHeaders } from '../lib/api';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -92,11 +91,11 @@ function DashboardContent() {
     queryKey: ['probe', sessionToken],
     queryFn: async () => {
       if (!sessionToken) return null;
-      const res = await fetch(`${API_BASE}/api/query`, {
+      const res = await fetch(apiRoutes.query(), {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${sessionToken}`
+          ...jsonHeaders,
+          ...authHeaders(sessionToken),
         },
         body: JSON.stringify({
           dataset: 'youtube_usage',
@@ -121,9 +120,9 @@ function DashboardContent() {
   const { data: importStatusData } = useQuery({
     queryKey: ['importStatus', currentImportId, sessionToken],
     queryFn: async () => {
-      const res = await fetch(`${API_BASE}/api/imports/${currentImportId}`, {
+      const res = await fetch(apiRoutes.importStatus(currentImportId || ''), {
         headers: {
-          'Authorization': `Bearer ${sessionToken}`
+          ...authHeaders(sessionToken),
         }
       });
       if (!res.ok) throw new Error('Import status query failed');
@@ -218,13 +217,13 @@ function DashboardContent() {
     refetch: refetchInsights 
   } = useAnalyticsData(platformsToQuery, startDate, endDate, trendlinePeriod, readyPlatforms.length > 0, sessionToken);
 
-  const handleUploadComplete = async (s3Key: string, s3Bucket: string) => {
+  const handleUploadComplete = async (s3Key: string, s3Bucket: string, activeSessionToken: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/imports`, {
+      const res = await fetch(apiRoutes.imports(), {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${sessionToken}`
+          ...jsonHeaders,
+          ...authHeaders(activeSessionToken),
         },
         body: JSON.stringify({
           s3_bucket: s3Bucket,
@@ -237,13 +236,14 @@ function DashboardContent() {
       setCurrentImportId(data.import_id);
     } catch (err) {
       console.error('Error starting import:', err);
+      throw err;
     }
   };
 
   // Reset pipeline state locally & on mock server
   const handleResetPipeline = async () => {
     try {
-      await fetch('/api/upload-url'); // GET triggers state reset in mock backend
+      await fetch(apiRoutes.uploadUrl()); // GET triggers state reset in mock backend
       setUploadCompleted(false);
       setSelectedDate(null);
       setStartDate('2026-05-08');

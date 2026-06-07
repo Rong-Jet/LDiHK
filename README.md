@@ -50,16 +50,19 @@ uv run python backend/scripts/enrich_youtube_durations.py
 Start the read-only API:
 
 ```sh
-uv run flask --app backend.app run
+uv run flask --app backend.app run --host 127.0.0.1 --port 8000
 ```
 
 Available endpoints:
 
 ```text
-GET http://127.0.0.1:5000/health
-GET http://127.0.0.1:5000/api/users/local_user/youtube-usage
-GET http://127.0.0.1:5000/api/v2/users/local_user/youtube-usage/temporal
-POST http://127.0.0.1:5000/api/v3/query
+GET http://127.0.0.1:8000/health
+GET http://127.0.0.1:8000/api/users/local_user/youtube-usage
+GET http://127.0.0.1:8000/api/v2/users/local_user/youtube-usage/temporal
+POST http://127.0.0.1:8000/api/v3/query
+POST http://127.0.0.1:8000/api/query
+POST http://127.0.0.1:8000/api/imports
+GET http://127.0.0.1:8000/api/imports/{import_id}
 ```
 
 If `uv` cannot write to its default cache in a restricted environment, prefix commands with:
@@ -67,6 +70,32 @@ If `uv` cannot write to its default cache in a restricted environment, prefix co
 ```sh
 uv --cache-dir .uv-cache ...
 ```
+
+## Frontend
+
+The pulled frontend lives in `Frontend/`.
+
+```sh
+cd Frontend
+npm install
+cp .env.example .env
+npm run dev
+```
+
+For the real backend, set:
+
+```sh
+PUBLIC_API_URL=http://127.0.0.1:8000
+```
+
+For local browser development, the backend CORS allowlist includes Astro's
+default origin:
+
+```text
+http://localhost:4321
+```
+
+Leave `PUBLIC_API_URL` empty to use the frontend's local Astro mock API routes.
 
 ## Technical Diagram
 

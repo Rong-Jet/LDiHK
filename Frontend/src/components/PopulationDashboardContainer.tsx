@@ -12,6 +12,7 @@ import {
 } from 'recharts';
 import UploadZone from './UploadZone';
 import { usePopulationData } from '../hooks/usePopulationData';
+import { apiRoutes, authHeaders, jsonHeaders } from '../lib/api';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -98,11 +99,11 @@ function PopulationDashboardContent() {
     queryKey: ['probe', sessionToken],
     queryFn: async () => {
       if (!sessionToken) return null;
-      const res = await fetch('/api/query', {
+      const res = await fetch(apiRoutes.query(), {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${sessionToken}`
+          ...jsonHeaders,
+          ...authHeaders(sessionToken),
         },
         body: JSON.stringify({
           dataset: 'youtube_usage',
@@ -127,9 +128,9 @@ function PopulationDashboardContent() {
   const { data: importStatusData } = useQuery({
     queryKey: ['importStatus', currentImportId, sessionToken],
     queryFn: async () => {
-      const res = await fetch(`/api/imports/${currentImportId}`, {
+      const res = await fetch(apiRoutes.importStatus(currentImportId || ''), {
         headers: {
-          'Authorization': `Bearer ${sessionToken}`
+          ...authHeaders(sessionToken),
         }
       });
       if (!res.ok) throw new Error('Import status query failed');
@@ -173,13 +174,13 @@ function PopulationDashboardContent() {
     sessionToken
   );
 
-  const handleUploadComplete = async (s3Key: string, s3Bucket: string) => {
+  const handleUploadComplete = async (s3Key: string, s3Bucket: string, activeSessionToken: string) => {
     try {
-      const res = await fetch('/api/imports', {
+      const res = await fetch(apiRoutes.imports(), {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${sessionToken}`
+          ...jsonHeaders,
+          ...authHeaders(activeSessionToken),
         },
         body: JSON.stringify({
           s3_bucket: s3Bucket,
@@ -191,13 +192,14 @@ function PopulationDashboardContent() {
       setCurrentImportId(data.import_id);
     } catch (err) {
       console.error('Error starting import:', err);
+      throw err;
     }
   };
 
   // Reset pipeline state locally & on mock server
   const handleResetPipeline = async () => {
     try {
-      await fetch('/api/upload-url'); // GET triggers state reset in mock backend
+      await fetch(apiRoutes.uploadUrl()); // GET triggers state reset in mock backend
       setStartDate('2026-05-08');
       setEndDate('2026-06-06');
       setTrendlinePeriod(7);
