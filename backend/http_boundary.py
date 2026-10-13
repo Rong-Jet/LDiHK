@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -8,6 +9,9 @@ from flask import Flask, Response, jsonify, request
 
 
 IDENTITY_FIELDS = frozenset({"ldihk_id", "user_id", "person_id"})
+# LDiHK-IDs end up in S3 keys and logs, so keep them to a safe alphabet.
+LDIHK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$")
+ALLOW_LOCALHOST_ORIGINS_ENV = "ALLOW_LOCALHOST_ORIGINS"
 DEV_CORS_ORIGINS = frozenset(
     {
         "http://localhost:3000",
@@ -39,6 +43,8 @@ def require_bearer_identity() -> PublicIdentity:
 
     parts = authorization.split()
     if len(parts) != 2 or parts[0] != "Bearer" or not parts[1]:
+        raise PublicBoundaryError("invalid_authorization", 401)
+    if not LDIHK_ID_PATTERN.fullmatch(parts[1]):
         raise PublicBoundaryError("invalid_authorization", 401)
 
     return PublicIdentity(ldihk_id=parts[1])
@@ -88,10 +94,13 @@ def configure_cors(
 
 def _allowed_cors_origins(environ: Mapping[str, str]) -> set[str]:
     configured = {
-        origin.strip()
+        origin.strip().rstrip("/")
         for origin in environ.get("FRONTEND_ALLOWED_ORIGINS", "").split(",")
         if origin.strip()
     }
+    allow_localhost = environ.get(ALLOW_LOCALHOST_ORIGINS_ENV, "true").strip().lower()
+    if allow_localhost in {"0", "false", "no", "off"}:
+        return configured
     return configured | set(DEV_CORS_ORIGINS)
 
 

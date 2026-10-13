@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 QUERY_SCHEMA_VERSION = "youtube_usage.structured_query.v1"
@@ -20,7 +22,8 @@ DEFAULT_PLATFORM_DURATION_SECONDS = {
     ("linkedin", None): 120,
 }
 DEFAULT_RESULT_LIMIT = 500
-MAX_RESULT_LIMIT = 1000
+# Large enough for ten years of daily rows or a year of date x hour buckets.
+MAX_RESULT_LIMIT = 10000
 ALLOW_IDENTIFIER_DIMENSIONS_ENV = "ALLOW_IDENTIFIER_DIMENSIONS"
 QUERY_BUCKET_TIMEZONE_ENV = "QUERY_BUCKET_TIMEZONE"
 DEFAULT_QUERY_BUCKET_TIMEZONE = "UTC"
@@ -75,6 +78,18 @@ ALLOWED_FILTERS = {
 }
 ALLOWED_SORT_DIRECTIONS = {"asc", "desc"}
 STRING_VALUE_FILTERS = {"event_type", "platform", "product", "age_bucket", "sex", "cohort"}
+_ISO_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_TIMEZONE_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_+\-]*(/[A-Za-z0-9_+\-]+)*$")
+
+# Event types that count as "watching" for watch-time metrics. YouTube and
+# TikTok record watches as 'watch'; Instagram records the kind of view.
+INSTAGRAM_WATCH_EVENT_TYPES = ("video_watch", "story_view", "post_view")
+WATCH_EVENT_SQL = (
+    "(({alias}.event_type = 'watch') OR ({alias}.platform = 'instagram' "
+    "AND {alias}.event_type IN ("
+    + ", ".join(f"'{event_type}'" for event_type in INSTAGRAM_WATCH_EVENT_TYPES)
+    + ")))"
+)
 
 EVENT_DIMENSION_SQL = {
     "event_type": "ue.event_type",
@@ -295,7 +310,10 @@ def validate_query_request(request_payload: object) -> StructuredQuery:
         raise QueryValidationError("invalid_options")
     limit = _validate_limit(options.get("limit", DEFAULT_RESULT_LIMIT))
     sort_by, sort_direction = _validate_sort_options(options, metrics)
-    bucket_timezone = _query_bucket_timezone()
+    if "timezone" in options:
+        bucket_timezone = validate_timezone_name(options["timezone"])
+    else:
+        bucket_timezone = _query_bucket_timezone()
 
     return StructuredQuery(
         dataset=dataset,
@@ -413,6 +431,82 @@ def compile_quality_query(
     return CompiledSql(sql=_compact_sql(sql), parameters=parameters)
 
 
+def fetch_user_summary(
+    connection,
+    *,
+    ldihk_id: str,
+    bucket_timezone: str = DEFAULT_QUERY_BUCKET_TIMEZONE,
+) -> dict[str, object] | None:
+    """Per-platform event counts and date bounds for one user, or None.
+
+    Replaces the frontend's old "probe" queries, which only saw the oldest
+    500 rows of long histories.
+    """
+    timezone_literal = _timezone_literal(bucket_timezone)
+    user_row = _fetch_one(
+        connection,
+        CompiledSql(
+            sql="SELECT id FROM users WHERE external_id = %s AND is_synthetic = false",
+            parameters=[ldihk_id],
+        ),
+    )
+    if not user_row:
+        return None
+
+    rows = _fetch_rows(
+        connection,
+        CompiledSql(
+            sql=_compact_sql(
+                f"""
+                SELECT
+                    ue.platform AS platform,
+                    COUNT(*)::bigint AS event_count,
+                    COUNT(*) FILTER (
+                        WHERE {WATCH_EVENT_SQL.format(alias="ue")}
+                    )::bigint AS watch_event_count,
+                    MIN(ue.occurred_at) AS first_event_at,
+                    MAX(ue.occurred_at) AS last_event_at,
+                    to_char(
+                        MIN(ue.occurred_at) AT TIME ZONE {timezone_literal},
+                        'YYYY-MM-DD'
+                    ) AS min_date,
+                    to_char(
+                        MAX(ue.occurred_at) AT TIME ZONE {timezone_literal},
+                        'YYYY-MM-DD'
+                    ) AS max_date
+                FROM usage_events ue
+                WHERE ue.user_id = %s
+                  AND ue.is_synthetic = false
+                GROUP BY ue.platform
+                ORDER BY ue.platform
+                """
+            ),
+            parameters=[user_row["id"]],
+        ),
+    )
+    datasets: dict[str, object] = {}
+    for row in rows:
+        datasets[str(row["platform"])] = {
+            "event_count": int(row.get("event_count") or 0),
+            "watch_event_count": int(row.get("watch_event_count") or 0),
+            "first_event_at": _isoformat(row.get("first_event_at")),
+            "last_event_at": _isoformat(row.get("last_event_at")),
+            "min_date": row.get("min_date"),
+            "max_date": row.get("max_date"),
+        }
+    return {
+        "ldihk_id": ldihk_id,
+        "exists": True,
+        "timezone": validate_timezone_name(bucket_timezone),
+        "datasets": datasets,
+    }
+
+
+def _isoformat(value: object) -> object:
+    isoformat = getattr(value, "isoformat", None)
+    return isoformat() if callable(isoformat) else value
+
+
 def _validate_string_list(
     value: object, error_code: str, *, allow_empty: bool = False
 ) -> list[str]:
@@ -430,7 +524,7 @@ def _validate_date_filters(filters: dict[str, Any]) -> None:
         if key not in filters:
             continue
         value = filters[key]
-        if not isinstance(value, str):
+        if not isinstance(value, str) or not _ISO_DATE_PATTERN.fullmatch(value):
             raise QueryValidationError("invalid_date_filter")
         try:
             date.fromisoformat(value)
@@ -440,7 +534,8 @@ def _validate_date_filters(filters: dict[str, Any]) -> None:
     if (
         "start_date" in filters
         and "end_date" in filters
-        and filters["start_date"] > filters["end_date"]
+        and date.fromisoformat(filters["start_date"])
+        > date.fromisoformat(filters["end_date"])
     ):
         raise QueryValidationError("invalid_date_range")
 
@@ -522,13 +617,27 @@ def _allow_identifier_dimensions() -> bool:
 
 def _query_bucket_timezone() -> str:
     raw_value = os.environ.get(QUERY_BUCKET_TIMEZONE_ENV, DEFAULT_QUERY_BUCKET_TIMEZONE)
-    value = (
-        raw_value.strip().upper()
-        if raw_value.strip()
-        else DEFAULT_QUERY_BUCKET_TIMEZONE
-    )
-    if value != "UTC":
-        raise QueryValidationError("invalid_options")
+    if not raw_value.strip():
+        return DEFAULT_QUERY_BUCKET_TIMEZONE
+    return validate_timezone_name(raw_value.strip())
+
+
+def validate_timezone_name(value: object) -> str:
+    """Return a canonical IANA timezone name or raise ``invalid_timezone``.
+
+    The name is later inlined into SQL, so only names that match a strict
+    pattern and exist in the IANA database are accepted.
+    """
+    if not isinstance(value, str) or not value or len(value) > 64:
+        raise QueryValidationError("invalid_timezone")
+    if value.upper() in {"UTC", "ETC/UTC", "Z"}:
+        return "UTC"
+    if not _TIMEZONE_NAME_PATTERN.fullmatch(value):
+        raise QueryValidationError("invalid_timezone")
+    try:
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError) as error:
+        raise QueryValidationError("invalid_timezone") from error
     return value
 
 
@@ -598,7 +707,11 @@ def _event_rows_cte(query: StructuredQuery, where_sql: str) -> str:
                 ue.video_id,
                 COALESCE(ue.channel_id, yv.channel_id) AS metric_channel_id,
                 NULL::uuid AS subscription_id,
-                ue.event_type AS metric_event_type,
+                CASE
+                    WHEN {WATCH_EVENT_SQL.format(alias="ue")}
+                    THEN 'watch'
+                    ELSE ue.event_type
+                END AS metric_event_type,
                 ue.platform AS metric_platform,
                 CASE
                     WHEN yv.availability_status = 'available'
@@ -637,7 +750,7 @@ def _event_rows_cte(query: StructuredQuery, where_sql: str) -> str:
                     FROM usage_events next_ue
                     WHERE next_ue.user_id = ue.user_id
                       AND next_ue.platform = ue.platform
-                      AND next_ue.event_type = 'watch'
+                      AND {WATCH_EVENT_SQL.format(alias="next_ue")}
                       AND next_ue.occurred_at IS NOT NULL
                       AND ue.occurred_at IS NOT NULL
                       AND next_ue.occurred_at > ue.occurred_at
@@ -751,9 +864,12 @@ def _dimension_sql_by_name(
 
 
 def _bucket_timestamp_sql(timestamp_sql: str, *, bucket_timezone: str) -> str:
-    if bucket_timezone != "UTC":
-        raise QueryValidationError("invalid_options")
-    return f"{timestamp_sql} AT TIME ZONE 'UTC'"
+    return f"{timestamp_sql} AT TIME ZONE {_timezone_literal(bucket_timezone)}"
+
+
+def _timezone_literal(bucket_timezone: str) -> str:
+    timezone_name = validate_timezone_name(bucket_timezone)
+    return "'" + timezone_name.replace("'", "''") + "'"
 
 
 def _source_where_clause(
@@ -787,13 +903,17 @@ def _source_where_clause(
     if "start_date" in filters:
         clauses.append(
             f"{timestamp_sql} >= "
-            f"{_utc_date_filter_boundary_sql(end_of_day=False)}"
+            + _date_filter_boundary_sql(
+                end_of_day=False, bucket_timezone=query.bucket_timezone
+            )
         )
         parameters.append(filters["start_date"])
     if "end_date" in filters:
         clauses.append(
             f"{timestamp_sql} < "
-            f"{_utc_date_filter_boundary_sql(end_of_day=True)}"
+            + _date_filter_boundary_sql(
+                end_of_day=True, bucket_timezone=query.bucket_timezone
+            )
         )
         parameters.append(filters["end_date"])
     for name, column_sql in filter_columns.items():
@@ -827,16 +947,21 @@ def _population_scope_clause(
     return ["u.external_id = %s"], [query.user_id]
 
 
-def _utc_date_filter_boundary_sql(*, end_of_day: bool) -> str:
+def _date_filter_boundary_sql(*, end_of_day: bool, bucket_timezone: str) -> str:
+    timezone_literal = _timezone_literal(bucket_timezone)
     if end_of_day:
-        return "((%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'UTC')"
-    return "(%s::date::timestamp AT TIME ZONE 'UTC')"
+        return (
+            "((%s::date + INTERVAL '1 day')::timestamp "
+            f"AT TIME ZONE {timezone_literal})"
+        )
+    return f"(%s::date::timestamp AT TIME ZONE {timezone_literal})"
 
 
 def _response_options(query: StructuredQuery) -> dict[str, object]:
     options: dict[str, object] = {
         "include_zero_buckets": query.include_zero_buckets,
         "limit": query.limit,
+        "timezone": query.bucket_timezone,
     }
     if query.sort_by is not None:
         options["sort_by"] = query.sort_by

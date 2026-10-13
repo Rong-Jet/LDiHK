@@ -2,64 +2,75 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import closing
+import logging
+import math
+import os
 import sys
-import time
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.db import DatabaseConfigError, connect
-from backend.ingestion.s3 import Boto3S3Client
-from backend.ingestion.worker import (
-    IMPORT_STATUS_IDLE,
-    PostgresImportRepository,
-    S3ZipImportWorker,
-)
+from backend.background import WorkerLoop, WorkerSignal, make_import_run_once
+from backend.db import DatabaseConfigError, get_database_url
 
 
 def main() -> int:
+    load_dotenv()
+    logging.basicConfig(
+        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
     parser = argparse.ArgumentParser(description="Process queued S3 ZIP imports.")
     parser.add_argument("--database-url", help="Defaults to DATABASE_URL.")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--once",
         action="store_true",
         help="Process at most one queued import and exit.",
     )
+    mode.add_argument(
+        "--drain",
+        action="store_true",
+        help="Process queued imports until the queue is empty, then exit.",
+    )
     parser.add_argument(
         "--poll-interval",
         type=float,
-        default=5.0,
+        default=float(os.environ.get("IMPORT_WORKER_POLL_INTERVAL_SECONDS") or 5.0),
         help="Seconds to wait between empty polls when running continuously.",
     )
     args = parser.parse_args()
 
     try:
-        with closing(connect(args.database_url)) as connection:
-            worker = S3ZipImportWorker(
-                repository=PostgresImportRepository(connection),
-                s3_client=Boto3S3Client(),
-            )
-            while True:
-                result = worker.process_one()
-                if result.status == IMPORT_STATUS_IDLE:
-                    print("No queued imports")
-                    if args.once:
-                        return 0
-                    time.sleep(args.poll_interval)
-                    continue
-
-                print(
-                    f"Import {result.import_id} {result.status}: "
-                    f"{result.records_imported}/{result.records_seen} records, "
-                    f"{result.warnings_count} warnings"
-                )
-                if args.once:
-                    return 0
+        database_url = args.database_url or get_database_url()
     except DatabaseConfigError as error:
         parser.exit(2, f"{error}\n")
+
+    run_once = make_import_run_once(database_url=database_url)
+    if args.once:
+        if not run_once():
+            print("No queued imports")
+        return 0
+    if args.drain:
+        processed = 0
+        while run_once():
+            processed += 1
+        print(f"Processed {processed} imports; queue is empty")
+        return 0
+
+    # A standalone worker polls continuously, so it is always "active".
+    WorkerLoop(
+        "import",
+        run_once,
+        signal=WorkerSignal(active_window_seconds=math.inf),
+        poll_interval_seconds=args.poll_interval,
+    ).run()
+    return 0
 
 
 if __name__ == "__main__":

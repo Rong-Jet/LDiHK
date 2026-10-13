@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Callable, Protocol
 
 from flask import Blueprint, jsonify, request
 
@@ -19,7 +20,38 @@ from backend.http_boundary import (
 )
 
 
+LOGGER = logging.getLogger(__name__)
+
 QUEUED_STATUS = "queued"
+_STATUS_SELECT_SQL = """
+    SELECT
+        imports.id,
+        users.external_id,
+        imports.status,
+        imports.records_seen,
+        imports.records_imported,
+        imports.warnings_count,
+        imports.error_message,
+        imports.created_at,
+        imports.started_at,
+        imports.finished_at,
+        enrichment.status,
+        enrichment.started_at,
+        enrichment.finished_at
+    FROM imports
+    JOIN users ON users.id = imports.user_id
+    LEFT JOIN LATERAL (
+        SELECT
+            enrichment_jobs.status,
+            enrichment_jobs.started_at,
+            enrichment_jobs.finished_at
+        FROM enrichment_jobs
+        WHERE enrichment_jobs.job_type = 'youtube_video_durations'
+          AND enrichment_jobs.payload_json ->> 'import_id' = imports.id::text
+        ORDER BY enrichment_jobs.created_at DESC
+        LIMIT 1
+    ) enrichment ON TRUE
+"""
 _S3_BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
 _ALLOWED_SEX_VALUES = frozenset(
     {"male", "female", "nonbinary", "prefer_not_to_say", "unknown"}
@@ -128,37 +160,31 @@ class PostgresImportRepository:
         connection = db.connect()
         try:
             row = connection.execute(
-                """
-                SELECT
-                    imports.id,
-                    users.external_id,
-                    imports.status,
-                    imports.records_seen,
-                    imports.records_imported,
-                    imports.warnings_count,
-                    imports.error_message,
-                    imports.created_at,
-                    imports.started_at,
-                    imports.finished_at,
-                    enrichment.status,
-                    enrichment.started_at,
-                    enrichment.finished_at
-                FROM imports
-                JOIN users ON users.id = imports.user_id
-                LEFT JOIN LATERAL (
-                    SELECT
-                        enrichment_jobs.status,
-                        enrichment_jobs.started_at,
-                        enrichment_jobs.finished_at
-                    FROM enrichment_jobs
-                    WHERE enrichment_jobs.job_type = 'youtube_video_durations'
-                      AND enrichment_jobs.payload_json ->> 'import_id' = imports.id::text
-                    ORDER BY enrichment_jobs.created_at DESC
-                    LIMIT 1
-                ) enrichment ON TRUE
+                f"""
+                {_STATUS_SELECT_SQL}
                 WHERE imports.id = %s
                 """,
                 (import_uuid,),
+            ).fetchone()
+            connection.commit()
+            if row is None:
+                return None
+            return _job_from_status_row(row)
+        finally:
+            connection.close()
+
+    def get_latest_import_for_user(self, external_id: str) -> ImportJob | None:
+        connection = db.connect()
+        try:
+            row = connection.execute(
+                f"""
+                {_STATUS_SELECT_SQL}
+                WHERE users.external_id = %s
+                  AND imports.data_origin = 'takeout'
+                ORDER BY imports.created_at DESC
+                LIMIT 1
+                """,
+                (external_id,),
             ).fetchone()
             connection.commit()
             if row is None:
@@ -177,28 +203,25 @@ class PostgresImportRepository:
     ):
         age_bucket = _age_bucket(age) if age is not None else None
         cohort = f"{age_bucket}_{sex}" if age_bucket is not None and sex else None
+        # DO UPDATE (a no-op write) instead of DO NOTHING so RETURNING always
+        # yields the row, even when a concurrent request inserted it first.
         row = connection.execute(
             """
-            WITH inserted AS (
-                INSERT INTO users (
-                    id,
-                    external_id,
-                    age,
-                    sex,
-                    age_bucket,
-                    cohort,
-                    is_synthetic
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, false)
-                ON CONFLICT (external_id) DO NOTHING
-                RETURNING id
+            INSERT INTO users (
+                id,
+                external_id,
+                age,
+                sex,
+                age_bucket,
+                cohort,
+                is_synthetic
             )
-            SELECT id FROM inserted
-            UNION ALL
-            SELECT id FROM users WHERE external_id = %s
-            LIMIT 1
+            VALUES (%s, %s, %s, %s, %s, %s, false)
+            ON CONFLICT (external_id)
+            DO UPDATE SET external_id = EXCLUDED.external_id
+            RETURNING id
             """,
-            (uuid.uuid4(), external_id, age, sex, age_bucket, cohort, external_id),
+            (uuid.uuid4(), external_id, age, sex, age_bucket, cohort),
         ).fetchone()
         if age is not None and sex is not None:
             connection.execute(
@@ -218,6 +241,8 @@ class PostgresImportRepository:
 
 def create_imports_blueprint(
     repository: ImportRepository | None = None,
+    *,
+    on_import_created: Callable[[], None] | None = None,
 ) -> Blueprint:
     repository = PostgresImportRepository() if repository is None else repository
     blueprint = Blueprint("imports_api", __name__)
@@ -259,6 +284,13 @@ def create_imports_blueprint(
             )
         except db.DatabaseConfigError as error:
             return _database_unavailable_response(error)
+        except Exception as error:
+            if db.is_database_unavailable_error(error):
+                return _database_unavailable_response(error)
+            raise
+
+        if on_import_created is not None:
+            on_import_created()
 
         return (
             jsonify(
@@ -282,6 +314,10 @@ def create_imports_blueprint(
             job = repository.get_import(import_id)
         except db.DatabaseConfigError as error:
             return _database_unavailable_response(error)
+        except Exception as error:
+            if db.is_database_unavailable_error(error):
+                return _database_unavailable_response(error)
+            raise
 
         if job is None or job.user_id != identity.ldihk_id:
             return jsonify({"error": "import_not_found"}), 404
@@ -433,7 +469,7 @@ def _s3_key_error(s3_key: str, user_id: str) -> str | None:
     expected_prefix = f"uploads/{user_id}/"
     if not s3_key.startswith(expected_prefix):
         return "must_match_user_upload_prefix"
-    if not s3_key.endswith(".zip"):
+    if not s3_key.lower().endswith(".zip"):
         return "must_be_zip"
     return None
 
@@ -452,19 +488,20 @@ def _validation_error_response(errors: dict[str, str]):
 
 
 def _database_unavailable_response(error: Exception):
-    return (
-        jsonify(
-            {
-                "error": "database_unavailable",
-                "message": str(error),
-            }
-        ),
-        503,
-    )
+    LOGGER.warning("Database unavailable: %s", error)
+    payload = {"error": "database_unavailable"}
+    if isinstance(error, db.DatabaseConfigError):
+        # Our own configuration message; driver errors may include hostnames.
+        payload["message"] = str(error)
+    return jsonify(payload), 503
 
 
 def _server_config_error_response(message: str):
     return jsonify({"error": "server_config_error", "message": message}), 503
+
+
+def status_payload(job: ImportJob) -> dict[str, object]:
+    return _status_payload(job)
 
 
 def _status_payload(job: ImportJob) -> dict[str, object]:

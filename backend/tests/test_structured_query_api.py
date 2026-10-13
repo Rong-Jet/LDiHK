@@ -476,6 +476,7 @@ class StructuredQueryApiTests(unittest.TestCase):
                 "limit": 25,
                 "sort_by": "event_count",
                 "sort_direction": "desc",
+                "timezone": "UTC",
             },
         )
 
@@ -492,7 +493,7 @@ class StructuredQueryApiTests(unittest.TestCase):
                     "event_type": "watch'; DROP TABLE usage_events; --",
                     "product": "youtube_music",
                 },
-                "options": {"limit": 5000},
+                "options": {"limit": MAX_RESULT_LIMIT * 5},
             }
         )
 

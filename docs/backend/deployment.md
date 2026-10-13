@@ -1,9 +1,19 @@
 # Backend Deployment
 
-The v5 backend is packaged as one Docker image. Run that image as separate
-Render services for the web API, import worker, enrichment worker, and
-migrations. Provider secrets belong in Render environment variables, never in
-git.
+The backend is packaged as one Docker image. On free hosting it runs as a
+single Render free web service: the web API plus the import and enrichment
+workers as background threads (`RUN_WORKERS_IN_PROCESS=true`). On paid plans
+or a VM, the same image can instead run the workers as separate processes.
+Provider secrets belong in the hosting provider's environment settings, never
+in git.
+
+| Part | Free provider | Notes |
+| --- | --- | --- |
+| Web API + workers | Render free web service | 512 MB RAM; sleeps after 15 minutes without traffic, ~1 minute to wake |
+| Postgres | Neon free | 1 GB per project; scales to zero after 5 minutes, wakes on connect |
+| Upload storage | Cloudflare R2 | 10 GB free, no egress fees, S3-compatible |
+| Video durations | YouTube Data API v3 | 10,000 quota units per day |
+| Frontend | Netlify free | See `Frontend/README.md` |
 
 ## Build
 
@@ -13,35 +23,48 @@ docker build -t ldihk-backend .
 
 ## Environment
 
-Copy `.env.example` for local smoke runs. In Render, set the same variables on
-the services listed below.
+Copy `.env.example` for local runs. On Render, the `render.yaml` blueprint
+declares every variable; secrets are entered in the dashboard.
 
 | Variable | Required | Used by | Notes |
 | --- | --- | --- | --- |
 | `PORT` | No | Web | Render injects this for web services. Local default is `8000`. |
-| `DATABASE_URL` | Yes | Web, import worker, enrichment worker, migrations | Supabase Postgres URL using `postgres://` or `postgresql://`. Prefer the Session Pooler connection string on Render if direct connectivity is unreliable. |
-| `FRONTEND_ALLOWED_ORIGINS` | Yes for browser access | Web | Comma-separated exact deployed frontend origins plus explicit localhost development origins. |
-| `REQUIRE_LDIHK_BEARER` | Yes | Web | Set to `true` for hosted v5 so user-scoped routes derive identity from `Authorization: Bearer <LDiHKID>`. |
+| `DATABASE_URL` | Yes | Web, workers, migrations | Neon pooled connection string (`...-pooler...neon.tech/...?sslmode=require`). Any `postgres://` or `postgresql://` URL works. |
+| `DATABASE_CONNECT_TIMEOUT_SECONDS` | No | All | Default `10`. |
+| `DATABASE_STATEMENT_TIMEOUT_MS` | No | Web, workers | Default `60000`; migrations run without a statement timeout. |
+| `FRONTEND_ALLOWED_ORIGINS` | Yes for browser access | Web | Comma-separated exact frontend origins, e.g. `https://ldihk.xyz`. |
+| `ALLOW_LOCALHOST_ORIGINS` | No | Web | Default `true`. Set `false` in production to drop the localhost dev origins. |
+| `ENABLE_LOCAL_FILE_ROUTES` | No | Web | Default `true`. Set `false` in production to remove the unauthenticated local-file routes. |
+| `RUN_WORKERS_IN_PROCESS` | Yes on free hosting | Web | `true` starts the import and enrichment threads inside the web process. |
+| `WORKER_ACTIVE_WINDOW_SECONDS` | No | Web | Default `900`. In-process workers only poll the database this long after the last API request. |
+| `WORKER_POLL_INTERVAL_SECONDS` | No | Web | Default `30`. Poll interval while active; new imports wake the worker immediately. |
 | `ALLOW_IDENTIFIER_DIMENSIONS` | Yes | Web | Set to `true` for top-channel and top-video dashboard queries. |
-| `QUERY_BUCKET_TIMEZONE` | Yes | Web | Set to `UTC` for v5 date/hour buckets. |
-| `AWS_ACCESS_KEY_ID` | Import worker if no IAM role | Import worker | S3 credential for reading queued Takeout ZIPs. |
-| `AWS_SECRET_ACCESS_KEY` | Import worker if no IAM role | Import worker | S3 credential for reading queued Takeout ZIPs. |
-| `AWS_SESSION_TOKEN` | No | Import worker | Optional token for temporary AWS credentials. Leave empty for long-lived IAM access keys. |
-| `AWS_REGION` | Yes | Import worker | Region for `S3_BUCKET`. |
-| `S3_BUCKET` | Yes | Web, import worker | Existing bucket where clients upload ZIPs. Backend accepts only this bucket. |
-| `MAX_IMPORT_ZIP_BYTES` | Yes | Web, import worker | Maximum S3 ZIP object size accepted by hosted imports before download. |
-| `IMPORT_WORKER_POLL_INTERVAL_SECONDS` | No | Import worker | Empty-queue polling interval for continuous workers. |
-| `YOUTUBE_API_KEY` | Yes for enrichment | Enrichment worker | Google Cloud API key with YouTube Data API v3 enabled. |
+| `QUERY_BUCKET_TIMEZONE` | No | Web | Default bucket timezone when a query sends no `options.timezone`. Any IANA name; default `UTC`. |
+| `S3_ENDPOINT_URL` | Yes for R2 | Web, import worker, smoke script | `https://<account-id>.r2.cloudflarestorage.com`. Leave empty for AWS S3. |
+| `S3_BUCKET` | Yes | Web, import worker | Bucket where clients upload ZIPs. The API only accepts imports from this bucket. |
+| `AWS_ACCESS_KEY_ID` | Yes | Import worker | R2 (or AWS) access key that can read `uploads/*`. |
+| `AWS_SECRET_ACCESS_KEY` | Yes | Import worker | Secret for the key above. |
+| `AWS_SESSION_TOKEN` | No | Import worker | Only for temporary AWS STS credentials. Leave empty for long-lived IAM access keys and R2 tokens. |
+| `AWS_REGION` | Yes | Import worker | `auto` for R2, the bucket region for AWS. |
+| `MAX_IMPORT_ZIP_BYTES` | No | Web, import worker | Default `209715200` (200 MiB). Checked before download. |
+| `MAX_IMPORT_MEMBER_BYTES` | No | Import worker | Default `157286400` (150 MiB). Uncompressed size limit for one history file. |
+| `IMPORT_STALE_AFTER_SECONDS` | No | Import worker | Default `600`. A running import with an older heartbeat is reclaimed. |
+| `IMPORT_MAX_ATTEMPTS` | No | Import worker | Default `3`. Imports are failed after this many attempts. |
+| `IMPORT_WORKER_POLL_INTERVAL_SECONDS` | No | Standalone import worker | Empty-queue polling interval for `run_worker.py`. |
+| `YOUTUBE_API_KEY` | Yes for enrichment | Enrichment worker | Google Cloud API key with YouTube Data API v3 enabled. Without it, watch time uses estimates. |
 | `YOUTUBE_MAX_DURATION_SECONDS` | No | Enrichment worker | Caps unusually long video durations during estimation. |
 | `ENRICHMENT_BATCH_SIZE` | No | Enrichment worker | YouTube `videos.list` accepts at most 50 IDs per request. |
-| `ENRICHMENT_POLL_INTERVAL_SECONDS` | No | Enrichment worker | Empty-queue polling interval for continuous enrichment workers. |
-| `ENRICHMENT_RETRY_BASE_SECONDS` | No | Enrichment worker | Base retry delay after retriable YouTube API failures. |
-| `LOG_LEVEL` | No | Web, import worker, enrichment worker, migrations | Runtime logging level. |
+| `ENRICHMENT_POLL_INTERVAL_SECONDS` | No | Standalone enrichment worker | Empty-queue polling interval. |
+| `ENRICHMENT_RETRY_BASE_SECONDS` | No | Enrichment worker | Base retry delay after YouTube API failures. |
+| `WEB_CONCURRENCY` | No | Web | Gunicorn processes, default `1`. Keep `1` on 512 MB. |
+| `GUNICORN_THREADS` | No | Web | Request threads per process, default `4`. |
+| `GUNICORN_TIMEOUT` | No | Web | Default `120` seconds. |
+| `LOG_LEVEL` | No | All | Runtime logging level. |
 | `TEST_DATABASE_URL` | No | Tests | Optional live Postgres target for integration tests only. |
-| `BACKEND_BASE_URL` | Hosted smoke | Smoke script | Hosted web API base URL, for example `https://your-service.onrender.com`. |
+| `BACKEND_BASE_URL` | Hosted smoke | Smoke script | Hosted web API base URL, for example `https://ldihk-api.onrender.com`. |
 | `SMOKE_LDIHK_ID` | Hosted smoke | Smoke script | Bearer identity used for the end-to-end smoke run. Defaults to a generated `smoke-...` id when omitted. |
 | `SMOKE_WRONG_LDIHK_ID` | Hosted smoke | Smoke script | Optional different bearer identity for the ownership negative check. |
-| `SMOKE_S3_KEY` | Hosted smoke | Smoke script | Optional existing S3 key. Defaults to `uploads/<SMOKE_LDIHK_ID>/hosted-smoke-youtube-takeout.zip`. |
+| `SMOKE_S3_KEY` | Hosted smoke | Smoke script | Optional existing object key. Defaults to `uploads/<SMOKE_LDIHK_ID>/hosted-smoke-youtube-takeout.zip`. |
 | `SMOKE_EXPECTED_EVENT_COUNT` | Hosted smoke | Smoke script | Expected minimum event rows from the tiny fixture. Default `1`. |
 | `SMOKE_EXPECTED_WATCH_COUNT` | Hosted smoke | Smoke script | Expected minimum watch rows for duration enrichment. Default `1`. |
 | `SMOKE_IMPORT_TIMEOUT_SECONDS` | Hosted smoke | Smoke script | Import status polling timeout. Default `180`. |
@@ -49,110 +72,126 @@ the services listed below.
 | `SMOKE_POLL_INTERVAL_SECONDS` | Hosted smoke | Smoke script | Poll interval for import and enrichment checks. Default `5`. |
 | `SMOKE_HTTP_TIMEOUT_SECONDS` | Hosted smoke | Smoke script | Per-request HTTP timeout. Default `30`. |
 
-Set `DATABASE_URL` on every backend service. Set S3 variables on the import
-worker, and also set `S3_BUCKET` on the web service when bucket validation is
-enabled. Set YouTube variables on the enrichment worker, or on all backend
-services if a shared Render environment group is simpler. Web, import worker,
-enrichment worker, migrations all need the same hosted database URL.
+Web, import worker, enrichment worker, migrations all need the same hosted
+database URL. With in-process workers, that is one service.
 
-## Supabase Setup
+## Neon Setup
 
-1. Create a Supabase project and store the database password in a password
-   manager.
-2. In the Supabase dashboard, open the project Connect panel and copy a Postgres
-   connection string.
-3. Use the direct connection string when Render can reach the project database.
-   Supabase direct connections are best for long-lived backend services, but may
-   require IPv6 reachability or a paid IPv4 add-on.
-4. Prefer the Supabase Session Pooler connection string for Render when direct
-   connectivity is unreliable. The Session Pooler runs on port `5432` and is the
-   safer default for persistent backend services on IPv4-only networks.
-5. Put the chosen URL in `DATABASE_URL` for the web service, import worker,
-   enrichment worker, and migration command.
-6. Run migrations before starting long-lived processes:
+1. Create a Neon project (free plan) in the region closest to your Render
+   region (Frankfurt for Render `frankfurt`, US East for `virginia`/`ohio`).
+2. In the Neon console, open **Connect** and copy the **pooled** connection
+   string (host contains `-pooler`). It already ends in `?sslmode=require`.
+3. Put it in `DATABASE_URL` locally and on Render.
+4. Run migrations once from a development machine. Render's free plan has no
+   pre-deploy command or one-off jobs:
 
 ```sh
 python backend/scripts/run_migrations.py
 ```
 
-7. Confirm these tables exist after migration: `schema_migrations`, `users`,
-   `imports`, `source_files`, `usage_events`, `subscriptions`,
-   `youtube_videos`, and any v5 `enrichment_jobs` table once V5-T05 lands.
+5. Optionally seed the synthetic comparison population. Keep it small: the free
+   plan has 1 GB, and each event costs roughly 0.7 KB including indexes.
 
-Capture the exact connection mode used during hosted smoke. If the direct host
-works from Render, record "direct connection"; if it fails because of network
-reachability, record "Session Pooler".
+```sh
+uv run python backend/scripts/seed_synthetic_usage.py --profiles 300 --days 30
+```
+
+6. Confirm these tables exist: `schema_migrations`, `users`, `imports`,
+   `source_files`, `usage_events`, `subscriptions`, `youtube_videos`,
+   `enrichment_jobs`, `import_warnings`, and `synthetic_seed_runs`.
+
+The in-process workers only touch the database while users are active, so Neon
+can scale to zero between visits and stay inside the 100 free compute hours.
+A standalone worker polling every few seconds would keep the database awake.
+
+Supabase works as well: use its Session Pooler connection string, and note
+that free Supabase projects pause after 7 days of low activity.
 
 ## Render Setup
 
-Create one Docker Web Service and two Docker Background Workers from the same
-repository and image.
-
-### Web Service
+Create the service from the blueprint: Render dashboard -> **New** ->
+**Blueprint** -> select this repository. `render.yaml` defines one free Docker
+web service:
 
 ```text
 type: Web Service
 language: Docker
-command: gunicorn -b 0.0.0.0:$PORT backend.app:app
+plan: free
+command: gunicorn -b 0.0.0.0:$PORT backend.app:app (with gthread workers, see Dockerfile)
 health check path: /health
+RUN_WORKERS_IN_PROCESS=true
 ```
 
-The web service should expose the hosted API routes:
+The web service exposes the hosted API routes:
 
 ```text
 GET /health
+GET /api/me
 POST /api/imports
 GET /api/imports/{import_id}
 POST /api/query
+POST /api/population
 ```
 
-`GET /health` does not require database connectivity. DB-backed routes return
-`503` with `database_unavailable` when `DATABASE_URL` is missing or invalid.
+`GET /health` does not touch the database. DB-backed routes return `503` with
+`database_unavailable` when the database is missing or unreachable.
 
-### Import Worker
+Free-plan behaviour to expect:
+
+- The service sleeps after 15 minutes without inbound requests and takes about a
+  minute to wake. The frontend pings `/health` and shows a "waking" state.
+- Requests from the frontend while an import runs (status polling) keep it
+  awake. If it sleeps mid-import anyway, the import is reclaimed after
+  `IMPORT_STALE_AFTER_SECONDS` once the service wakes again.
+- 750 free instance hours per workspace per month. One service running all
+  month uses at most 744. An external uptime check (e.g. cron-job.org) calling
+  `/health` every 10 minutes keeps it warm without waking the database.
+
+### Alternative: separate worker processes
+
+On paid plans or a VM, run the same image three times instead of using
+in-process workers:
 
 ```text
-type: Background Worker
-language: Docker
-command: python backend/scripts/run_worker.py
+web:               gunicorn -b 0.0.0.0:$PORT backend.app:app
+import-worker:     python backend/scripts/run_worker.py
+enrichment-worker: python backend/scripts/run_enrichment_worker.py
+migrations:        python backend/scripts/run_migrations.py
 ```
 
-For one-off smoke checks, run:
+Leave `RUN_WORKERS_IN_PROCESS` unset on the web service in that case. Both
+worker scripts also accept `--once` (one job) and `--drain` (until the queue is
+empty).
 
-```sh
-python backend/scripts/run_worker.py --once
+## Cloudflare R2 Setup
+
+The frontend owns browser-to-bucket upload through a presigned PUT URL. The
+backend validates queued import requests and the import worker reads the ZIP.
+
+1. In the Cloudflare dashboard, open **R2**, create a bucket (e.g.
+   `ldihk-uploads`), and note the account ID.
+2. Create an **R2 API token** with Object Read & Write, scoped to that bucket.
+   Use its access key ID and secret for `AWS_ACCESS_KEY_ID` /
+   `AWS_SECRET_ACCESS_KEY` (backend) and `CUSTOM_AWS_ACCESS_KEY_ID` /
+   `CUSTOM_AWS_SECRET_ACCESS_KEY` (Netlify).
+3. Set `S3_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com` and
+   `AWS_REGION=auto`.
+4. Add a CORS policy to the bucket so browsers can upload:
+
+```json
+[
+  {
+    "AllowedOrigins": ["https://ldihk.xyz", "http://localhost:4321"],
+    "AllowedMethods": ["PUT"],
+    "AllowedHeaders": ["content-type"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]
 ```
 
-### Enrichment Worker
-
-```text
-type: Background Worker
-language: Docker
-command: python backend/scripts/run_enrichment_worker.py
-```
-
-For one-off smoke checks after V5-T05 lands, run:
-
-```sh
-python backend/scripts/run_enrichment_worker.py --once
-```
-
-### Migrations
-
-Run migrations before web and workers begin processing hosted traffic:
-
-```text
-command: python backend/scripts/run_migrations.py
-```
-
-Use a Render pre-deploy command when available, or run it as a one-off job
-before starting or redeploying the worker services. Keep provider secrets in
-Render environment configuration rather than in the image.
-
-## AWS S3 Setup
-
-The frontend owns browser-to-S3 upload. The backend only validates queued import
-requests and the import worker reads the uploaded ZIP.
+5. Add an object lifecycle rule that deletes objects under `uploads/` after
+   1 day. Imports are processed within minutes; raw exports should not linger.
 
 Required upload key format:
 
@@ -165,13 +204,14 @@ The frontend must call `POST /api/imports` with an `s3_bucket` equal to
 
 ```json
 {
-  "s3_bucket": "ldihk-demo-uploads",
-  "s3_key": "uploads/demo-user-123/youtube_takeout_2026.zip",
+  "s3_bucket": "ldihk-uploads",
+  "s3_key": "uploads/ldihk-cosmic-nebula-7k3m9x2p4q8r/youtube_takeout_2026.zip",
   "s3_etag": "optional-etag"
 }
 ```
 
-Worker object access should be scoped to the upload prefix:
+The worker needs `s3:GetObject` (and the metadata read `s3:HeadObject`) on
+`uploads/*`. On AWS S3, scope the worker's IAM policy accordingly:
 
 ```json
 {
@@ -179,43 +219,32 @@ Worker object access should be scoped to the upload prefix:
   "Statement": [
     {
       "Effect": "Allow",
-      "Action": [
-        "s3:GetObject",
-        "s3:HeadObject"
-      ],
+      "Action": ["s3:GetObject", "s3:HeadObject"],
       "Resource": "arn:aws:s3:::YOUR_BUCKET_NAME/uploads/*"
     }
   ]
 }
 ```
 
-`s3:GetObject` is required for downloading ZIPs. `s3:HeadObject` documents the
-worker metadata-read path used for object size checks; if AWS rejects it as a
-policy action for the selected bucket type, keep `s3:GetObject` and verify the
-SDK `head_object` call during smoke because general-purpose S3 HEAD object
-metadata access is authorized by object read permission.
-
-Keep frontend upload permissions separate from backend worker read permissions.
-If uploads use SSE-KMS, add the needed KMS decrypt permissions to the worker
-role or access key policy. `AWS_SESSION_TOKEN` can stay empty for long-lived IAM
-access keys; set it only for temporary STS credentials.
+`AWS_SESSION_TOKEN` can stay empty for long-lived IAM access keys and R2
+tokens; set it only for temporary STS credentials.
 
 ## YouTube Data API Setup
 
 1. Create or reuse a Google Cloud project.
 2. Enable YouTube Data API v3.
-3. Create an API key and restrict it as tightly as practical for this hosted
-   deployment.
-4. Set `YOUTUBE_API_KEY` on the enrichment worker.
+3. Create an API key and restrict it to the YouTube Data API v3.
+4. Set `YOUTUBE_API_KEY` on the backend service.
 5. Keep `ENRICHMENT_BATCH_SIZE` at or below `50`, because the backend calls
    YouTube `videos.list` in batches of video IDs.
-6. Monitor quota during the demo. YouTube API requests consume quota units, and
-   the default project quota can change.
+6. Monitor quota. Each `videos.list` call costs 1 unit (up to 50 videos), and
+   the default quota is 10,000 units per day.
 
 Duration enrichment reads video IDs from imported watch events and writes
-availability and duration data into Postgres. Private, deleted, unavailable, or
-quota-failed videos should not block import completion; they affect query
-quality metadata instead.
+availability and duration data into Postgres. Progress is committed per API
+batch, and IDs that are already enriched are skipped on retry. Private,
+deleted, unavailable, or quota-failed videos do not block import completion;
+they affect query quality metadata instead.
 
 ## Local Docker Commands
 
@@ -226,7 +255,7 @@ docker run --rm --env-file .env ldihk-backend \
   python backend/scripts/run_migrations.py
 ```
 
-Run the web process with the image default command:
+Run the web process (with in-process workers if `RUN_WORKERS_IN_PROCESS=true`):
 
 ```sh
 docker run --rm --env-file .env -p 8000:8000 ldihk-backend
@@ -239,28 +268,18 @@ docker run --rm --env-file .env ldihk-backend \
   python backend/scripts/run_worker.py --once
 ```
 
-Run the continuous import worker:
+Process all queued imports and exit:
 
 ```sh
 docker run --rm --env-file .env ldihk-backend \
-  python backend/scripts/run_worker.py
+  python backend/scripts/run_worker.py --drain
 ```
 
-Run the continuous enrichment worker after the enrichment worker script is
-available:
+Run the continuous enrichment worker:
 
 ```sh
 docker run --rm --env-file .env ldihk-backend \
   python backend/scripts/run_enrichment_worker.py
-```
-
-Provider-neutral process commands:
-
-```text
-web:               gunicorn -b 0.0.0.0:$PORT backend.app:app
-import-worker:     python backend/scripts/run_worker.py
-enrichment-worker: python backend/scripts/run_enrichment_worker.py
-migrations:        python backend/scripts/run_migrations.py
 ```
 
 The web health check is:
@@ -279,8 +298,8 @@ fixture routed through the real comments/live-chat and playlist parsers:
 uv run python -m unittest backend.tests.test_deployment_smoke
 ```
 
-The hosted end-to-end smoke script verifies Render web, Render workers,
-Supabase Postgres, S3 import, bearer identity, duration enrichment, structured
+The hosted end-to-end smoke script verifies the hosted web API, the workers,
+Postgres, bucket import, bearer identity, duration enrichment, structured
 queries, dedupe, and ownership enforcement together:
 
 ```sh
@@ -293,13 +312,13 @@ uv run python backend/scripts/smoke_hosted_youtube_takeout.py \
 
 `--upload-fixture` uploads a tiny non-private Takeout ZIP under
 `uploads/<SMOKE_LDIHK_ID>/hosted-smoke-youtube-takeout.zip` using the configured
-AWS credentials. To reuse an existing object instead, omit `--upload-fixture`
-and set `SMOKE_S3_KEY` or pass `--s3-key`.
+credentials and `S3_ENDPOINT_URL`. To reuse an existing object instead, omit
+`--upload-fixture` and set `SMOKE_S3_KEY` or pass `--s3-key`.
 
-If Render background workers are already running, the script waits for import
-and enrichment completion. For a one-off smoke from a machine with
-`DATABASE_URL`, AWS credentials, and `YOUTUBE_API_KEY`, run the worker commands
-from the smoke script:
+With in-process workers, the hosted service processes the import itself and the
+script waits for completion. For a one-off smoke from a machine with
+`DATABASE_URL`, bucket credentials, and `YOUTUBE_API_KEY`, the script can run
+the worker commands itself:
 
 ```sh
 uv run python backend/scripts/smoke_hosted_youtube_takeout.py \
@@ -313,23 +332,18 @@ uv run python backend/scripts/smoke_hosted_youtube_takeout.py \
 ```
 
 Passing smoke output prints each checkpoint and finishes with JSON containing
-the import IDs, S3 key, event-count rows, duration quality, estimated watch
+the import IDs, object key, event-count rows, duration quality, estimated watch
 seconds, and the event count after the dedupe rerun. Failures include the
 specific route or worker command that failed and the last observed payload.
 
 ## Provider References
 
-- Supabase database connections:
-  `https://supabase.com/docs/guides/database/connecting-to-postgres`
-- Render deploy commands:
-  `https://render.com/docs/deploys`
-- Render health checks:
-  `https://render.com/docs/health-checks`
-- AWS S3 `GetObject`:
-  `https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObject.html`
-- AWS S3 `HeadObject`:
-  `https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html`
-- YouTube Data API overview:
-  `https://developers.google.com/youtube/v3/getting-started`
-- YouTube `videos.list`:
-  `https://developers.google.com/youtube/v3/docs/videos/list`
+- Render free instances: `https://render.com/docs/free`
+- Render Blueprints: `https://render.com/docs/blueprint-spec`
+- Neon plans: `https://neon.com/docs/introduction/plans`
+- Neon connection pooling: `https://neon.com/docs/connect/connection-pooling`
+- Cloudflare R2 S3 API: `https://developers.cloudflare.com/r2/api/s3/api/`
+- Cloudflare R2 CORS: `https://developers.cloudflare.com/r2/buckets/cors/`
+- Cloudflare R2 lifecycle rules: `https://developers.cloudflare.com/r2/buckets/object-lifecycles/`
+- YouTube Data API overview: `https://developers.google.com/youtube/v3/getting-started`
+- YouTube `videos.list`: `https://developers.google.com/youtube/v3/docs/videos/list`

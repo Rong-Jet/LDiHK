@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import closing
+import logging
+import math
 import os
 import sys
-import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -14,30 +14,32 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from backend.db import DatabaseConfigError, connect
-from backend.enrichment.durations import (
-    DEFAULT_MAX_DURATION_SECONDS,
-    ENRICHMENT_WORKER_STATUS_IDLE,
-    PostgresEnrichmentRepository,
-    YoutubeDurationEnrichmentWorker,
-)
-from backend.enrichment.youtube_api import (
-    MAX_VIDEO_IDS_PER_REQUEST,
-    YouTubeDataApiClient,
-)
+from backend.background import WorkerLoop, WorkerSignal, make_enrichment_run_once
+from backend.db import DatabaseConfigError, get_database_url
+from backend.enrichment.youtube_api import MAX_VIDEO_IDS_PER_REQUEST
 
 
 def main() -> int:
     load_dotenv()
+    logging.basicConfig(
+        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
     parser = argparse.ArgumentParser(
         description="Process queued YouTube duration enrichment jobs."
     )
     parser.add_argument("--database-url", help="Defaults to DATABASE_URL.")
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--once",
         action="store_true",
         help="Process at most one enrichment job or repair batch and exit.",
+    )
+    mode.add_argument(
+        "--drain",
+        action="store_true",
+        help="Process work until there is none left, then exit.",
     )
     parser.add_argument(
         "--repair",
@@ -47,90 +49,69 @@ def main() -> int:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=_env_int("ENRICHMENT_BATCH_SIZE", MAX_VIDEO_IDS_PER_REQUEST),
-        help="YouTube API videos.list batch size, max 50.",
+        help="YouTube API videos.list batch size, max 50. "
+        "Defaults to ENRICHMENT_BATCH_SIZE or 50.",
     )
     parser.add_argument(
         "--max-duration-seconds",
         type=int,
-        default=_env_int(
-            "YOUTUBE_MAX_DURATION_SECONDS",
-            DEFAULT_MAX_DURATION_SECONDS,
-        ),
-        help="Cap enriched durations at this many seconds.",
+        help="Cap enriched durations at this many seconds. "
+        "Defaults to YOUTUBE_MAX_DURATION_SECONDS or 5400.",
     )
     parser.add_argument(
         "--poll-interval",
         type=float,
-        default=_env_float("ENRICHMENT_POLL_INTERVAL_SECONDS", 30.0),
+        default=float(os.environ.get("ENRICHMENT_POLL_INTERVAL_SECONDS") or 30.0),
         help="Seconds to wait between empty polls when running continuously.",
     )
     parser.add_argument(
         "--retry-base-seconds",
         type=int,
-        default=_env_int("ENRICHMENT_RETRY_BASE_SECONDS", 300),
-        help="Base retry backoff after API failures.",
+        help="Base retry backoff after API failures. "
+        "Defaults to ENRICHMENT_RETRY_BASE_SECONDS or 300.",
     )
     args = parser.parse_args()
 
-    if args.batch_size < 1 or args.batch_size > MAX_VIDEO_IDS_PER_REQUEST:
+    if args.batch_size is not None and not 1 <= args.batch_size <= MAX_VIDEO_IDS_PER_REQUEST:
         parser.error("--batch-size must be between 1 and 50")
 
-    try:
-        with closing(connect(args.database_url)) as connection:
-            worker = YoutubeDurationEnrichmentWorker(
-                repository=PostgresEnrichmentRepository(connection),
-                client=YouTubeDataApiClient.from_env(),
-                max_duration_seconds=args.max_duration_seconds,
-                batch_size=args.batch_size,
-                retry_base_seconds=args.retry_base_seconds,
-            )
-            while True:
-                result = worker.repair_once() if args.repair else worker.process_one()
-                if result.status == ENRICHMENT_WORKER_STATUS_IDLE:
-                    print("No enrichment work")
-                    if args.once:
-                        return 0
-                    time.sleep(args.poll_interval)
-                    continue
+    environ = dict(os.environ)
+    for name, value in (
+        ("ENRICHMENT_BATCH_SIZE", args.batch_size),
+        ("YOUTUBE_MAX_DURATION_SECONDS", args.max_duration_seconds),
+        ("ENRICHMENT_RETRY_BASE_SECONDS", args.retry_base_seconds),
+    ):
+        if value is not None:
+            environ[name] = str(value)
 
-                summary = result.summary
-                if summary is None:
-                    print(
-                        f"Enrichment job {result.job_id} {result.status}: "
-                        f"{result.error_message}"
-                    )
-                else:
-                    target = (
-                        f"job {result.job_id}"
-                        if result.job_id is not None
-                        else "repair batch"
-                    )
-                    print(
-                        f"Enrichment {target} {result.status}: "
-                        f"{summary.successful_video_count} available, "
-                        f"{summary.unavailable_video_count} unavailable, "
-                        f"{summary.failed_video_count} failed, "
-                        f"{summary.api_call_count} API calls"
-                    )
-                if args.once:
-                    return 0
+    try:
+        database_url = args.database_url or get_database_url()
     except DatabaseConfigError as error:
         parser.exit(2, f"{error}\n")
 
+    run_once = make_enrichment_run_once(
+        database_url=database_url,
+        repair=args.repair,
+        environ=environ,
+    )
+    if args.once:
+        if not run_once():
+            print("No enrichment work")
+        return 0
+    if args.drain:
+        processed = 0
+        while run_once():
+            processed += 1
+        print(f"Processed {processed} enrichment batches; nothing left to do")
+        return 0
 
-def _env_int(name: str, default: int) -> int:
-    value = os.environ.get(name, "").strip()
-    if not value:
-        return default
-    return int(value)
-
-
-def _env_float(name: str, default: float) -> float:
-    value = os.environ.get(name, "").strip()
-    if not value:
-        return default
-    return float(value)
+    WorkerLoop(
+        "enrichment",
+        run_once,
+        signal=WorkerSignal(active_window_seconds=math.inf),
+        poll_interval_seconds=args.poll_interval,
+    ).run()
+    return 0
 
 
 if __name__ == "__main__":
