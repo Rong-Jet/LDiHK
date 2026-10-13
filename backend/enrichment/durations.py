@@ -17,6 +17,9 @@ ENRICHMENT_JOB_STATUS_QUEUED = "queued"
 ENRICHMENT_JOB_STATUS_RUNNING = "running"
 ENRICHMENT_JOB_STATUS_COMPLETED = "completed"
 ENRICHMENT_JOB_STATUS_FAILED = "failed"
+ENRICHMENT_JOB_STATUS_ABANDONED = "abandoned"
+DEFAULT_ENRICHMENT_STALE_AFTER_SECONDS = 600
+DEFAULT_ENRICHMENT_MAX_ATTEMPTS = 8
 
 ENRICHMENT_WORKER_STATUS_IDLE = "idle"
 ENRICHMENT_WORKER_STATUS_COMPLETED = "completed"
@@ -111,14 +114,20 @@ class YoutubeDurationEnrichmentWorker:
 
         try:
             video_ids = _video_ids_from_job_payload(job.payload_json)
+            # Skip IDs a previous (crashed or retried) attempt already stored,
+            # so retries do not spend YouTube quota twice.
+            pending_ids = select_unenriched_video_ids(
+                self.repository.connection, video_ids
+            )
             summary = enrich_youtube_video_ids(
                 self.repository.connection,
                 self.client,
-                video_ids,
+                pending_ids,
                 max_duration_seconds=self.max_duration_seconds,
                 batch_size=self.batch_size,
-                commit=False,
+                commit=True,
                 raise_on_api_error=True,
+                on_batch_committed=lambda: self.repository.heartbeat(job.id),
             )
             self.repository.complete_job(job.id)
         except DurationApiBatchError as error:
@@ -161,12 +170,26 @@ class YoutubeDurationEnrichmentWorker:
             batch_size=self.batch_size,
             limit=self.batch_size,
             commit=True,
+            retry_errors_after=self.now_fn()
+            - timedelta(seconds=self.retry_base_seconds),
         )
         if summary.requested_video_count == 0:
             return EnrichmentWorkerRunResult(
                 job_id=None,
                 status=ENRICHMENT_WORKER_STATUS_IDLE,
                 summary=summary,
+            )
+        if (
+            summary.failed_video_count == summary.requested_video_count
+            and summary.successful_video_count == 0
+        ):
+            # Every lookup failed (quota exhausted, network down): report a
+            # failure so the caller backs off instead of retrying at once.
+            return EnrichmentWorkerRunResult(
+                job_id=None,
+                status=ENRICHMENT_WORKER_STATUS_FAILED,
+                summary=summary,
+                error_message="all lookups in the repair batch failed",
             )
         return EnrichmentWorkerRunResult(
             job_id=None,
@@ -180,62 +203,139 @@ class YoutubeDurationEnrichmentWorker:
 
 
 class PostgresEnrichmentRepository:
-    def __init__(self, connection) -> None:
+    def __init__(
+        self,
+        connection,
+        *,
+        stale_after_seconds: int = DEFAULT_ENRICHMENT_STALE_AFTER_SECONDS,
+        max_attempts: int = DEFAULT_ENRICHMENT_MAX_ATTEMPTS,
+    ) -> None:
         self.connection = connection
+        self.stale_after_seconds = stale_after_seconds
+        self.max_attempts = max_attempts
 
     def claim_next_job(
         self,
         *,
         job_type: str = ENRICHMENT_JOB_TYPE_YOUTUBE_DURATIONS,
     ) -> EnrichmentJob | None:
+        """Claim a due job, or a running job whose worker stopped heartbeating.
+
+        A reclaimed job counts as one failed attempt; jobs that reach
+        ``max_attempts`` are marked abandoned instead of retried forever.
+        """
         placeholder = _placeholder(self.connection)
-        now_value = _timestamp_value(self.connection, _utc_now())
+        now = _utc_now()
+        now_value = _timestamp_value(self.connection, now)
+        stale_before_value = _timestamp_value(
+            self.connection, now - timedelta(seconds=self.stale_after_seconds)
+        )
         locking_clause = "" if _uses_sqlite_placeholders(self.connection) else (
             "FOR UPDATE SKIP LOCKED"
         )
         try:
-            row = self.connection.execute(
-                f"""
-                SELECT id, job_type, payload_json, attempts
-                FROM enrichment_jobs
-                WHERE job_type = {placeholder}
-                  AND status IN ({placeholder}, {placeholder})
-                  AND run_after <= {placeholder}
-                ORDER BY run_after, created_at
-                LIMIT 1
-                {locking_clause}
-                """,
-                (
-                    job_type,
-                    ENRICHMENT_JOB_STATUS_QUEUED,
-                    ENRICHMENT_JOB_STATUS_FAILED,
-                    now_value,
-                ),
-            ).fetchone()
-            if row is None:
-                self.connection.commit()
-                return None
+            while True:
+                row = self.connection.execute(
+                    f"""
+                    SELECT id, job_type, payload_json, attempts, status
+                    FROM enrichment_jobs
+                    WHERE job_type = {placeholder}
+                      AND (
+                            (
+                                status IN ({placeholder}, {placeholder})
+                                AND run_after <= {placeholder}
+                            )
+                            OR (
+                                status = {placeholder}
+                                AND COALESCE(heartbeat_at, started_at)
+                                    < {placeholder}
+                            )
+                      )
+                    ORDER BY run_after, created_at
+                    LIMIT 1
+                    {locking_clause}
+                    """,
+                    (
+                        job_type,
+                        ENRICHMENT_JOB_STATUS_QUEUED,
+                        ENRICHMENT_JOB_STATUS_FAILED,
+                        now_value,
+                        ENRICHMENT_JOB_STATUS_RUNNING,
+                        stale_before_value,
+                    ),
+                ).fetchone()
+                if row is None:
+                    self.connection.commit()
+                    return None
 
-            job_id = str(row[0])
-            started_at = _timestamp_value(self.connection, _utc_now())
+                job_id = str(row[0])
+                attempts = int(row[3])
+                if row[4] == ENRICHMENT_JOB_STATUS_RUNNING:
+                    # The previous worker died mid-job; count it as a failure.
+                    attempts += 1
+                if attempts >= self.max_attempts:
+                    self.connection.execute(
+                        f"""
+                        UPDATE enrichment_jobs
+                        SET status = {placeholder},
+                            attempts = {placeholder},
+                            finished_at = {placeholder},
+                            error_message = COALESCE(error_message, {placeholder})
+                        WHERE id = {placeholder}
+                        """,
+                        (
+                            ENRICHMENT_JOB_STATUS_ABANDONED,
+                            attempts,
+                            now_value,
+                            "gave up after repeated failures",
+                            job_id,
+                        ),
+                    )
+                    self.connection.commit()
+                    continue
+
+                self.connection.execute(
+                    f"""
+                    UPDATE enrichment_jobs
+                    SET status = {placeholder},
+                        attempts = {placeholder},
+                        started_at = {placeholder},
+                        heartbeat_at = {placeholder},
+                        finished_at = NULL,
+                        error_message = NULL
+                    WHERE id = {placeholder}
+                    """,
+                    (
+                        ENRICHMENT_JOB_STATUS_RUNNING,
+                        attempts,
+                        now_value,
+                        now_value,
+                        job_id,
+                    ),
+                )
+                self.connection.commit()
+                return EnrichmentJob(
+                    id=job_id,
+                    job_type=str(row[1]),
+                    payload_json=_decode_payload(row[2]),
+                    attempts=attempts,
+                )
+        except Exception:
+            self.connection.rollback()
+            raise
+
+    def heartbeat(self, job_id: str) -> None:
+        placeholder = _placeholder(self.connection)
+        try:
             self.connection.execute(
                 f"""
                 UPDATE enrichment_jobs
-                SET status = {placeholder},
-                    started_at = {placeholder},
-                    finished_at = NULL,
-                    error_message = NULL
+                SET heartbeat_at = {placeholder}
                 WHERE id = {placeholder}
                 """,
-                (ENRICHMENT_JOB_STATUS_RUNNING, started_at, job_id),
+                (_timestamp_value(self.connection, _utc_now()), job_id),
             )
             self.connection.commit()
-            return EnrichmentJob(
-                id=job_id,
-                job_type=str(row[1]),
-                payload_json=_decode_payload(row[2]),
-                attempts=int(row[3]),
-            )
         except Exception:
             self.connection.rollback()
             raise
@@ -315,29 +415,67 @@ def parse_youtube_duration(duration: str) -> int:
     )
 
 
+def select_unenriched_video_ids(connection, video_ids: Sequence[str]) -> list[str]:
+    """Return the IDs (in order) that have no settled ``youtube_videos`` row."""
+    requested_ids = _dedupe_video_ids(video_ids)
+    if not requested_ids:
+        return []
+    placeholder = _placeholder(connection)
+    retriable_placeholders = ", ".join(
+        [placeholder] * len(RETRIABLE_AVAILABILITY_STATUSES)
+    )
+    settled: set[str] = set()
+    for batch in _batches(requested_ids, 500):
+        id_placeholders = ", ".join([placeholder] * len(batch))
+        rows = connection.execute(
+            f"""
+            SELECT video_id
+            FROM youtube_videos
+            WHERE video_id IN ({id_placeholders})
+              AND availability_status NOT IN ({retriable_placeholders})
+            """,
+            (*batch, *RETRIABLE_AVAILABILITY_STATUSES),
+        ).fetchall()
+        settled.update(str(row[0]) for row in rows)
+    return [video_id for video_id in requested_ids if video_id not in settled]
+
+
 def select_video_ids_to_enrich(
     connection,
     *,
     refresh: bool = False,
     limit: int | None = None,
     event_types: Sequence[str] = ("watch",),
+    retry_errors_after: datetime | None = None,
 ) -> list[str]:
+    """Select watched YouTube video IDs that still need a duration lookup.
+
+    ``retry_errors_after`` delays re-trying IDs whose last lookup failed with
+    an API error, so a quota outage is not hammered in a tight loop.
+    """
     if not event_types:
         raise ValueError("event_types must contain at least one value")
 
     placeholder = _placeholder(connection)
     event_type_placeholders = ", ".join([placeholder] * len(event_types))
-    parameters: list[object] = ["youtube", "youtube", *event_types]
+    parameters: list[object] = ["youtube", *event_types]
     cache_clause = ""
     if not refresh:
         retriable_placeholders = ", ".join(
             [placeholder] * len(RETRIABLE_AVAILABILITY_STATUSES)
         )
+        retry_age_clause = ""
+        parameters.extend(RETRIABLE_AVAILABILITY_STATUSES)
+        if retry_errors_after is not None:
+            retry_age_clause = (
+                f" AND (yv.fetched_at IS NULL OR yv.fetched_at < {placeholder})"
+            )
+            parameters.append(_timestamp_value(connection, retry_errors_after))
         cache_clause = (
             "AND (yv.video_id IS NULL "
-            f"OR yv.availability_status IN ({retriable_placeholders}))"
+            f"OR (yv.availability_status IN ({retriable_placeholders})"
+            f"{retry_age_clause}))"
         )
-        parameters.extend(RETRIABLE_AVAILABILITY_STATUSES)
 
     limit_clause = ""
     if limit is not None:
@@ -353,7 +491,6 @@ def select_video_ids_to_enrich(
         LEFT JOIN youtube_videos yv
           ON yv.video_id = ue.video_id
         WHERE ue.platform = {placeholder}
-          AND ue.product = {placeholder}
           AND ue.event_type IN ({event_type_placeholders})
           AND ue.video_id IS NOT NULL
           {cache_clause}
@@ -375,12 +512,14 @@ def enrich_missing_youtube_durations(
     refresh: bool = False,
     event_types: Sequence[str] = ("watch",),
     commit: bool = True,
+    retry_errors_after: datetime | None = None,
 ) -> DurationEnrichmentSummary:
     video_ids = select_video_ids_to_enrich(
         connection,
         refresh=refresh,
         limit=limit,
         event_types=event_types,
+        retry_errors_after=retry_errors_after,
     )
     return enrich_youtube_video_ids(
         connection,
@@ -401,6 +540,7 @@ def enrich_youtube_video_ids(
     batch_size: int = MAX_VIDEO_IDS_PER_REQUEST,
     commit: bool = True,
     raise_on_api_error: bool = False,
+    on_batch_committed=None,
 ) -> DurationEnrichmentSummary:
     if batch_size < 1 or batch_size > MAX_VIDEO_IDS_PER_REQUEST:
         raise ValueError("batch_size must be between 1 and 50")
@@ -476,6 +616,12 @@ def enrich_youtube_video_ids(
 
             upsert_youtube_video(connection, video, fetched_at=fetched_at)
 
+        if commit:
+            # Commit per API batch so a crash or redeploy keeps the progress.
+            connection.commit()
+            if on_batch_committed is not None:
+                on_batch_committed()
+
     if commit:
         connection.commit()
 
@@ -511,7 +657,9 @@ def enriched_video_from_youtube_item(
     if privacy_status == "private":
         return _unavailable_video(video_id, PRIVATE_OR_RESTRICTED, privacy_status)
     if upload_status in {"failed", "rejected"}:
-        return _unavailable_video(video_id, API_ERROR, upload_status)
+        # A failed or rejected upload will never get a duration; retrying it
+        # (as API_ERROR would) only burns quota.
+        return _unavailable_video(video_id, DELETED_OR_UNAVAILABLE, upload_status)
     if not isinstance(content_details, dict):
         return _unavailable_video(
             video_id, DELETED_OR_UNAVAILABLE, "missing_content_details"

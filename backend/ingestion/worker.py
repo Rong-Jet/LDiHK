@@ -6,10 +6,12 @@ from dataclasses import dataclass
 from datetime import datetime
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Callable, ContextManager, Protocol
+import threading
+from typing import Callable, ContextManager, Iterator, Protocol
 from uuid import uuid4
 from zipfile import ZipFile
 
@@ -21,15 +23,25 @@ from backend.ingestion.s3 import S3Client
 from backend.ingestion.zip_safety import iter_safe_zip_members
 
 
+LOGGER = logging.getLogger(__name__)
+
 IMPORT_STATUS_IDLE = "idle"
 IMPORT_STATUS_COMPLETED = "completed"
 IMPORT_STATUS_FAILED = "failed"
 SOURCE_FILE_STATUS_RUNNING = "running"
 SOURCE_FILE_STATUS_COMPLETED = "completed"
 SOURCE_FILE_STATUS_FAILED = "failed"
-DEFAULT_MAX_IMPORT_ZIP_BYTES = 1073741824
+DEFAULT_MAX_IMPORT_ZIP_BYTES = 209715200
+DEFAULT_MAX_IMPORT_MEMBER_BYTES = 157286400
+DEFAULT_IMPORT_STALE_AFTER_SECONDS = 600
+DEFAULT_IMPORT_MAX_ATTEMPTS = 3
+DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 60.0
 USAGE_EVENT_INSERT_BATCH_SIZE = 500
 IMPORT_WARNING_INSERT_BATCH_SIZE = 1000
+NO_SUPPORTED_FILES_MESSAGE = (
+    "no_supported_files: the archive contains no YouTube, TikTok or Instagram "
+    "history files that LDiHK can read"
+)
 
 
 @dataclass(frozen=True)
@@ -195,6 +207,7 @@ class ImportRepository(Protocol):
 
 ParserLoader = Callable[[DispatchResult], ParserCallable]
 DispatchMember = Callable[[str], DispatchResult]
+HeartbeatFn = Callable[[str], None]
 
 
 class S3ZipImportWorker:
@@ -206,18 +219,30 @@ class S3ZipImportWorker:
         dispatch_member: DispatchMember = dispatch_member_path,
         parser_loader: ParserLoader | None = None,
         max_zip_bytes: int | None = None,
+        max_member_bytes: int | None = None,
+        heartbeat: HeartbeatFn | None = None,
+        heartbeat_interval_seconds: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
     ) -> None:
         self.repository = repository
         self.s3_client = s3_client
         self.dispatch_member = dispatch_member
         self.parser_loader = parser_loader or _load_parser
         self.max_zip_bytes = (
-            _max_import_zip_bytes_from_environment()
+            _env_bytes("MAX_IMPORT_ZIP_BYTES", DEFAULT_MAX_IMPORT_ZIP_BYTES)
             if max_zip_bytes is None
             else max_zip_bytes
         )
         if self.max_zip_bytes <= 0:
             raise ValueError("MAX_IMPORT_ZIP_BYTES must be greater than zero")
+        self.max_member_bytes = (
+            _env_bytes("MAX_IMPORT_MEMBER_BYTES", DEFAULT_MAX_IMPORT_MEMBER_BYTES)
+            if max_member_bytes is None
+            else max_member_bytes
+        )
+        if self.max_member_bytes <= 0:
+            raise ValueError("MAX_IMPORT_MEMBER_BYTES must be greater than zero")
+        self.heartbeat = heartbeat
+        self.heartbeat_interval_seconds = heartbeat_interval_seconds
 
     def process_one(self) -> WorkerRunResult:
         job = self.repository.claim_queued_import()
@@ -226,7 +251,10 @@ class S3ZipImportWorker:
 
         summary = ImportProcessingSummary()
         try:
-            self._process_claimed_job(job, summary)
+            with _periodic_heartbeat(
+                self.heartbeat, job.id, self.heartbeat_interval_seconds
+            ):
+                self._process_claimed_job(job, summary)
         except Exception as error:
             error_message = _error_message(error)
             failure_summary = _failure_summary(summary)
@@ -274,6 +302,19 @@ class S3ZipImportWorker:
                     if dispatch.ignored:
                         continue
 
+                    # Check the declared size before decompressing, so an
+                    # oversized history file or a zip bomb cannot exhaust a
+                    # small (512 MB) instance.
+                    if member.zip_info.file_size > self.max_member_bytes:
+                        raise ValueError(
+                            "file_too_large: "
+                            f"{member.source_path} is "
+                            f"{_megabytes(member.zip_info.file_size)} MB "
+                            "uncompressed; the limit is "
+                            f"{_megabytes(self.max_member_bytes)} MB "
+                            "(MAX_IMPORT_MEMBER_BYTES)"
+                        )
+
                     content = zip_file.read(member.zip_info)
                     content_sha256 = hashlib.sha256(content).hexdigest()
                     parser_name = dispatch.parser_name or "unknown"
@@ -293,6 +334,9 @@ class S3ZipImportWorker:
                             warnings_count=0,
                         )
                         raise
+                    # Release the raw bytes before persisting; parsed events
+                    # are all that is needed from here on.
+                    del content
 
                     file_warnings_count = len(parse_result.warnings)
                     try:
@@ -352,6 +396,10 @@ class S3ZipImportWorker:
                     summary.records_seen = next_records_seen
                     summary.records_imported = next_records_imported
                     summary.warnings_count = next_warnings_count
+                    del parse_result
+
+            if summary.source_files == 0:
+                raise ValueError(NO_SUPPORTED_FILES_MESSAGE)
 
             with self.repository.import_persistence_transaction():
                 self.repository.mark_import_completed(
@@ -394,31 +442,41 @@ class S3ZipImportWorker:
         source_path: str,
         parse_result: ParseResult,
     ) -> int:
-        event_writes = [
-            UsageEventWrite(
-                id=str(uuid4()),
-                user_id=job.user_id,
-                import_id=job.id,
-                source_file_id=source_file_id,
-                platform=event.platform,
-                product=event.product,
-                event_type=event.event_type,
-                occurred_at=event.occurred_at,
-                video_id=event.video_id,
-                channel_id=event.channel_id,
-                title_hash=_privacy_hash(event.title),
-                search_query_hash=_privacy_hash(event.search_query),
-                raw_status=event.raw_status,
-                event_fingerprint=event_fingerprint(
-                    event,
+        fingerprints = _event_fingerprints(
+            parse_result.events,
+            user_id=job.user_id,
+            source_path=source_path,
+        )
+        records_imported = 0
+        # Build the write rows one batch at a time instead of materialising a
+        # second full copy of every parsed event.
+        for start in range(0, len(parse_result.events), USAGE_EVENT_INSERT_BATCH_SIZE):
+            end = start + USAGE_EVENT_INSERT_BATCH_SIZE
+            event_writes = [
+                UsageEventWrite(
+                    id=str(uuid4()),
                     user_id=job.user_id,
-                    source_path=source_path,
-                ),
-                duration_seconds=event.duration_seconds,
-            )
-            for event in parse_result.events
-        ]
-        records_imported = self.repository.insert_usage_events(event_writes)
+                    import_id=job.id,
+                    source_file_id=source_file_id,
+                    platform=event.platform,
+                    product=event.product,
+                    event_type=event.event_type,
+                    occurred_at=event.occurred_at,
+                    video_id=event.video_id,
+                    channel_id=event.channel_id,
+                    title_hash=_privacy_hash(event.title),
+                    search_query_hash=_privacy_hash(event.search_query),
+                    raw_status=event.raw_status,
+                    event_fingerprint=fingerprint,
+                    duration_seconds=event.duration_seconds,
+                )
+                for event, fingerprint in zip(
+                    parse_result.events[start:end],
+                    fingerprints[start:end],
+                    strict=True,
+                )
+            ]
+            records_imported += self.repository.insert_usage_events(event_writes)
 
         for subscription in parse_result.subscriptions:
             upserted = self.repository.upsert_subscription(
@@ -452,9 +510,25 @@ class S3ZipImportWorker:
 
 
 class PostgresImportRepository:
-    def __init__(self, connection) -> None:
+    def __init__(
+        self,
+        connection,
+        *,
+        stale_after_seconds: int | None = None,
+        max_attempts: int | None = None,
+    ) -> None:
         self.connection = connection
         self._transaction_depth = 0
+        self.stale_after_seconds = (
+            _env_int("IMPORT_STALE_AFTER_SECONDS", DEFAULT_IMPORT_STALE_AFTER_SECONDS)
+            if stale_after_seconds is None
+            else stale_after_seconds
+        )
+        self.max_attempts = (
+            _env_int("IMPORT_MAX_ATTEMPTS", DEFAULT_IMPORT_MAX_ATTEMPTS)
+            if max_attempts is None
+            else max_attempts
+        )
 
     @contextmanager
     def import_persistence_transaction(self):
@@ -473,41 +547,86 @@ class PostgresImportRepository:
             self._transaction_depth -= 1
 
     def claim_queued_import(self) -> ImportJob | None:
-        try:
-            row = self.connection.execute(
-                """
-                SELECT id, user_id, s3_bucket, s3_key, s3_etag
-                FROM imports
-                WHERE status = 'queued'
-                ORDER BY created_at
-                FOR UPDATE SKIP LOCKED
-                LIMIT 1
-                """
-            ).fetchone()
-            if row is None:
-                self.connection.commit()
-                return None
+        """Claim the oldest queued import, or a running one whose worker died.
 
-            import_id = row[0]
-            self.connection.execute(
-                """
-                UPDATE imports
-                SET status = 'running',
-                    started_at = now(),
-                    finished_at = NULL,
-                    error_message = NULL
-                WHERE id = %s
-                """,
-                (import_id,),
-            )
-            self.connection.commit()
-            return ImportJob(
-                id=str(row[0]),
-                user_id=str(row[1]),
-                s3_bucket=row[2],
-                s3_key=row[3],
-                s3_etag=row[4],
-            )
+        A job counts as abandoned when its heartbeat is older than
+        ``stale_after_seconds``. Jobs that were already attempted
+        ``max_attempts`` times are marked failed instead of retried, so a file
+        that crashes the worker cannot crash it forever.
+        """
+        try:
+            while True:
+                row = self.connection.execute(
+                    """
+                    SELECT id, user_id, s3_bucket, s3_key, s3_etag, attempts, status
+                    FROM imports
+                    WHERE status = 'queued'
+                       OR (
+                            status = 'running'
+                            AND COALESCE(heartbeat_at, started_at, created_at)
+                                < now() - make_interval(secs => %s)
+                       )
+                    ORDER BY created_at
+                    FOR UPDATE SKIP LOCKED
+                    LIMIT 1
+                    """,
+                    (self.stale_after_seconds,),
+                ).fetchone()
+                if row is None:
+                    self.connection.commit()
+                    return None
+
+                import_id = row[0]
+                attempts = int(row[5] or 0)
+                if attempts >= self.max_attempts:
+                    self.connection.execute(
+                        """
+                        UPDATE imports
+                        SET status = 'failed',
+                            finished_at = now(),
+                            error_message = %s
+                        WHERE id = %s
+                        """,
+                        (
+                            "import_abandoned: processing stopped "
+                            f"{attempts} times before finishing. The archive "
+                            "may be too large for the server; try exporting "
+                            "only your history files.",
+                            import_id,
+                        ),
+                    )
+                    self.connection.commit()
+                    continue
+
+                if row[6] == "running":
+                    LOGGER.warning(
+                        "Reclaiming import %s after a stale heartbeat "
+                        "(attempt %s of %s)",
+                        import_id,
+                        attempts + 1,
+                        self.max_attempts,
+                    )
+                self.connection.execute(
+                    """
+                    UPDATE imports
+                    SET status = 'running',
+                        attempts = attempts + 1,
+                        started_at = now(),
+                        heartbeat_at = now(),
+                        finished_at = NULL,
+                        error_message = NULL
+                    WHERE id = %s
+                    """,
+                    (import_id,),
+                )
+                self.connection.commit()
+                return ImportJob(
+                    id=str(row[0]),
+                    user_id=str(row[1]),
+                    s3_bucket=row[2],
+                    s3_key=row[3],
+                    s3_etag=row[4],
+                )
         except Exception:
             self.connection.rollback()
             raise
@@ -805,12 +924,11 @@ class PostgresImportRepository:
                 FROM usage_events
                 WHERE import_id = {placeholder}
                   AND platform = {placeholder}
-                  AND product = {placeholder}
                   AND event_type = {placeholder}
                   AND video_id IS NOT NULL
                 ORDER BY video_id
                 """,
-                (import_id, "youtube", "youtube", "watch"),
+                (import_id, "youtube", "watch"),
             ).fetchall()
             video_ids = [row[0] for row in rows]
             if not video_ids:
@@ -897,7 +1015,8 @@ class PostgresImportRepository:
                 UPDATE imports
                 SET records_seen = %s,
                     records_imported = %s,
-                    warnings_count = %s
+                    warnings_count = %s,
+                    heartbeat_at = now()
                 WHERE id = %s
                 """,
                 (records_seen, records_imported, warnings_count, import_id),
@@ -961,14 +1080,86 @@ def _error_message(error: Exception) -> str:
     return error.__class__.__name__
 
 
-def _max_import_zip_bytes_from_environment() -> int:
-    raw_value = os.environ.get("MAX_IMPORT_ZIP_BYTES", "").strip()
+def heartbeat_import(connection, import_id: str) -> None:
+    """Refresh an import's lease from a connection the worker is not using."""
+    connection.execute(
+        """
+        UPDATE imports
+        SET heartbeat_at = now()
+        WHERE id = %s
+          AND status = 'running'
+        """,
+        (import_id,),
+    )
+    connection.commit()
+
+
+@contextmanager
+def _periodic_heartbeat(
+    heartbeat: HeartbeatFn | None,
+    job_id: str,
+    interval_seconds: float,
+) -> Iterator[None]:
+    """Call ``heartbeat(job_id)`` every interval while the block runs.
+
+    Parsing one large history file can take minutes, so the lease is refreshed
+    from a side thread rather than only between files.
+    """
+    if heartbeat is None or interval_seconds <= 0:
+        yield
+        return
+
+    stop = threading.Event()
+
+    def beat() -> None:
+        while not stop.wait(interval_seconds):
+            try:
+                heartbeat(job_id)
+            except Exception:
+                LOGGER.warning("Heartbeat for job %s failed", job_id, exc_info=True)
+
+    thread = threading.Thread(target=beat, name=f"heartbeat-{job_id}", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+
+
+def _event_fingerprints(
+    events: list,
+    *,
+    user_id: str,
+    source_path: str,
+) -> list[str]:
+    from backend.ingestion import fingerprints
+
+    batch_fingerprints = getattr(fingerprints, "event_fingerprints", None)
+    if batch_fingerprints is not None:
+        return batch_fingerprints(events, user_id=user_id, source_path=source_path)
+    return [
+        event_fingerprint(event, user_id=user_id, source_path=source_path)
+        for event in events
+    ]
+
+
+def _megabytes(value: int) -> int:
+    return round(value / (1024 * 1024))
+
+
+def _env_bytes(name: str, default: int) -> int:
+    raw_value = os.environ.get(name, "").strip()
     if not raw_value:
-        return DEFAULT_MAX_IMPORT_ZIP_BYTES
+        return default
     try:
         return int(raw_value)
     except ValueError as error:
-        raise ValueError("MAX_IMPORT_ZIP_BYTES must be an integer") from error
+        raise ValueError(f"{name} must be an integer") from error
+
+
+def _env_int(name: str, default: int) -> int:
+    return _env_bytes(name, default)
 
 
 def _placeholder(connection) -> str:

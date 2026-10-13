@@ -144,6 +144,7 @@ dependencies = [
     { name = "lxml" },
     { name = "psycopg", extra = ["binary"] },
     { name = "python-dotenv" },
+    { name = "tzdata" },
 ]
 
 [package.metadata]
@@ -155,6 +156,7 @@ requires-dist = [
     { name = "lxml", specifier = ">=5.0.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2.0" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
+    { name = "tzdata", specifier = ">=2024.1" },
 ]
 
 [[package]]

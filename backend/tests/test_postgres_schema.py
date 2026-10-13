@@ -36,9 +36,12 @@ class PostgresSchemaContractTests(unittest.TestCase):
 
         self.assertEqual(
             [migration.version for migration in migrations],
-            ["001", "002", "003", "004"],
+            ["001", "002", "003", "004", "005"],
         )
         sql = compact_sql("\n".join(migration.sql for migration in migrations))
+
+        self.assertIn("add column if not exists heartbeat_at timestamptz", sql)
+        self.assertIn("add column if not exists attempts integer not null default 0", sql)
 
         for table in REQUIRED_TABLES:
             self.assertIn(f"create table if not exists {table}", sql)

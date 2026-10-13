@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from zipfile import ZipFile
@@ -797,6 +798,152 @@ class PostgresImportRepositoryTransactionTests(unittest.TestCase):
 
         self.assertEqual(connection.commits, 0)
         self.assertEqual(connection.rollbacks, 1)
+
+
+class ImportLeaseTests(unittest.TestCase):
+    def test_rejects_member_larger_than_member_limit_before_reading(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_zip = Path(tmpdir) / "takeout.zip"
+            write_zip(source_zip, {"watch-history.html": b"x" * 100})
+            repository = FakeImportRepository(
+                ImportJob(
+                    id="import-big-member",
+                    user_id="user-1",
+                    s3_bucket="bucket",
+                    s3_key="uploads/user-1/takeout.zip",
+                )
+            )
+            worker = S3ZipImportWorker(
+                repository=repository,
+                s3_client=FakeS3Client(source_zip),
+                dispatch_member=fake_dispatch_member,
+                parser_loader=lambda dispatch: successful_parser,
+                max_member_bytes=10,
+            )
+
+            result = worker.process_one()
+
+        self.assertEqual(result.status, IMPORT_STATUS_FAILED)
+        self.assertIn("file_too_large", repository.error_message)
+        self.assertEqual(repository.usage_events, [])
+
+    def test_archive_without_supported_files_fails_with_clear_message(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_zip = Path(tmpdir) / "takeout.zip"
+            write_zip(source_zip, {"Takeout/ignored.txt": b"nothing useful"})
+            repository = FakeImportRepository(
+                ImportJob(
+                    id="import-empty",
+                    user_id="user-1",
+                    s3_bucket="bucket",
+                    s3_key="uploads/user-1/takeout.zip",
+                )
+            )
+            worker = S3ZipImportWorker(
+                repository=repository,
+                s3_client=FakeS3Client(source_zip),
+                dispatch_member=fake_dispatch_member,
+                parser_loader=lambda dispatch: successful_parser,
+            )
+
+            result = worker.process_one()
+
+        self.assertEqual(result.status, IMPORT_STATUS_FAILED)
+        self.assertTrue(repository.error_message.startswith("no_supported_files"))
+        self.assertEqual(repository.enrichment_jobs, [])
+
+    def test_heartbeat_runs_while_a_job_is_processing(self):
+        beats: list[str] = []
+
+        def slow_parser(content: bytes, *, source_path: str) -> ParseResult:
+            time.sleep(0.3)
+            return successful_parser(content, source_path=source_path)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_zip = Path(tmpdir) / "takeout.zip"
+            write_zip(source_zip, {"watch-history.html": b"history"})
+            repository = FakeImportRepository(
+                ImportJob(
+                    id="import-slow",
+                    user_id="user-1",
+                    s3_bucket="bucket",
+                    s3_key="uploads/user-1/takeout.zip",
+                )
+            )
+            worker = S3ZipImportWorker(
+                repository=repository,
+                s3_client=FakeS3Client(source_zip),
+                dispatch_member=fake_dispatch_member,
+                parser_loader=lambda dispatch: slow_parser,
+                heartbeat=beats.append,
+                heartbeat_interval_seconds=0.05,
+            )
+
+            result = worker.process_one()
+
+        self.assertEqual(result.status, IMPORT_STATUS_COMPLETED)
+        self.assertGreaterEqual(len(beats), 1)
+        self.assertEqual(set(beats), {"import-slow"})
+
+    def test_claim_reclaims_running_imports_with_stale_heartbeat(self):
+        connection = ScriptedConnection([None])
+        repository = PostgresImportRepository(
+            connection, stale_after_seconds=600, max_attempts=3
+        )
+
+        self.assertIsNone(repository.claim_queued_import())
+
+        claim_sql = " ".join(connection.statements[0][0].split())
+        self.assertIn("status = 'queued'", claim_sql)
+        self.assertIn("status = 'running'", claim_sql)
+        self.assertIn("heartbeat_at", claim_sql)
+        self.assertIn("FOR UPDATE SKIP LOCKED", claim_sql)
+        self.assertEqual(connection.statements[0][1], (600,))
+
+    def test_claim_fails_jobs_that_exhausted_their_attempts(self):
+        exhausted = ("import-1", "user-1", "bucket", "uploads/u/a.zip", None, 3, "running")
+        fresh = ("import-2", "user-1", "bucket", "uploads/u/b.zip", None, 0, "queued")
+        connection = ScriptedConnection([exhausted, None, fresh, None])
+        repository = PostgresImportRepository(
+            connection, stale_after_seconds=600, max_attempts=3
+        )
+
+        job = repository.claim_queued_import()
+
+        self.assertEqual(job.id, "import-2")
+        statements = [" ".join(sql.split()) for sql, _ in connection.statements]
+        failed_updates = [sql for sql in statements if "SET status = 'failed'" in sql]
+        self.assertEqual(len(failed_updates), 1)
+        failed_params = [
+            params
+            for sql, params in connection.statements
+            if "SET status = 'failed'" in " ".join(sql.split())
+        ][0]
+        self.assertIn("import_abandoned", failed_params[0])
+        self.assertEqual(failed_params[1], "import-1")
+        claim_update = [sql for sql in statements if "attempts = attempts + 1" in sql]
+        self.assertEqual(len(claim_update), 1)
+
+
+class ScriptedConnection:
+    """Returns the scripted rows, in order, for each execute().fetchone()."""
+
+    def __init__(self, rows: list) -> None:
+        self.rows = list(rows)
+        self.statements: list[tuple[str, object]] = []
+        self.commits = 0
+        self.rollbacks = 0
+
+    def execute(self, sql: str, params=None):
+        self.statements.append((sql, params))
+        row = self.rows.pop(0) if self.rows else None
+        return FakeCursor(row)
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
 
 
 class CommitCountingConnection:

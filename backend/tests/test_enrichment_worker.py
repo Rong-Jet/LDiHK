@@ -7,9 +7,12 @@ from contextlib import closing
 from datetime import datetime, timezone
 
 from backend.enrichment.durations import (
+    DELETED_OR_UNAVAILABLE,
+    ENRICHMENT_JOB_STATUS_ABANDONED,
     ENRICHMENT_JOB_STATUS_COMPLETED,
     ENRICHMENT_JOB_STATUS_FAILED,
     ENRICHMENT_JOB_STATUS_RUNNING,
+    enriched_video_from_youtube_item,
     ENRICHMENT_JOB_TYPE_YOUTUBE_DURATIONS,
     ENRICHMENT_WORKER_STATUS_COMPLETED,
     ENRICHMENT_WORKER_STATUS_FAILED,
@@ -254,6 +257,141 @@ class Cursor:
         return self.rows
 
 
+class EnrichmentRecoveryTests(unittest.TestCase):
+    def test_stale_running_job_is_reclaimed_and_counts_as_an_attempt(self):
+        with closing(_connection()) as connection:
+            _insert_job_row(
+                connection,
+                "job-stale",
+                status=ENRICHMENT_JOB_STATUS_RUNNING,
+                started_at="2000-01-01T00:00:00+00:00",
+                attempts=1,
+            )
+            repository = PostgresEnrichmentRepository(
+                connection, stale_after_seconds=60, max_attempts=8
+            )
+
+            job = repository.claim_next_job()
+            attempts = connection.execute(
+                "SELECT attempts FROM enrichment_jobs WHERE id = ?", ("job-stale",)
+            ).fetchone()[0]
+
+        self.assertEqual(job.id, "job-stale")
+        self.assertEqual(job.attempts, 2)
+        self.assertEqual(attempts, 2)
+
+    def test_running_job_with_fresh_heartbeat_is_not_reclaimed(self):
+        fresh = datetime.now(timezone.utc).isoformat()
+        with closing(_connection()) as connection:
+            _insert_job_row(
+                connection,
+                "job-busy",
+                status=ENRICHMENT_JOB_STATUS_RUNNING,
+                started_at="2000-01-01T00:00:00+00:00",
+                heartbeat_at=fresh,
+            )
+            repository = PostgresEnrichmentRepository(
+                connection, stale_after_seconds=600
+            )
+
+            self.assertIsNone(repository.claim_next_job())
+
+    def test_job_that_exhausted_attempts_is_abandoned(self):
+        with closing(_connection()) as connection:
+            _insert_job_row(
+                connection,
+                "job-dead",
+                status=ENRICHMENT_JOB_STATUS_RUNNING,
+                started_at="2000-01-01T00:00:00+00:00",
+                attempts=7,
+            )
+            repository = PostgresEnrichmentRepository(
+                connection, stale_after_seconds=60, max_attempts=8
+            )
+
+            job = repository.claim_next_job()
+            status = connection.execute(
+                "SELECT status FROM enrichment_jobs WHERE id = ?", ("job-dead",)
+            ).fetchone()[0]
+
+        self.assertIsNone(job)
+        self.assertEqual(status, ENRICHMENT_JOB_STATUS_ABANDONED)
+
+    def test_retry_skips_video_ids_already_enriched(self):
+        with closing(_connection()) as connection:
+            _insert_enrichment_job(connection, "job-1", ["video-1", "video-2"])
+            connection.execute(
+                """
+                INSERT INTO youtube_videos (video_id, availability_status)
+                VALUES ('video-1', 'available')
+                """
+            )
+            client = FakeYoutubeClient({"video-2": _youtube_video("video-2", "PT3M")})
+            worker = YoutubeDurationEnrichmentWorker(
+                repository=PostgresEnrichmentRepository(connection),
+                client=client,
+            )
+
+            result = worker.process_one()
+
+        self.assertEqual(result.status, ENRICHMENT_WORKER_STATUS_COMPLETED)
+        self.assertEqual(client.requests, [["video-2"]])
+
+    def test_repair_reports_failure_and_waits_before_retrying_api_errors(self):
+        with closing(_connection()) as connection:
+            _insert_usage_event(connection, "event-1", "watch", "video-1")
+            worker = YoutubeDurationEnrichmentWorker(
+                repository=PostgresEnrichmentRepository(connection),
+                client=FakeYoutubeClient(error=RuntimeError("quotaExceeded")),
+                retry_base_seconds=300,
+            )
+
+            first = worker.repair_once()
+            second = worker.repair_once()
+
+        self.assertEqual(first.status, ENRICHMENT_WORKER_STATUS_FAILED)
+        # The failed ID was just looked up, so the next pass leaves it alone.
+        self.assertEqual(second.status, ENRICHMENT_WORKER_STATUS_IDLE)
+
+    def test_rejected_upload_is_not_retried_as_api_error(self):
+        video = enriched_video_from_youtube_item(
+            {
+                "id": "video-1",
+                "status": {"privacyStatus": "public", "uploadStatus": "rejected"},
+            }
+        )
+
+        self.assertEqual(video.availability_status, DELETED_OR_UNAVAILABLE)
+
+
+def _insert_job_row(
+    connection,
+    job_id: str,
+    *,
+    status: str,
+    started_at: str | None = None,
+    heartbeat_at: str | None = None,
+    attempts: int = 0,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO enrichment_jobs (
+            id, job_type, status, payload_json, attempts, started_at, heartbeat_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            job_id,
+            ENRICHMENT_JOB_TYPE_YOUTUBE_DURATIONS,
+            status,
+            json.dumps({"video_ids": ["video-1"]}),
+            attempts,
+            started_at,
+            heartbeat_at,
+        ),
+    )
+
+
 def _connection():
     connection = sqlite3.connect(":memory:")
     connection.executescript(
@@ -289,7 +427,8 @@ def _connection():
             started_at TEXT,
             finished_at TEXT,
             error_message TEXT,
-            created_at TEXT NOT NULL DEFAULT '2000-01-01T00:00:00+00:00'
+            created_at TEXT NOT NULL DEFAULT '2000-01-01T00:00:00+00:00',
+            heartbeat_at TEXT
         );
         """
     )
