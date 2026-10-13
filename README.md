@@ -16,20 +16,30 @@ The website is hosted at:
 https://ldihk.xyz/
 ```
 
-The hosted frontend is configured to use the live Render backend API:
+## Free Hosting
 
-```text
-https://ldihk-api.onrender.com
-```
+LDiHK runs entirely on free plans:
 
-Health check:
+| Part | Provider | Config |
+| --- | --- | --- |
+| Frontend (Astro) | Netlify free | `netlify.toml`, `Frontend/.env.example` |
+| Backend API + import and enrichment workers | One Render free web service | `render.yaml`, `Dockerfile` |
+| Postgres | Neon free | `DATABASE_URL` |
+| Upload storage | Cloudflare R2 | `S3_ENDPOINT_URL`, bucket CORS + 1-day lifecycle rule |
+| Video durations | YouTube Data API v3 | `YOUTUBE_API_KEY` |
 
-```text
-https://ldihk-api.onrender.com/health
-```
+The import and enrichment workers run as threads inside the web service
+(`RUN_WORKERS_IN_PROCESS=true`), so no paid background workers are needed.
+The Render free instance sleeps after 15 minutes without traffic; the
+frontend shows a "waking the server" state while it starts (about a minute).
 
-The hosted demo runs with the frontend mock API disabled and sends browser API
-traffic to the Render service. Local development instructions are below.
+Setup steps, environment variables and limits are in
+[docs/backend/deployment.md](docs/backend/deployment.md); frontend settings
+are in [Frontend/README.md](Frontend/README.md).
+
+Moving from the hackathon deployment (Render workers, Supabase, AWS S3): the
+event dedupe key changed, so start with a fresh Neon database and re-upload
+exports rather than copying old `usage_events` rows across.
 
 ## Quick Start
 
@@ -92,9 +102,16 @@ GET http://127.0.0.1:8000/api/users/local_user/youtube-usage
 GET http://127.0.0.1:8000/api/v2/users/local_user/youtube-usage/temporal
 POST http://127.0.0.1:8000/api/v3/query
 POST http://127.0.0.1:8000/api/query
+POST http://127.0.0.1:8000/api/population
+GET http://127.0.0.1:8000/api/me
 POST http://127.0.0.1:8000/api/imports
 GET http://127.0.0.1:8000/api/imports/{import_id}
 ```
+
+The `/api/query`, `/api/population`, `/api/me` and `/api/imports` routes need
+`DATABASE_URL` and an `Authorization: Bearer <LDiHK-ID>` header. Set
+`RUN_WORKERS_IN_PROCESS=true` to process uploaded imports inside the API
+process, or run `uv run python backend/scripts/run_worker.py` separately.
 
 If `uv` cannot write to its default cache in a restricted environment, prefix commands with:
 
