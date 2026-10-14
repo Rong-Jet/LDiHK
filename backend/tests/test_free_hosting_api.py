@@ -190,6 +190,26 @@ class DatabaseOutageTests(unittest.TestCase):
             self.assertEqual(response.get_json(), {"error": "database_unavailable"})
 
 
+class PostgresTimezoneTests(unittest.TestCase):
+    def test_timezone_unknown_to_postgres_is_a_client_error(self):
+        class RejectingConnection(SummaryConnection):
+            def execute(self, sql, parameters):
+                if "AT TIME ZONE" in sql:
+                    raise psycopg.errors.InvalidParameterValue(
+                        'time zone "Europe/Berlin" not recognized'
+                    )
+                return super().execute(sql, parameters)
+
+        app = _app(lambda: RejectingConnection(user_exists=True))
+
+        response = app.test_client().get(
+            "/api/me?timezone=Europe/Berlin", headers=auth_headers()
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.get_json(), {"error": "invalid_timezone"})
+
+
 class QueryContractTests(unittest.TestCase):
     def _query(self, **options):
         return validate_query_request(

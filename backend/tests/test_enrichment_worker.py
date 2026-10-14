@@ -353,6 +353,22 @@ class EnrichmentRecoveryTests(unittest.TestCase):
         # The failed ID was just looked up, so the next pass leaves it alone.
         self.assertEqual(second.status, ENRICHMENT_WORKER_STATUS_IDLE)
 
+    def test_job_queued_a_moment_ago_is_claimable_immediately(self):
+        # The import thread wakes the enrichment thread right after queueing;
+        # a whole-second clock used to hide jobs created in the same second.
+        with closing(_connection()) as connection:
+            _insert_job_row(connection, "job-new", status="queued")
+            connection.execute(
+                "UPDATE enrichment_jobs SET run_after = ? WHERE id = ?",
+                (datetime.now(timezone.utc).isoformat(), "job-new"),
+            )
+            repository = PostgresEnrichmentRepository(connection)
+
+            job = repository.claim_next_job()
+
+        self.assertIsNotNone(job)
+        self.assertEqual(job.id, "job-new")
+
     def test_rejected_upload_is_not_retried_as_api_error(self):
         video = enriched_video_from_youtube_item(
             {

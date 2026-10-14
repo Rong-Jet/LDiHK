@@ -225,7 +225,9 @@ class PostgresEnrichmentRepository:
         ``max_attempts`` are marked abandoned instead of retried forever.
         """
         placeholder = _placeholder(self.connection)
-        now = _utc_now()
+        # Keep sub-second precision: a job queued a moment ago (the import
+        # thread wakes this worker right after queueing) must already be due.
+        now = datetime.now(timezone.utc)
         now_value = _timestamp_value(self.connection, now)
         stale_before_value = _timestamp_value(
             self.connection, now - timedelta(seconds=self.stale_after_seconds)

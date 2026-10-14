@@ -9,7 +9,12 @@ from typing import Callable
 from flask import Flask, jsonify, request
 
 from backend.background import start_in_process_workers
-from backend.db import DatabaseConfigError, connect, is_database_unavailable_error
+from backend.db import (
+    DatabaseConfigError,
+    connect,
+    is_database_unavailable_error,
+    is_invalid_timezone_error,
+)
 from backend.http_boundary import (
     PublicBoundaryError,
     configure_cors,
@@ -127,6 +132,8 @@ def create_app(
             if is_database_unavailable_error(error):
                 LOGGER.warning("Database unavailable: %s", error)
                 return database_unavailable()
+            if is_invalid_timezone_error(error):
+                return jsonify({"error": "invalid_timezone"}), 400
             raise
         finally:
             if connection is not None:
@@ -185,6 +192,8 @@ def create_app(
             if is_database_unavailable_error(error):
                 LOGGER.warning("Database unavailable: %s", error)
                 return database_unavailable()
+            if is_invalid_timezone_error(error):
+                return jsonify({"error": "invalid_timezone"}), 400
             raise
         finally:
             if connection is not None:
@@ -217,6 +226,8 @@ def create_app(
             if is_database_unavailable_error(error):
                 LOGGER.warning("Database unavailable: %s", error)
                 return database_unavailable()
+            if is_invalid_timezone_error(error):
+                return jsonify({"error": "invalid_timezone"}), 400
             raise
         finally:
             if connection is not None:

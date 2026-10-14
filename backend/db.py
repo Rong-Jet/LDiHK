@@ -75,6 +75,17 @@ def connect(
     return psycopg.connect(database_url, **connect_kwargs)
 
 
+def is_invalid_timezone_error(error: BaseException) -> bool:
+    """True when Postgres rejected a time zone name (e.g. missing tz data)."""
+    try:
+        import psycopg
+    except ModuleNotFoundError:  # pragma: no cover - depends on env setup
+        return False
+    return isinstance(error, psycopg.errors.InvalidParameterValue) and (
+        "time zone" in str(error)
+    )
+
+
 def is_database_unavailable_error(error: BaseException) -> bool:
     """True for errors that mean "the database is down", not "bad query"."""
     if isinstance(error, DatabaseUnavailableError):
