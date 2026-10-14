@@ -5,7 +5,9 @@ import json
 import unittest
 from unittest.mock import patch
 
-from backend.ingestion.parsers import watch_history
+import bs4
+
+from backend.ingestion.parsers import takeout_activity, watch_history
 from backend.ingestion.parsers.watch_history import parse_watch_history
 
 
@@ -13,7 +15,16 @@ def export_html(cards: str) -> bytes:
     return f"<html><body>{cards}</body></html>".encode("utf-8")
 
 
-def activity_card(product: str, body: str) -> str:
+def activity_card(product: str, body: str, details: str | None = None) -> str:
+    caption = ""
+    if details is not None:
+        caption = f"""
+        <div class="content-cell mdl-cell mdl-cell--6-col mdl-typography--body-1 mdl-typography--text-right"></div>
+        <div class="content-cell mdl-cell mdl-cell--12-col mdl-typography--caption">
+          <b>Products:</b><br>&emsp;{product}<br>
+          <b>Details:</b><br>&emsp;{details}<br>
+        </div>
+        """
     return f"""
     <div class="outer-cell mdl-cell mdl-cell--12-col mdl-shadow--2dp">
       <div class="mdl-grid">
@@ -23,9 +34,14 @@ def activity_card(product: str, body: str) -> str:
         <div class="content-cell mdl-cell mdl-cell--6-col mdl-typography--body-1">
           {body}
         </div>
+        {caption}
       </div>
     </div>
     """
+
+
+WATCH_HISTORY_HTML = "Takeout/YouTube and YouTube Music/history/watch-history.html"
+WATCH_HISTORY_JSON = "Takeout/YouTube and YouTube Music/history/watch-history.json"
 
 
 class WatchHistoryParserTests(unittest.TestCase):
@@ -173,7 +189,7 @@ class WatchHistoryParserTests(unittest.TestCase):
             ["split123", "split456"],
         )
 
-    def test_html_parser_does_not_build_full_document_beautifulsoup_tree(self):
+    def test_html_parser_parses_document_once_without_reparsing_cards(self):
         html = export_html(
             activity_card(
                 "YouTube",
@@ -190,14 +206,16 @@ class WatchHistoryParserTests(unittest.TestCase):
                 """,
             )
         )
-        original_beautiful_soup = watch_history.BeautifulSoup
-        parsed_markup_sizes: list[int] = []
+        # The document is parsed exactly once by the streaming lxml parser:
+        # cards are neither re-serialised nor re-parsed with BeautifulSoup
+        # (the old per-card re-parse made 126 MB exports take ~2 minutes).
+        def fail(*args, **kwargs):
+            raise AssertionError("cards must not be re-serialised or re-parsed")
 
-        def tracking_beautiful_soup(markup, *args, **kwargs):
-            parsed_markup_sizes.append(len(markup))
-            return original_beautiful_soup(markup, *args, **kwargs)
-
-        with patch.object(watch_history, "BeautifulSoup", tracking_beautiful_soup):
+        with (
+            patch.object(bs4.BeautifulSoup, "__init__", fail),
+            patch.object(takeout_activity.etree, "tostring", fail),
+        ):
             result = parse_watch_history(
                 html,
                 source_path=(
@@ -206,8 +224,9 @@ class WatchHistoryParserTests(unittest.TestCase):
             )
 
         self.assertEqual(result.records_seen, 2)
-        self.assertEqual(len(parsed_markup_sizes), 2)
-        self.assertTrue(all(size < len(html) for size in parsed_markup_sizes))
+        self.assertEqual(
+            [event.video_id for event in result.events], ["first123", "second456"]
+        )
 
     def test_json_watch_history_is_supported(self):
         payload = [
@@ -245,6 +264,256 @@ class WatchHistoryParserTests(unittest.TestCase):
         self.assertEqual(
             result.events[0].occurred_at,
             datetime(2026, 6, 6, 6, 53, 12, tzinfo=timezone.utc),
+        )
+
+
+class LocalizedWatchHistoryTests(unittest.TestCase):
+    def test_localized_html_timestamps_are_parsed(self):
+        cases = {
+            "de numeric": ("Kanal 12.03.2024, 14:22:11 MEZ", "2024-03-12T14:22:11+01:00"),
+            "de named": ("6. Juni 2026, 08:53:12 MESZ", "2026-06-06T08:53:12+02:00"),
+            "de umlaut": ("12. März 2024, 14:22:11 MEZ", "2024-03-12T14:22:11+01:00"),
+            "es": ("12 mar 2024, 14:22:11 CET", "2024-03-12T14:22:11+01:00"),
+            "es long": ("6 de junio de 2026, 8:53:12 CEST", "2026-06-06T08:53:12+02:00"),
+            "es 12h": ("6 jun 2026, 8:53:12 p. m. CET", "2026-06-06T20:53:12+01:00"),
+            "fr": ("12 mars 2024, 14:22:11 UTC+1", "2024-03-12T14:22:11+01:00"),
+            "fr à": ("6 juin 2026 à 08:53:12 UTC+02:00", "2026-06-06T08:53:12+02:00"),
+            "fr abbr": ("12 févr. 2024, 14:22:11 UTC−3", "2024-02-12T14:22:11-03:00"),
+            "it": ("6 giu 2026, 08:53:12 CEST", "2026-06-06T08:53:12+02:00"),
+            "pt": ("12 de mar. de 2024, 14:22:11 BRT", "2024-03-12T14:22:11-03:00"),
+            "nl": ("12 mrt 2024, 14:22:11 CET", "2024-03-12T14:22:11+01:00"),
+            "nl abbr": ("6 jun. 2026 08:53:12 CEST", "2026-06-06T08:53:12+02:00"),
+            "en us": ("Jun 6, 2026, 8:53:12 PM PDT", "2026-06-06T20:53:12-07:00"),
+        }
+
+        for name, (timestamp, expected) in cases.items():
+            with self.subTest(name=name):
+                html = export_html(
+                    activity_card(
+                        "YouTube",
+                        f"""
+                        <a href="https://www.youtube.com/watch?v=abc123">Titel 12.03.2020</a> angesehen<br>
+                        <a href="https://www.youtube.com/channel/UCabc">Kanal</a><br>
+                        {timestamp}<br>
+                        """,
+                    )
+                )
+
+                result = parse_watch_history(
+                    html,
+                    source_path="Takeout/YouTube und YouTube Music/Verlauf/Wiedergabeverlauf.html",
+                )
+
+                self.assertEqual(result.warnings, [])
+                self.assertEqual(result.events[0].occurred_at.isoformat(), expected)
+                self.assertIsNone(result.events[0].raw_status)
+
+    def test_timezone_abbreviations_and_offsets_are_parsed(self):
+        cases = {
+            "BST": "+01:00",
+            "IST": "+05:30",
+            "AEST": "+10:00",
+            "AEDT": "+11:00",
+            "JST": "+09:00",
+            "KST": "+09:00",
+            "MSK": "+03:00",
+            "CEST": "+02:00",
+            "CET": "+01:00",
+            "MEZ": "+01:00",
+            "MESZ": "+02:00",
+            "EEST": "+03:00",
+            "EET": "+02:00",
+            "WEST": "+01:00",
+            "WET": "+00:00",
+            "HKT": "+08:00",
+            "SGT": "+08:00",
+            "NZST": "+12:00",
+            "NZDT": "+13:00",
+            "BRT": "-03:00",
+            "ART": "-03:00",
+            "GMT+2": "+02:00",
+            "GMT-3": "-03:00",
+            "UTC+01:00": "+01:00",
+            "GMT+05:30": "+05:30",
+        }
+
+        for zone, offset in cases.items():
+            with self.subTest(zone=zone):
+                html = export_html(
+                    activity_card(
+                        "YouTube",
+                        f"""
+                        Watched&nbsp;<a href="https://www.youtube.com/watch?v=abc123">Video</a><br>
+                        6 Jun 2026, 08:53:12 {zone}<br>
+                        """,
+                    )
+                )
+
+                result = parse_watch_history(html, source_path=WATCH_HISTORY_HTML)
+
+                self.assertEqual(result.warnings, [])
+                self.assertEqual(
+                    result.events[0].occurred_at.isoformat(),
+                    f"2026-06-06T08:53:12{offset}",
+                )
+
+    def test_unknown_timezone_falls_back_to_utc_with_warning(self):
+        html = export_html(
+            activity_card(
+                "YouTube",
+                """
+                Watched&nbsp;<a href="https://www.youtube.com/watch?v=abc123">Video</a><br>
+                6 Jun 2026, 08:53:12 XYZT<br>
+                """,
+            )
+        )
+
+        result = parse_watch_history(html, source_path=WATCH_HISTORY_HTML)
+
+        self.assertEqual(
+            [warning.code for warning in result.warnings], ["timestamp_unknown_timezone"]
+        )
+        self.assertEqual(
+            result.events[0].occurred_at,
+            datetime(2026, 6, 6, 8, 53, 12, tzinfo=timezone.utc),
+        )
+
+    def test_localized_removed_video_is_marked_deleted(self):
+        html = export_html(
+            activity_card("YouTube", "Ein Video angesehen, das entfernt wurde<br>12.03.2024, 14:22:11 MEZ<br>")
+            + activity_card("YouTube", "Has visto un vídeo que se ha eliminado<br>12 mar 2024, 14:22:11 CET<br>")
+        )
+
+        result = parse_watch_history(html, source_path=WATCH_HISTORY_HTML)
+
+        self.assertEqual([event.raw_status for event in result.events], ["deleted", "deleted"])
+        self.assertEqual(
+            [warning.code for warning in result.warnings], ["deleted_watch", "deleted_watch"]
+        )
+
+    def test_localized_status_words_in_real_titles_do_not_change_status(self):
+        html = export_html(
+            activity_card(
+                "YouTube",
+                """
+                <a href="https://www.youtube.com/watch?v=abc123">10 km entfernt – privat gefilmt</a> angesehen<br>
+                12.03.2024, 14:22:11 MEZ<br>
+                """,
+            )
+        )
+
+        result = parse_watch_history(html, source_path=WATCH_HISTORY_HTML)
+
+        self.assertIsNone(result.events[0].raw_status)
+        self.assertEqual(result.warnings, [])
+
+    def test_localized_json_titles_are_cleaned(self):
+        payload = [
+            {
+                "header": "YouTube",
+                "title": "Beispielvideo angesehen",
+                "titleUrl": "https://www.youtube.com/watch?v=de123",
+                "time": "2024-03-12T13:22:11.123Z",
+            },
+            {
+                "header": "YouTube",
+                "title": "Vous avez regardé Exemple",
+                "titleUrl": "https://www.youtube.com/watch?v=fr123",
+                "time": "2024-03-12T13:22:11Z",
+            },
+        ]
+
+        result = parse_watch_history(
+            json.dumps(payload).encode("utf-8"),
+            source_path="Takeout/YouTube und YouTube Music/Verlauf/Wiedergabeverlauf.json",
+        )
+
+        self.assertEqual([event.title for event in result.events], ["Beispielvideo", "Exemple"])
+
+
+class GoogleAdsWatchTests(unittest.TestCase):
+    def test_json_records_from_google_ads_are_not_watch_events(self):
+        payload = [
+            {
+                "header": "YouTube",
+                "title": "Watched Some Advert",
+                "titleUrl": "https://www.youtube.com/watch?v=ad123",
+                "time": "2026-06-06T06:53:12.000Z",
+                "details": [{"name": "From Google Ads"}],
+                "products": ["YouTube"],
+            },
+            {
+                "header": "YouTube",
+                "title": "Watched Real Video",
+                "titleUrl": "https://www.youtube.com/watch?v=real123",
+                "time": "2026-06-06T06:50:00.000Z",
+                "products": ["YouTube"],
+            },
+            {
+                "header": "YouTube",
+                "title": "Werbung angesehen",
+                "titleUrl": "https://www.youtube.com/watch?v=ad456",
+                "time": "2026-06-06T06:40:00.000Z",
+                "details": [{"name": "Von Google Ads"}],
+            },
+        ]
+
+        result = parse_watch_history(
+            json.dumps(payload).encode("utf-8"), source_path=WATCH_HISTORY_JSON
+        )
+
+        self.assertEqual(result.records_seen, 3)
+        self.assertEqual([event.video_id for event in result.events], ["real123"])
+        self.assertEqual(
+            [(warning.code, warning.sample) for warning in result.warnings],
+            [
+                ("google_ads_watch_skipped", "record 1"),
+                ("google_ads_watch_skipped", "record 3"),
+            ],
+        )
+
+    def test_html_cards_from_google_ads_are_not_watch_events(self):
+        html = export_html(
+            activity_card(
+                "YouTube",
+                """
+                Watched&nbsp;<a href="https://www.youtube.com/watch?v=ad123">Advert</a><br>
+                6 Jun 2026, 08:53:12 CEST<br>
+                """,
+                details="From Google Ads",
+            )
+            + activity_card(
+                "YouTube",
+                """
+                <a href="https://www.youtube.com/watch?v=ad456">Werbung</a> angesehen<br>
+                06.06.2026, 08:50:12 MESZ<br>
+                """,
+                details="Von Google Ads",
+            )
+            + activity_card(
+                "YouTube",
+                """
+                Has visto&nbsp;<a href="https://www.youtube.com/watch?v=ad789">Anuncio</a><br>
+                6 jun 2026, 08:45:12 CEST<br>
+                """,
+                details="De Google Ads",
+            )
+            + activity_card(
+                "YouTube",
+                """
+                Watched&nbsp;<a href="https://www.youtube.com/watch?v=real123">How to use Google Ads</a><br>
+                6 Jun 2026, 08:40:12 CEST<br>
+                """,
+            )
+        )
+
+        result = parse_watch_history(html, source_path=WATCH_HISTORY_HTML)
+
+        self.assertEqual(result.records_seen, 4)
+        self.assertEqual([event.video_id for event in result.events], ["real123"])
+        self.assertEqual(
+            [warning.code for warning in result.warnings],
+            ["google_ads_watch_skipped"] * 3,
         )
 
 

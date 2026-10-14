@@ -192,6 +192,65 @@ class SubscriptionsParserTests(unittest.TestCase):
         )
         self.assertEqual(result.records_seen, 1)
 
+    def test_localized_csv_headers_emit_subscriptions(self):
+        channel_id = "UCabcdefghijklmnopqrstuv"
+        cases = {
+            "de": "Kanal-ID,Kanal-URL,Kanaltitel",
+            "es": "ID del canal,URL del canal,Título del canal",
+            "fr": "ID de la chaîne,URL de la chaîne,Titre de la chaîne",
+            "it": "ID del canale,URL del canale,Titolo del canale",
+            "pt": "ID do canal,URL do canal,Título do canal",
+            "nl": "Kanaal-ID,Kanaal-URL,Kanaaltitel",
+        }
+
+        for language, header in cases.items():
+            with self.subTest(language=language):
+                content = (
+                    f"﻿{header}\n"
+                    f"{channel_id},http://www.youtube.com/channel/{channel_id},Beispielkanal\n"
+                ).encode("utf-8")
+
+                result = parse_subscriptions(
+                    content,
+                    source_path="Takeout/YouTube und YouTube Music/Abos/Abos.csv",
+                )
+
+                self.assertEqual(result.warnings, [])
+                self.assertEqual(
+                    result.subscriptions,
+                    [
+                        ParsedSubscription(
+                            channel_id=channel_id,
+                            channel_url=f"http://www.youtube.com/channel/{channel_id}",
+                            channel_title="Beispielkanal",
+                        )
+                    ],
+                )
+
+    def test_unknown_header_language_falls_back_to_value_detection(self):
+        channel_id = "UCabcdefghijklmnopqrstuv"
+        content = (
+            "Identyfikator kanału,Adres URL kanału,Nazwa kanału\n"
+            f"{channel_id},http://www.youtube.com/channel/{channel_id},Kanał\n"
+        ).encode("utf-8")
+
+        result = parse_subscriptions(
+            content,
+            source_path="Takeout/YouTube i YouTube Music/subskrypcje/subskrypcje.csv",
+        )
+
+        self.assertEqual(result.warnings, [])
+        self.assertEqual(
+            result.subscriptions,
+            [
+                ParsedSubscription(
+                    channel_id=channel_id,
+                    channel_url=f"http://www.youtube.com/channel/{channel_id}",
+                    channel_title="Kanał",
+                )
+            ],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

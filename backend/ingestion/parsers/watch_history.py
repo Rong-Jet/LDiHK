@@ -2,91 +2,36 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
-from bs4 import BeautifulSoup
-from lxml import etree
-
 from backend.ingestion.models import ParseResult, ParseWarning, ParsedEvent
+from backend.ingestion.parsers.takeout_activity import (
+    MONTHS,
+    TIMEZONE_OFFSETS,
+    ActivityCard,
+    iter_activity_cards,
+    mentions_google_ads,
+    parse_iso_timestamp,
+    parse_text_timestamp,
+    parse_timezone,
+)
+
+__all__ = [
+    "MONTHS",
+    "TIMEZONE_OFFSETS",
+    "parse_watch_card",
+    "parse_watch_history",
+    "parse_watch_json_record",
+    "parse_timezone",
+]
 
 
 PRODUCTS = {
     "youtube": "youtube",
     "youtube music": "youtube_music",
 }
-
-MONTHS = {
-    "jan": 1,
-    "january": 1,
-    "feb": 2,
-    "february": 2,
-    "mar": 3,
-    "march": 3,
-    "apr": 4,
-    "april": 4,
-    "may": 5,
-    "jun": 6,
-    "june": 6,
-    "jul": 7,
-    "july": 7,
-    "aug": 8,
-    "august": 8,
-    "sep": 9,
-    "sept": 9,
-    "september": 9,
-    "oct": 10,
-    "october": 10,
-    "nov": 11,
-    "november": 11,
-    "dec": 12,
-    "december": 12,
-}
-
-TIMEZONE_OFFSETS = {
-    "UTC": 0,
-    "GMT": 0,
-    "CET": 1,
-    "CEST": 2,
-    "WET": 0,
-    "WEST": 1,
-    "EET": 2,
-    "EEST": 3,
-    "EST": -5,
-    "EDT": -4,
-    "CST": -6,
-    "CDT": -5,
-    "MST": -7,
-    "MDT": -6,
-    "PST": -8,
-    "PDT": -7,
-}
-
-DAY_MONTH_TIMESTAMP_RE = re.compile(
-    r"\b(?P<day>\d{1,2})\s+"
-    r"(?P<month>[A-Za-z]+)\s+"
-    r"(?P<year>\d{4}),\s+"
-    r"(?P<hour>\d{1,2}):(?P<minute>\d{2}):(?P<second>\d{2})"
-    r"(?:\s*(?P<ampm>AM|PM))?\s+"
-    r"(?P<zone>(?:UTC|GMT)[+-]\d{1,2}(?::?\d{2})?|[A-Za-z]{2,5})\b",
-    re.IGNORECASE,
-)
-MONTH_DAY_TIMESTAMP_RE = re.compile(
-    r"\b(?P<month>[A-Za-z]+)\s+"
-    r"(?P<day>\d{1,2}),\s+"
-    r"(?P<year>\d{4}),\s+"
-    r"(?P<hour>\d{1,2}):(?P<minute>\d{2}):(?P<second>\d{2})"
-    r"(?:\s*(?P<ampm>AM|PM))?\s+"
-    r"(?P<zone>(?:UTC|GMT)[+-]\d{1,2}(?::?\d{2})?|[A-Za-z]{2,5})\b",
-    re.IGNORECASE,
-)
-ISO_TIMESTAMP_RE = re.compile(
-    r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\b"
-)
-GMT_OFFSET_RE = re.compile(
-    r"^(?:UTC|GMT)(?P<sign>[+-])(?P<hour>\d{1,2})(?::?(?P<minute>\d{2}))?$"
-)
 
 STATUS_PATTERNS = (
     (
@@ -109,13 +54,77 @@ STATUS_PATTERNS = (
     ),
 )
 
+# Localised status phrases (de, es, fr, it, pt, nl).  They are only consulted
+# for records without a video link, so words inside real video titles
+# ("10 km entfernt") cannot mark a normal watch as deleted.
+LOCALIZED_STATUS_PATTERNS = (
+    (
+        "private",
+        re.compile(
+            r"\b(privates?|privat|privad[oa]s?|priv[ée]e?s?|privat[oa]|priv[ée])\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "deleted",
+        re.compile(
+            r"\b(entfernt|gel[öo]e?scht|eliminad[oa]s?|borrad[oa]s?|supprim[ée]e?s?|"
+            r"retir[ée]e?s?|rimoss[oa]|eliminat[oa]|cancellat[oa]|removid[oa]s?|"
+            r"exclu[íi]d[oa]s?|apagad[oa]s?|verwijderd)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "unavailable",
+        re.compile(
+            r"(nicht\s+(mehr\s+)?verf[üu]gbar|no\s+(est[áa]\s+)?disponible|indisponible|"
+            r"non\s+(è\s+più\s+|e\s+piu\s+)?disponibile|indispon[íi]vel|"
+            r"niet\s+(meer\s+)?beschikbaar)",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
 TITLE_PREFIXES = (
     "Watched ",
     "Viewed ",
     "Visited ",
     "Listened to ",
+    # es
+    "Has visto ",
+    "Has visualizado ",
+    "Has escuchado ",
+    # fr
+    "Vous avez regardé ",
+    "Vous avez visionné ",
+    "Vous avez écouté ",
+    # it
+    "Hai guardato ",
+    "Hai visto ",
+    "Hai ascoltato ",
+    # pt
+    "Você assistiu a ",
+    "Você assistiu ",
+    "Assistiu a ",
+    "Assistiu ",
+    "Assististe a ",
+    "Visualizou ",
+    "Ouviu ",
+    # nl / de
+    "Je hebt ",
+    "Bekeken: ",
+    "Angesehen: ",
+)
+TITLE_SUFFIXES = (
+    " angesehen",
+    " angeschaut",
+    " angehört",
+    " bekeken",
+    " gekeken",
+    " beluisterd",
 )
 HTML_PARSE_CHUNK_BYTES = 64 * 1024
+GOOGLE_ADS_WARNING = "google_ads_watch_skipped"
 
 
 def parse_watch_history(content: bytes, *, source_path: str) -> ParseResult:
@@ -135,27 +144,16 @@ def parse_watch_history(content: bytes, *, source_path: str) -> ParseResult:
 
 
 def _parse_html_history(content: bytes) -> ParseResult:
-    parser = etree.HTMLPullParser(events=("end",), tag="div", recover=True)
     events: list[ParsedEvent] = []
     warnings: list[ParseWarning] = []
     records_seen = 0
 
-    for chunk_start in range(0, len(content), HTML_PARSE_CHUNK_BYTES):
-        parser.feed(content[chunk_start : chunk_start + HTML_PARSE_CHUNK_BYTES])
-        records_seen = _consume_html_cards(
-            parser,
-            records_seen=records_seen,
-            events=events,
-            warnings=warnings,
-        )
-
-    parser.close()
-    records_seen = _consume_html_cards(
-        parser,
-        records_seen=records_seen,
-        events=events,
-        warnings=warnings,
-    )
+    for card in iter_activity_cards(content, chunk_size=HTML_PARSE_CHUNK_BYTES):
+        records_seen += 1
+        event, record_warnings = parse_watch_card(card, sequence=records_seen)
+        warnings.extend(record_warnings)
+        if event is not None:
+            events.append(event)
 
     return ParseResult(
         events=events,
@@ -165,74 +163,32 @@ def _parse_html_history(content: bytes) -> ParseResult:
     )
 
 
-def _consume_html_cards(
-    parser: etree.HTMLPullParser,
-    *,
-    records_seen: int,
-    events: list[ParsedEvent],
-    warnings: list[ParseWarning],
-) -> int:
-    for _, element in parser.read_events():
-        if not _is_outer_cell_element(element):
-            continue
-
-        records_seen += 1
-        card_html = etree.tostring(element, encoding="unicode", method="html")
-        card_soup = BeautifulSoup(card_html, "lxml")
-        card = card_soup.select_one("div.outer-cell") or card_soup
-        event, record_warnings = _parse_html_card(card, sequence=records_seen)
-        warnings.extend(record_warnings)
-        if event is not None:
-            events.append(event)
-        _clear_parsed_element(element)
-
-    return records_seen
-
-
-def _is_outer_cell_element(element: etree._Element) -> bool:
-    if element.tag != "div":
-        return False
-    classes = set((element.get("class") or "").split())
-    return "outer-cell" in classes
-
-
-def _clear_parsed_element(element: etree._Element) -> None:
-    element.clear()
-    parent = element.getparent()
-    if parent is None:
-        return
-    while element.getprevious() is not None:
-        del parent[0]
-
-
-def _parse_html_card(
-    card: Any, *, sequence: int
+def parse_watch_card(
+    card: ActivityCard, *, sequence: int
 ) -> tuple[ParsedEvent | None, list[ParseWarning]]:
+    """Turn one HTML activity card into a watch event (or warnings)."""
     warnings: list[ParseWarning] = []
     sample = _sample(sequence)
 
-    header = card.select_one(".header-cell .mdl-typography--title")
-    raw_product = header.get_text(" ", strip=True) if header else None
-    product = _normalize_product(raw_product)
+    product = _normalize_product(card.product)
     if product is None:
-        code = "missing_product" if raw_product is None else "unknown_product"
+        code = "missing_product" if card.product is None else "unknown_product"
         return None, [ParseWarning(code=code, sample=sample)]
 
-    content = _main_content_cell(card)
-    if content is None:
-        return None, [ParseWarning(code="malformed_record", sample=sample)]
-
-    body = _normalize_whitespace(content.get_text(" ", strip=True))
+    body = card.body
     if not body:
         return None, [ParseWarning(code="malformed_record", sample=sample)]
 
-    occurred_at, timestamp_warning = _parse_text_timestamp(body)
+    if mentions_google_ads(card.caption):
+        return None, [ParseWarning(code=GOOGLE_ADS_WARNING, sample=sample)]
+
+    occurred_at, timestamp_warning = parse_text_timestamp(body)
     if timestamp_warning is not None:
         warnings.append(ParseWarning(code=timestamp_warning, sample=sample))
 
-    video_id, title = _html_video_reference(content)
-    channel_id = _html_channel_id(content)
-    raw_status = _raw_status(body)
+    video_id, title = _html_video_reference(card.anchors)
+    channel_id = _html_channel_id(card.anchors)
+    raw_status = _raw_status(body, localized=video_id is None)
 
     if video_id is None:
         if raw_status is None:
@@ -270,7 +226,7 @@ def _parse_json_history(text: str) -> ParseResult:
             records_seen=0,
         )
 
-    records = _json_records(payload)
+    records = json_records(payload)
     if records is None:
         return ParseResult(
             events=[],
@@ -288,7 +244,7 @@ def _parse_json_history(text: str) -> ParseResult:
             warnings.append(ParseWarning(code="malformed_json_record", sample=sample))
             continue
 
-        event, record_warnings = _parse_json_record(record, sequence=sequence)
+        event, record_warnings = parse_watch_json_record(record, sequence=sequence)
         warnings.extend(record_warnings)
         if event is not None:
             events.append(event)
@@ -301,14 +257,18 @@ def _parse_json_history(text: str) -> ParseResult:
     )
 
 
-def _parse_json_record(
+def parse_watch_json_record(
     record: dict[str, Any], *, sequence: int
 ) -> tuple[ParsedEvent | None, list[ParseWarning]]:
+    """Turn one watch-history JSON record into a watch event (or warnings)."""
     warnings: list[ParseWarning] = []
     sample = _sample(sequence)
     product = _json_product(record)
     if product is None:
         return None, [ParseWarning(code="missing_product", sample=sample)]
+
+    if is_google_ads_json_record(record):
+        return None, [ParseWarning(code=GOOGLE_ADS_WARNING, sample=sample)]
 
     occurred_at, timestamp_warning = _parse_json_timestamp(record)
     if timestamp_warning is not None:
@@ -316,9 +276,14 @@ def _parse_json_record(
 
     title_url = _first_string(record, "titleUrl", "title_url", "url")
     video_id = _extract_video_id(title_url)
-    title = _clean_title(_first_string(record, "title", "name"))
     channel_id = _json_channel_id(record)
-    raw_status = _raw_status(" ".join(_json_status_texts(record)))
+    raw_status = _raw_status(
+        " ".join(_json_status_texts(record)), localized=video_id is None
+    )
+    # Mirror the HTML export: without a video link there is no title anchor,
+    # so the JSON record must not carry a title either (keeps fingerprints of
+    # the same watch identical across the two export formats).
+    title = _clean_title(_first_string(record, "title", "name")) if video_id else None
 
     if video_id is None:
         if raw_status is None:
@@ -327,8 +292,6 @@ def _parse_json_record(
         else:
             warnings.append(ParseWarning(code=f"{raw_status}_watch", sample=sample))
 
-    if raw_status is not None and video_id is None:
-        title = None
     if occurred_at is None:
         raw_status = raw_status or "malformed"
 
@@ -347,12 +310,29 @@ def _parse_json_record(
     )
 
 
+def is_google_ads_json_record(record: Mapping[str, Any]) -> bool:
+    """True for records tagged ``"details": [{"name": "From Google Ads"}]``."""
+    details = record.get("details")
+    if isinstance(details, str):
+        return mentions_google_ads(details)
+    if not isinstance(details, list):
+        return False
+    for detail in details:
+        if isinstance(detail, Mapping):
+            name = detail.get("name")
+            if isinstance(name, str) and mentions_google_ads(name):
+                return True
+        elif isinstance(detail, str) and mentions_google_ads(detail):
+            return True
+    return False
+
+
 def _decode_content(content: bytes) -> tuple[str, list[ParseWarning]]:
     try:
-        return content.decode("utf-8"), []
+        return content.decode("utf-8-sig"), []
     except UnicodeDecodeError:
         return (
-            content.decode("utf-8", errors="replace"),
+            content.decode("utf-8-sig", errors="replace"),
             [ParseWarning(code="invalid_utf8", sample=None)],
         )
 
@@ -360,10 +340,10 @@ def _decode_content(content: bytes) -> tuple[str, list[ParseWarning]]:
 def _is_json_source(source_path: str, content: bytes) -> bool:
     if source_path.replace("\\", "/").lower().endswith(".json"):
         return True
-    return content.lstrip().startswith((b"[", b"{"))
+    return content[:64].lstrip(b"\xef\xbb\xbf \t\r\n").startswith((b"[", b"{"))
 
 
-def _json_records(payload: Any) -> list[Any] | None:
+def json_records(payload: Any) -> list[Any] | None:
     if isinstance(payload, list):
         return payload
     if isinstance(payload, dict):
@@ -418,120 +398,30 @@ def _json_status_texts(record: dict[str, Any]) -> list[str]:
     return texts
 
 
-def _parse_json_timestamp(record: dict[str, Any]) -> tuple[datetime | None, str | None]:
+def _parse_json_timestamp(record: dict[str, Any]):
     value = _first_string(record, "time", "timestamp", "activityTime", "activity_time")
     if not value:
         return None, "missing_timestamp"
-    return _parse_iso_timestamp(value)
+    return parse_iso_timestamp(value)
 
 
-def _main_content_cell(card: Any) -> Any | None:
-    for content in card.select(".content-cell"):
-        classes = set(content.get("class", []))
-        if "mdl-typography--caption" in classes:
-            continue
-        if "mdl-typography--text-right" in classes:
-            continue
-        if _normalize_whitespace(content.get_text(" ", strip=True)):
-            return content
-    return None
-
-
-def _html_video_reference(content: Any) -> tuple[str | None, str | None]:
-    for anchor in content.find_all("a", href=True):
-        href = anchor.get("href")
+def _html_video_reference(
+    anchors: tuple[tuple[str, str], ...],
+) -> tuple[str | None, str | None]:
+    for href, text in anchors:
         video_id = _extract_video_id(href)
         if video_id is None:
             continue
-        title = _normalize_whitespace(anchor.get_text(" ", strip=True)) or None
-        return video_id, title
+        return video_id, text or None
     return None, None
 
 
-def _html_channel_id(content: Any) -> str | None:
-    for anchor in content.find_all("a", href=True):
-        channel_id = _extract_channel_id(anchor.get("href"))
+def _html_channel_id(anchors: tuple[tuple[str, str], ...]) -> str | None:
+    for href, _ in anchors:
+        channel_id = _extract_channel_id(href)
         if channel_id is not None:
             return channel_id
     return None
-
-
-def _parse_text_timestamp(text: str) -> tuple[datetime | None, str | None]:
-    iso_match = ISO_TIMESTAMP_RE.search(text)
-    if iso_match is not None:
-        return _parse_iso_timestamp(iso_match.group(0))
-
-    normalized = _normalize_whitespace(text)
-    for pattern in (DAY_MONTH_TIMESTAMP_RE, MONTH_DAY_TIMESTAMP_RE):
-        match = pattern.search(normalized)
-        if match is not None:
-            return _parse_named_timestamp(match)
-    return None, "missing_timestamp"
-
-
-def _parse_iso_timestamp(value: str) -> tuple[datetime | None, str | None]:
-    normalized = value.strip()
-    if normalized.endswith("Z"):
-        normalized = f"{normalized[:-1]}+00:00"
-
-    try:
-        parsed = datetime.fromisoformat(normalized)
-    except ValueError:
-        return None, "timestamp_parse_failed"
-
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc), "timestamp_missing_timezone"
-    return parsed, None
-
-
-def _parse_named_timestamp(match: re.Match[str]) -> tuple[datetime | None, str | None]:
-    parts = match.groupdict()
-    month = MONTHS.get(parts["month"].lower())
-    if month is None:
-        return None, "timestamp_parse_failed"
-
-    hour = int(parts["hour"])
-    ampm = parts.get("ampm")
-    if ampm:
-        ampm = ampm.upper()
-        if ampm == "PM" and hour != 12:
-            hour += 12
-        elif ampm == "AM" and hour == 12:
-            hour = 0
-
-    tzinfo = _parse_timezone(parts["zone"])
-    if tzinfo is None:
-        return None, "timestamp_parse_failed"
-
-    return (
-        datetime(
-            int(parts["year"]),
-            month,
-            int(parts["day"]),
-            hour,
-            int(parts["minute"]),
-            int(parts["second"]),
-            tzinfo=tzinfo,
-        ),
-        None,
-    )
-
-
-def _parse_timezone(value: str) -> timezone | None:
-    upper_value = value.upper()
-    if upper_value in TIMEZONE_OFFSETS:
-        return timezone(timedelta(hours=TIMEZONE_OFFSETS[upper_value]), upper_value)
-
-    match = GMT_OFFSET_RE.match(upper_value)
-    if match is None:
-        return None
-
-    hours = int(match.group("hour"))
-    minutes = int(match.group("minute") or "0")
-    delta = timedelta(hours=hours, minutes=minutes)
-    if match.group("sign") == "-":
-        delta = -delta
-    return timezone(delta, upper_value)
 
 
 def _extract_video_id(url: str | None) -> str | None:
@@ -557,6 +447,11 @@ def _extract_video_id(url: str | None) -> str | None:
             return path_parts[1]
 
     return None
+
+
+def extract_video_id(url: str | None) -> str | None:
+    """Public alias used by the format-sniffing YouTube activity parser."""
+    return _extract_video_id(url)
 
 
 def _extract_channel_id(url: str | None) -> str | None:
@@ -601,10 +496,14 @@ def _normalize_product(value: str | None) -> str | None:
     return PRODUCTS.get(_normalize_whitespace(value).lower())
 
 
-def _raw_status(text: str) -> str | None:
+def _raw_status(text: str, *, localized: bool = False) -> str | None:
     for status, pattern in STATUS_PATTERNS:
         if pattern.search(text):
             return status
+    if localized:
+        for status, pattern in LOCALIZED_STATUS_PATTERNS:
+            if pattern.search(text):
+                return status
     return None
 
 
@@ -617,13 +516,17 @@ def _clean_title(value: str | None) -> str | None:
         if title.startswith(prefix):
             title = title[len(prefix) :]
             break
+    for suffix in TITLE_SUFFIXES:
+        if title.endswith(suffix) and len(title) > len(suffix):
+            title = title[: -len(suffix)]
+            break
 
     if _raw_status(title) is not None:
         return None
     return title or None
 
 
-def _first_string(record: dict[str, Any], *keys: str) -> str | None:
+def _first_string(record: Mapping[str, Any], *keys: str) -> str | None:
     for key in keys:
         value = record.get(key)
         if isinstance(value, str):

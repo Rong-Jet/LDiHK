@@ -2,11 +2,68 @@ from __future__ import annotations
 
 import csv
 import json
+import re
+import unicodedata
 from collections.abc import Iterable, Mapping
 from io import StringIO
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from backend.ingestion.models import ParseResult, ParseWarning, ParsedSubscription
+
+
+CHANNEL_ID_RE = re.compile(r"^UC[0-9A-Za-z_-]{22}$")
+
+# Normalised (lower-case, accent-free, alphanumeric only) CSV header names.
+# Takeout localises the subscriptions.csv header row, e.g. German
+# "Kanal-ID,Kanal-URL,Kanaltitel".
+CHANNEL_ID_HEADERS = frozenset(
+    {
+        "channelid",
+        "kanalid",  # de
+        "iddelcanal",  # es
+        "idcanal",
+        "iddelachaine",  # fr
+        "idchaine",
+        "iddelcanale",  # it
+        "idcanale",
+        "iddocanal",  # pt
+        "kanaalid",  # nl
+    }
+)
+CHANNEL_URL_HEADERS = frozenset(
+    {
+        "channelurl",
+        "kanalurl",
+        "urldelcanal",
+        "urlcanal",
+        "urldelachaine",
+        "urlchaine",
+        "urldelcanale",
+        "urlcanale",
+        "urldocanal",
+        "kanaalurl",
+    }
+)
+CHANNEL_TITLE_HEADERS = frozenset(
+    {
+        "channeltitle",
+        "channelname",
+        "title",
+        "kanaltitel",
+        "kanalname",
+        "titulodelcanal",
+        "nombredelcanal",
+        "titredelachaine",
+        "nomdelachaine",
+        "titolodelcanale",
+        "nomedelcanale",
+        "titulodocanal",
+        "nomedocanal",
+        "kanaaltitel",
+        "kanaalnaam",
+    }
+)
 
 
 def parse_subscriptions(content: bytes, *, source_path: str) -> ParseResult:
@@ -91,41 +148,131 @@ def _parse_subscription_rows(rows: Iterable[Mapping[str, Any] | Any]) -> ParseRe
 
 
 def _subscription_channel_id(row: Mapping[str, Any]) -> str | None:
-    return _field_value(
-        row,
-        "Channel Id",
-        "channelId",
-        "channel_id",
-    ) or _nested_field_value(
-        row,
-        ("snippet", "resourceId"),
-        "channelId",
-        "channel_id",
+    channel_id = (
+        _field_value(row, "Channel Id", "channelId", "channel_id")
+        or _header_value(row, CHANNEL_ID_HEADERS)
+        or _nested_field_value(
+            row,
+            ("snippet", "resourceId"),
+            "channelId",
+            "channel_id",
+        )
     )
+    if channel_id:
+        return channel_id
+    if _has_known_header(row, CHANNEL_ID_HEADERS):
+        # A recognised (but empty) channel id column is a malformed row; do
+        # not guess the id from other columns.
+        return None
+
+    # Unknown header language: recognise the id by its value ("UC" + 22
+    # chars), either directly or inside a /channel/<id> URL.
+    for value in _string_values(row):
+        if CHANNEL_ID_RE.match(value):
+            return value
+    for value in _string_values(row):
+        channel_id = _channel_id_from_url(value)
+        if channel_id is not None:
+            return channel_id
+    return None
 
 
 def _subscription_channel_url(row: Mapping[str, Any]) -> str | None:
-    return _field_value(
+    url = _field_value(
         row,
         "Channel Url",
         "channelUrl",
         "channel_url",
-    )
+    ) or _header_value(row, CHANNEL_URL_HEADERS)
+    if url or _has_known_header(row, CHANNEL_URL_HEADERS):
+        return url
+
+    for value in _string_values(row):
+        if value.lower().startswith(("http://", "https://")):
+            return value
+    return None
 
 
 def _subscription_channel_title(row: Mapping[str, Any]) -> str | None:
-    return _field_value(
-        row,
-        "Channel Title",
-        "channelTitle",
-        "channel_title",
-        "title",
-    ) or _nested_field_value(
-        row,
-        ("snippet",),
-        "title",
-        "channelTitle",
-        "channel_title",
+    title = (
+        _field_value(
+            row,
+            "Channel Title",
+            "channelTitle",
+            "channel_title",
+            "title",
+        )
+        or _header_value(row, CHANNEL_TITLE_HEADERS)
+        or _nested_field_value(
+            row,
+            ("snippet",),
+            "title",
+            "channelTitle",
+            "channel_title",
+        )
+    )
+    if title or _has_known_header(row, CHANNEL_TITLE_HEADERS):
+        return title
+    if not all(isinstance(key, str) for key in row.keys()):
+        return None
+    if _has_known_header(row, CHANNEL_ID_HEADERS):
+        return None
+
+    # Unknown header language: the title is the remaining non-id, non-URL cell.
+    for value in _string_values(row):
+        if CHANNEL_ID_RE.match(value):
+            continue
+        if value.lower().startswith(("http://", "https://")):
+            continue
+        return value
+    return None
+
+
+def _channel_id_from_url(value: str) -> str | None:
+    if not value.lower().startswith(("http://", "https://")):
+        return None
+    path_parts = [unquote(part) for part in urlparse(value).path.split("/") if part]
+    if len(path_parts) >= 2 and path_parts[0] == "channel":
+        if CHANNEL_ID_RE.match(path_parts[1]):
+            return path_parts[1]
+    return None
+
+
+def _header_value(row: Mapping[str, Any], headers: frozenset[str]) -> str | None:
+    for key, value in row.items():
+        if not isinstance(key, str) or _normalize_header(key) not in headers:
+            continue
+        if value is None:
+            continue
+        normalized = str(value).strip()
+        if normalized:
+            return normalized
+    return None
+
+
+def _has_known_header(row: Mapping[str, Any], headers: frozenset[str]) -> bool:
+    return any(
+        isinstance(key, str) and _normalize_header(key) in headers for key in row.keys()
+    )
+
+
+def _string_values(row: Mapping[str, Any]) -> list[str]:
+    values: list[str] = []
+    for key, value in row.items():
+        if key is None or not isinstance(value, str):
+            continue
+        normalized = value.strip()
+        if normalized:
+            values.append(normalized)
+    return values
+
+
+def _normalize_header(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value.casefold())
+    return "".join(
+        character
+        for character in decomposed
+        if character.isalnum() and not unicodedata.combining(character)
     )
 
 

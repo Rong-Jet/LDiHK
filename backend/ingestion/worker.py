@@ -17,7 +17,7 @@ from zipfile import ZipFile
 
 from backend.enrichment.durations import ENRICHMENT_JOB_TYPE_YOUTUBE_DURATIONS
 from backend.ingestion.dispatch import DispatchResult, dispatch_member_path
-from backend.ingestion.fingerprints import event_fingerprint
+from backend.ingestion.fingerprints import event_fingerprints
 from backend.ingestion.models import ParseResult, ParserCallable
 from backend.ingestion.s3 import S3Client
 from backend.ingestion.zip_safety import iter_safe_zip_members
@@ -442,7 +442,7 @@ class S3ZipImportWorker:
         source_path: str,
         parse_result: ParseResult,
     ) -> int:
-        fingerprints = _event_fingerprints(
+        fingerprints = event_fingerprints(
             parse_result.events,
             user_id=job.user_id,
             source_path=source_path,
@@ -1125,23 +1125,6 @@ def _periodic_heartbeat(
     finally:
         stop.set()
         thread.join(timeout=5)
-
-
-def _event_fingerprints(
-    events: list,
-    *,
-    user_id: str,
-    source_path: str,
-) -> list[str]:
-    from backend.ingestion import fingerprints
-
-    batch_fingerprints = getattr(fingerprints, "event_fingerprints", None)
-    if batch_fingerprints is not None:
-        return batch_fingerprints(events, user_id=user_id, source_path=source_path)
-    return [
-        event_fingerprint(event, user_id=user_id, source_path=source_path)
-        for event in events
-    ]
 
 
 def _megabytes(value: int) -> int:

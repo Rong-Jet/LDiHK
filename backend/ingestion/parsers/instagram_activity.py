@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from bs4 import BeautifulSoup
@@ -86,6 +89,11 @@ INSTAGRAM_SOURCE_REGISTRY: tuple[InstagramSource, ...] = (
         product="posts",
     ),
     InstagramSource(
+        path_pattern="your_instagram_activity/content/posts_*.html",
+        event_type="post_created",
+        product="posts",
+    ),
+    InstagramSource(
         path_pattern="your_instagram_activity/content/reels.html",
         event_type="reel_created",
         product="reels",
@@ -104,12 +112,24 @@ INSTAGRAM_SOURCE_REGISTRY: tuple[InstagramSource, ...] = (
         product="connections",
     ),
     InstagramSource(
+        path_pattern=(
+            "connections/followers_and_following/recently_unfollowed_profiles.html"
+        ),
+        event_type="unfollowed_profile",
+        product="connections",
+    ),
+    InstagramSource(
         path_pattern="your_instagram_activity/messages/**/*.html",
         event_type="message",
         product="messages",
         redact_title=True,
     ),
 )
+
+
+# Unix-time keys used by Instagram JSON exports, in lookup order.
+JSON_TIMESTAMP_KEYS = ("timestamp", "creation_timestamp", "taken_at", "timestamp_ms")
+JSON_SEARCH_DEPTH = 5
 
 
 def parse_instagram_activity(content: bytes, *, source_path: str) -> ParseResult:
@@ -124,7 +144,10 @@ def parse_instagram_activity(content: bytes, *, source_path: str) -> ParseResult
             records_seen=0,
         )
 
-    result = _parse_timestamped_html(text, source=source)
+    if _is_json_source(source_path, text):
+        result = _parse_json_activity(text, source=source)
+    else:
+        result = _parse_timestamped_html(text, source=source)
     return ParseResult(
         events=result.events,
         subscriptions=[],
@@ -134,14 +157,201 @@ def parse_instagram_activity(content: bytes, *, source_path: str) -> ParseResult
 
 
 def source_for_path(source_path: str) -> InstagramSource | None:
+    """Match the HTML export path or its JSON twin (same name, ``.json``)."""
     normalized_path = normalize_member_path(source_path)
     for source in INSTAGRAM_SOURCE_REGISTRY:
         normalized_pattern = normalize_member_path(source.path_pattern)
-        if fnmatch.fnmatch(normalized_path, normalized_pattern) or fnmatch.fnmatch(
-            normalized_path, f"*/{normalized_pattern}"
-        ):
-            return source
+        patterns = [normalized_pattern]
+        if normalized_pattern.endswith(".html"):
+            patterns.append(f"{normalized_pattern[:-5]}.json")
+        for pattern in patterns:
+            if fnmatch.fnmatch(normalized_path, pattern) or fnmatch.fnmatch(
+                normalized_path, f"*/{pattern}"
+            ):
+                return source
     return None
+
+
+def _is_json_source(source_path: str, text: str) -> bool:
+    if source_path.replace("\\", "/").lower().endswith(".json"):
+        return True
+    return text[:64].lstrip().startswith(("[", "{"))
+
+
+def _parse_json_activity(text: str, *, source: InstagramSource) -> ParseResult:
+    """Parse the JSON variant of a supported Instagram export file.
+
+    Instagram JSON files hold one list of records (e.g. ``likes_media_likes``,
+    ``saved_saved_media``, ``impressions_history_videos_watched``,
+    ``ig_reels_media``, ``messages``) or are a bare list.  Every record yields
+    one event at its Unix timestamp (``timestamp``, ``creation_timestamp`` or
+    ``timestamp_ms``, possibly nested in ``string_list_data`` /
+    ``string_map_data`` / ``media``).  JSON timestamps are UTC, so no
+    export-timezone assumption is needed.
+    """
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return ParseResult(
+            events=[],
+            subscriptions=[],
+            warnings=[ParseWarning(code="json_decode_failed", sample=None)],
+            records_seen=0,
+        )
+
+    records = _json_records(payload)
+    if records is None:
+        return ParseResult(
+            events=[],
+            subscriptions=[],
+            warnings=[ParseWarning(code="json_shape_unsupported", sample=None)],
+            records_seen=0,
+        )
+    if not records:
+        return ParseResult(
+            events=[],
+            subscriptions=[],
+            warnings=[ParseWarning(code="no_timestamped_records", sample=None)],
+            records_seen=0,
+        )
+
+    events: list[ParsedEvent] = []
+    warnings: list[ParseWarning] = []
+    for sequence, record in enumerate(records, start=1):
+        sample = _sample(sequence)
+        if not isinstance(record, Mapping):
+            warnings.append(ParseWarning(code="malformed_json_record", sample=sample))
+            continue
+
+        occurred_at = _json_timestamp(record)
+        if occurred_at is None:
+            warnings.append(ParseWarning(code="missing_timestamp", sample=sample))
+            continue
+
+        events.append(
+            ParsedEvent(
+                platform="instagram",
+                product=source.product,
+                event_type=source.event_type,
+                occurred_at=occurred_at,
+                title=None if source.redact_title else _json_title(record),
+                sequence=sequence,
+                duration_seconds=DEFAULT_INSTAGRAM_INTERACTION_DURATION_SECONDS,
+            )
+        )
+
+    return ParseResult(
+        events=events,
+        subscriptions=[],
+        warnings=warnings,
+        records_seen=len(records),
+    )
+
+
+def _json_records(payload: Any) -> list[Any] | None:
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, Mapping):
+        return None
+
+    record_lists: list[list[Any]] = []
+    for value in payload.values():
+        if not isinstance(value, list):
+            continue
+        if any(
+            isinstance(item, Mapping) and _json_timestamp(item) is not None
+            for item in value[:25]
+        ):
+            return value
+        if any(isinstance(item, Mapping) for item in value):
+            record_lists.append(value)
+    if len(record_lists) == 1:
+        # A single record list without timestamps: parse it so every record
+        # reports "missing_timestamp" instead of silently importing nothing.
+        return record_lists[0]
+    if _json_timestamp(payload) is not None:
+        return [payload]
+    if any(isinstance(value, list) for value in payload.values()):
+        return []
+    return None
+
+
+def _json_timestamp(value: Any, depth: int = 0) -> datetime | None:
+    if isinstance(value, Mapping):
+        for key in JSON_TIMESTAMP_KEYS:
+            parsed = _unix_timestamp(value.get(key), milliseconds=key.endswith("_ms"))
+            if parsed is not None:
+                return parsed
+        if depth >= JSON_SEARCH_DEPTH:
+            return None
+        for nested in value.values():
+            if isinstance(nested, (Mapping, list)):
+                parsed = _json_timestamp(nested, depth + 1)
+                if parsed is not None:
+                    return parsed
+    elif isinstance(value, list) and depth < JSON_SEARCH_DEPTH:
+        for item in value[:25]:
+            parsed = _json_timestamp(item, depth + 1)
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _unix_timestamp(value: Any, *, milliseconds: bool) -> datetime | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str) and value.strip().isdigit():
+        value = int(value.strip())
+    if not isinstance(value, (int, float)) or value <= 0:
+        return None
+    seconds = value / 1000 if milliseconds or value > 100_000_000_000 else value
+    try:
+        return datetime.fromtimestamp(seconds, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _json_title(record: Mapping[str, Any]) -> str | None:
+    candidates: list[Any] = [record.get("title")]
+
+    string_list = record.get("string_list_data")
+    if isinstance(string_list, list):
+        for item in string_list:
+            if isinstance(item, Mapping):
+                candidates.extend([item.get("value"), item.get("href")])
+
+    string_map = record.get("string_map_data")
+    if isinstance(string_map, Mapping):
+        for item in string_map.values():
+            if isinstance(item, Mapping):
+                candidates.append(item.get("value"))
+
+    media = record.get("media")
+    if isinstance(media, list):
+        for item in media:
+            if isinstance(item, Mapping):
+                candidates.append(item.get("title"))
+
+    label_values = record.get("label_values")
+    if isinstance(label_values, list):
+        for item in label_values:
+            if isinstance(item, Mapping):
+                candidates.append(item.get("value"))
+
+    for candidate in candidates:
+        if isinstance(candidate, str):
+            text = _normalize_whitespace(_fix_mojibake(candidate))
+            if text:
+                return text[:500]
+    return None
+
+
+def _fix_mojibake(value: str) -> str:
+    """Instagram JSON escapes UTF-8 bytes as Latin-1 code points; undo that."""
+    try:
+        return value.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return value
 
 
 def _parse_timestamped_html(text: str, *, source: InstagramSource) -> ParseResult:
