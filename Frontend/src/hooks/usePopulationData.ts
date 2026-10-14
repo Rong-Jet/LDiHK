@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { apiRoutes, authHeaders, jsonHeaders } from '../lib/api';
+import { fetchPopulationJson } from '../lib/api';
 
 export interface DistributionRow {
   hours: number;
@@ -23,8 +23,9 @@ export interface HourlyAverageRow {
 
 export interface PopulationQueryResult {
   ready: boolean;
-  /** true when the backend served real population comparison data, false when unavailable */
-  hasPopulationData?: boolean;
+  /** true when the response carries real population comparison data */
+  hasPopulationData: boolean;
+  message?: string;
   userPercentile: number | null;
   userDailyAverageHours: number | null;
   includeSynthetic: boolean;
@@ -34,6 +35,13 @@ export interface PopulationQueryResult {
   hourlyAverages: HourlyAverageRow[];
 }
 
+type PopulationResponse = Partial<PopulationQueryResult> & { ready?: boolean };
+
+/**
+ * POST /api/population. In live mode this goes straight to the backend (no
+ * Netlify function in between, so a waking server is not cut off after 10 s);
+ * in mock mode it resolves to the local Astro mock route.
+ */
 const fetchPopulationData = async (
   platforms: string[],
   startDate: string,
@@ -41,29 +49,27 @@ const fetchPopulationData = async (
   includeSynthetic: boolean,
   customPercentile: number,
   sessionToken: string,
-  visibleStartDate: string
+  visibleStartDate: string,
+  signal?: AbortSignal
 ): Promise<PopulationQueryResult> => {
-  const res = await fetch(apiRoutes.population(), {
-    method: 'POST',
-    headers: {
-      ...jsonHeaders,
-      ...authHeaders(sessionToken),
-    },
-    body: JSON.stringify({
-      platforms,
-      startDate,
-      endDate,
-      includeSynthetic,
-      customPercentile,
-      visibleStartDate
-    })
-  });
-
-  if (!res.ok) {
-    throw new Error('Failed to fetch population analytics');
-  }
-
-  return res.json();
+  const data = await fetchPopulationJson<PopulationResponse>(
+    sessionToken,
+    { platforms, startDate, endDate, includeSynthetic, customPercentile, visibleStartDate },
+    signal
+  );
+  const ready = data.ready === true;
+  return {
+    ready,
+    hasPopulationData: data.hasPopulationData ?? ready,
+    message: data.message,
+    userPercentile: data.userPercentile ?? null,
+    userDailyAverageHours: data.userDailyAverageHours ?? null,
+    includeSynthetic: data.includeSynthetic ?? includeSynthetic,
+    customPercentile: data.customPercentile ?? customPercentile,
+    distribution: data.distribution ?? [],
+    deciles: data.deciles ?? [],
+    hourlyAverages: data.hourlyAverages ?? [],
+  };
 };
 
 export function usePopulationData(
@@ -78,7 +84,9 @@ export function usePopulationData(
 ) {
   return useQuery<PopulationQueryResult>({
     queryKey: ['population', platforms.join(','), startDate, endDate, includeSynthetic, customPercentile, sessionToken, visibleStartDate],
-    queryFn: () => fetchPopulationData(platforms, startDate, endDate, includeSynthetic, customPercentile, sessionToken || '', visibleStartDate),
+    queryFn: ({ signal }) => fetchPopulationData(
+      platforms, startDate, endDate, includeSynthetic, customPercentile, sessionToken || '', visibleStartDate, signal
+    ),
     enabled: isReady && !!startDate && !!endDate && !!sessionToken && platforms.length > 0,
   });
 }

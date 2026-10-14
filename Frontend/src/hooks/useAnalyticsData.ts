@@ -1,9 +1,17 @@
 import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
-import { apiRoutes, authHeaders, jsonHeaders } from '../lib/api';
+import { postQuery, QUERY_LIMIT_MAX } from '../lib/api';
+import {
+  daysInclusive,
+  daysOfMonthWithin,
+  enumerateDays,
+  enumerateMonths,
+  type DateGranularity,
+} from '../lib/dates';
 
-export interface DailyRow {
-  date: string;
+export interface BucketRow {
+  date?: string;
+  month?: string;
   event_count: number;
   estimated_watch_seconds: number;
 }
@@ -14,9 +22,9 @@ export interface HourlyRow {
   estimated_watch_seconds: number;
 }
 
-export interface PlatformDailyResult {
+export interface PlatformBucketResult {
   platform: string;
-  rows: DailyRow[];
+  rows: BucketRow[];
 }
 
 export interface PlatformHourlyResult {
@@ -25,12 +33,16 @@ export interface PlatformHourlyResult {
 }
 
 export interface CombinedQueryResult {
-  dailyResults: PlatformDailyResult[];
+  granularity: DateGranularity;
+  bucketResults: PlatformBucketResult[];
   hourlyResults: PlatformHourlyResult[];
 }
 
 export interface FlattenedTimelineRecord {
+  /** Bucket key: `YYYY-MM-DD` (daily) or `YYYY-MM` (monthly). */
   date: string;
+  /** Calendar days represented by the bucket; monthly values are per-day averages. */
+  bucketDays: number;
   youtubeHours: number;
   instagramHours: number;
   tiktokHours: number;
@@ -47,86 +59,71 @@ export interface FlattenedTimelineRecord {
   totalEvents: number;
 }
 
-// Fetch helper that runs POST queries in parallel for active platforms with date range filters
+/** Ranges longer than ~2 years are charted as monthly buckets. */
+export const DAILY_TIMELINE_MAX_DAYS = 731;
+
+export function timelineGranularity(startDate: string, endDate: string): DateGranularity {
+  if (!startDate || !endDate) return 'day';
+  return daysInclusive(startDate, endDate) > DAILY_TIMELINE_MAX_DAYS ? 'month' : 'day';
+}
+
+const PLATFORM_FIELDS: Record<string, { hours: keyof FlattenedTimelineRecord; events: keyof FlattenedTimelineRecord }> = {
+  youtube: { hours: 'youtubeHours', events: 'youtubeEvents' },
+  instagram: { hours: 'instagramHours', events: 'instagramEvents' },
+  tiktok: { hours: 'tiktokHours', events: 'tiktokEvents' },
+  spotify: { hours: 'spotifyHours', events: 'spotifyEvents' },
+  twitter: { hours: 'twitterHours', events: 'twitterEvents' },
+  linkedin: { hours: 'linkedinHours', events: 'linkedinEvents' },
+};
+
+// Runs the bucket + hour-of-day queries for every active platform. Any failed
+// request rejects the whole query so the UI shows an error (never "no data").
 const fetchCombinedPlatforms = async (
   platforms: string[],
   startDate: string,
   endDate: string,
-  sessionToken: string
+  sessionToken: string,
+  signal?: AbortSignal
 ): Promise<CombinedQueryResult> => {
+  const granularity = timelineGranularity(startDate, endDate);
   if (platforms.length === 0) {
-    return { dailyResults: [], hourlyResults: [] };
+    return { granularity, bucketResults: [], hourlyResults: [] };
   }
 
-  const emptyDailyResult = (platform: string): PlatformDailyResult => ({
-    platform,
-    rows: [],
-  });
-  const emptyHourlyResult = (platform: string): PlatformHourlyResult => ({
-    platform,
-    rows: [],
+  const bucketCount = granularity === 'day'
+    ? daysInclusive(startDate, endDate)
+    : enumerateMonths(startDate, endDate).length;
+  const bucketLimit = Math.min(QUERY_LIMIT_MAX, bucketCount + 1);
+  const filters = { start_date: startDate, end_date: endDate };
+
+  const bucketPromises = platforms.map(async (platform) => {
+    const data = await postQuery<BucketRow>(sessionToken, {
+      dataset: `${platform}_usage`,
+      metrics: ['event_count', 'estimated_watch_seconds'],
+      dimensions: [granularity === 'day' ? 'date' : 'month'],
+      filters,
+      options: { limit: bucketLimit },
+    }, signal);
+    return { platform, rows: data.rows ?? [] };
   });
 
-  // 1. Fetch daily records for the visible interval only.
-  const dailyPromises = platforms.map(async (platform) => {
-    try {
-      const res = await fetch(apiRoutes.query(), {
-        method: 'POST',
-        headers: {
-          ...jsonHeaders,
-          ...authHeaders(sessionToken),
-        },
-        body: JSON.stringify({
-          dataset: `${platform}_usage`,
-          metrics: ['event_count', 'estimated_watch_seconds'],
-          dimensions: ['date'],
-          filters: {
-            start_date: startDate,
-            end_date: endDate,
-          },
-        }),
-      });
-      if (!res.ok) return emptyDailyResult(platform);
-      const data = await res.json();
-      return { platform, rows: data.rows as DailyRow[] };
-    } catch {
-      return emptyDailyResult(platform);
-    }
-  });
-
-  // 2. Fetch hourly aggregates for the visible interval.
   const hourlyPromises = platforms.map(async (platform) => {
-    try {
-      const res = await fetch(apiRoutes.query(), {
-        method: 'POST',
-        headers: {
-          ...jsonHeaders,
-          ...authHeaders(sessionToken),
-        },
-        body: JSON.stringify({
-          dataset: `${platform}_usage`,
-          metrics: ['event_count', 'estimated_watch_seconds'],
-          dimensions: ['hour'],
-          filters: {
-            start_date: startDate,
-            end_date: endDate,
-          },
-        }),
-      });
-      if (!res.ok) return emptyHourlyResult(platform);
-      const data = await res.json();
-      return { platform, rows: data.rows as HourlyRow[] };
-    } catch {
-      return emptyHourlyResult(platform);
-    }
+    const data = await postQuery<HourlyRow>(sessionToken, {
+      dataset: `${platform}_usage`,
+      metrics: ['event_count', 'estimated_watch_seconds'],
+      dimensions: ['hour'],
+      filters,
+      options: { limit: 24 },
+    }, signal);
+    return { platform, rows: data.rows ?? [] };
   });
 
-  const [dailyResults, hourlyResults] = await Promise.all([
-    Promise.all(dailyPromises),
+  const [bucketResults, hourlyResults] = await Promise.all([
+    Promise.all(bucketPromises),
     Promise.all(hourlyPromises),
   ]);
 
-  return { dailyResults, hourlyResults };
+  return { granularity, bucketResults, hourlyResults };
 };
 
 export function useAnalyticsData(
@@ -134,30 +131,29 @@ export function useAnalyticsData(
   startDate: string,
   endDate: string,
   isReady: boolean,
-  sessionToken: string = 'mock-session-ldihkid-12345'
+  sessionToken: string | null
 ) {
-  // Query to fetch data only when uploader is completed and API is READY
-  const { data, isLoading, error, refetch } = useQuery<CombinedQueryResult>({
+  const enabled = isReady && !!sessionToken && activePlatforms.length > 0 && !!startDate && !!endDate && startDate <= endDate;
+
+  const { data, isLoading, error, refetch, isFetching } = useQuery<CombinedQueryResult>({
     queryKey: ['insights', activePlatforms.join(','), startDate, endDate, sessionToken],
-    queryFn: () => fetchCombinedPlatforms(activePlatforms, startDate, endDate, sessionToken),
-    enabled: isReady && activePlatforms.length > 0 && !!startDate && !!endDate,
+    queryFn: ({ signal }) => fetchCombinedPlatforms(activePlatforms, startDate, endDate, sessionToken as string, signal),
+    enabled,
   });
 
-  // Merge daily records without smoothing so temporal graphs show the raw selected interval.
+  const granularity: DateGranularity = data?.granularity ?? timelineGranularity(startDate, endDate);
+
+  // Zero-filled buckets for the visible range. Daily buckets hold hours per
+  // day; monthly buckets hold the average hours per day of that month.
   const chartData = useMemo<FlattenedTimelineRecord[]>(() => {
-    if (!data?.dailyResults || data.dailyResults.length === 0) return [];
+    if (!data?.bucketResults || !startDate || !endDate) return [];
 
-    const dateSet = new Set<string>();
-    data.dailyResults.forEach((res) => {
-      res.rows.forEach((row) => dateSet.add(row.date));
-    });
-
-    const sortedDates = Array.from(dateSet).sort();
-
-    // Map each date to a single combined stacked record (raw)
-    const rawMapped = sortedDates.map((date) => {
-      const record: FlattenedTimelineRecord = {
-        date,
+    const keys = data.granularity === 'day' ? enumerateDays(startDate, endDate) : enumerateMonths(startDate, endDate);
+    const records = new Map<string, FlattenedTimelineRecord>();
+    keys.forEach((key) => {
+      records.set(key, {
+        date: key,
+        bucketDays: data.granularity === 'day' ? 1 : Math.max(1, daysOfMonthWithin(key, startDate, endDate)),
         youtubeHours: 0,
         instagramHours: 0,
         tiktokHours: 0,
@@ -172,94 +168,69 @@ export function useAnalyticsData(
         linkedinEvents: 0,
         totalHours: 0,
         totalEvents: 0,
-      };
-
-      data.dailyResults.forEach((res) => {
-        const row = res.rows.find((r) => r.date === date);
-        if (row) {
-          const hrs = parseFloat((row.estimated_watch_seconds / 3600).toFixed(2));
-          const evts = row.event_count;
-
-          if (res.platform === 'youtube') {
-            record.youtubeHours = hrs;
-            record.youtubeEvents = evts;
-          } else if (res.platform === 'instagram') {
-            record.instagramHours = hrs;
-            record.instagramEvents = evts;
-          } else if (res.platform === 'tiktok') {
-            record.tiktokHours = hrs;
-            record.tiktokEvents = evts;
-          } else if (res.platform === 'spotify') {
-            record.spotifyHours = hrs;
-            record.spotifyEvents = evts;
-          } else if (res.platform === 'twitter') {
-            record.twitterHours = hrs;
-            record.twitterEvents = evts;
-          } else if (res.platform === 'linkedin') {
-            record.linkedinHours = hrs;
-            record.linkedinEvents = evts;
-          }
-
-          record.totalHours += hrs;
-          record.totalEvents += evts;
-        }
       });
-
-      record.totalHours = parseFloat(record.totalHours.toFixed(2));
-      return record;
     });
 
-    return rawMapped.filter((record) => record.date >= startDate && record.date <= endDate);
+    data.bucketResults.forEach((result) => {
+      const fields = PLATFORM_FIELDS[result.platform];
+      if (!fields) return;
+      result.rows.forEach((row) => {
+        const key = data.granularity === 'day' ? row.date : row.month;
+        const record = key ? records.get(key) : undefined;
+        if (!record) return;
+        const hours = parseFloat(((row.estimated_watch_seconds || 0) / 3600 / record.bucketDays).toFixed(2));
+        const events = row.event_count || 0;
+        (record[fields.hours] as number) += hours;
+        (record[fields.events] as number) += events;
+        record.totalHours += hours;
+        record.totalEvents += events;
+      });
+    });
+
+    return keys.map((key) => {
+      const record = records.get(key) as FlattenedTimelineRecord;
+      return { ...record, totalHours: parseFloat(record.totalHours.toFixed(2)) };
+    });
   }, [data, startDate, endDate]);
 
-  // Timezone-independent day count (based on visible dates)
-  const dayCount = useMemo(() => {
-    if (!startDate || !endDate) return 1;
-    const [y1, m1, d1] = startDate.split('-').map(Number);
-    const [y2, m2, d2] = endDate.split('-').map(Number);
-    const startUTC = Date.UTC(y1, m1 - 1, d1);
-    const endUTC = Date.UTC(y2, m2 - 1, d2);
-    const diffMs = endUTC - startUTC;
-    return Math.max(1, Math.round(diffMs / (1000 * 3600 * 24)) + 1);
-  }, [startDate, endDate]);
+  // Calendar days in the visible range (timezone-independent).
+  const dayCount = useMemo(() => (startDate && endDate ? daysInclusive(startDate, endDate) : 1), [startDate, endDate]);
 
-  // Calculate total scope hours across all daily results of active platforms (based on visible dates)
+  // Total hours in scope, from raw seconds (monthly chart values are averages).
   const totalScopeHours = useMemo(() => {
-    if (!chartData || chartData.length === 0) return 0;
-    return chartData.reduce((sum, record) => sum + record.totalHours, 0);
-  }, [chartData]);
+    if (!data?.bucketResults) return 0;
+    const seconds = data.bucketResults.reduce(
+      (sum, result) => sum + result.rows.reduce((inner, row) => inner + (row.estimated_watch_seconds || 0), 0),
+      0
+    );
+    return seconds / 3600;
+  }, [data]);
 
-  // Aggregate hourly watch time and divide by number of days to get average daily watchtime per hour (based on visible range)
+  // Average daily watch time per local hour of day across the visible range.
   const hourlyHeatmapData = useMemo(() => {
     const hourlyAggregateSecs = new Array(24).fill(0);
-
-    if (data?.hourlyResults && data.hourlyResults.length > 0) {
-      data.hourlyResults.forEach((res) => {
-        res.rows.forEach((row) => {
-          if (row.hour >= 0 && row.hour < 24) {
-            hourlyAggregateSecs[row.hour] += row.estimated_watch_seconds;
-          }
-        });
+    data?.hourlyResults?.forEach((result) => {
+      result.rows.forEach((row) => {
+        if (row.hour >= 0 && row.hour < 24) {
+          hourlyAggregateSecs[row.hour] += row.estimated_watch_seconds || 0;
+        }
       });
-    }
-
-    // Convert seconds to average daily hours
-    return hourlyAggregateSecs.map((valueInSecs, hour) => {
-      const totalHours = valueInSecs / 3600;
-      const averageHours = parseFloat((totalHours / dayCount).toFixed(3)); 
-      return {
-        hour: `${hour.toString().padStart(2, '0')}:00`,
-        value: averageHours, 
-      };
     });
+
+    return hourlyAggregateSecs.map((valueInSecs, hour) => ({
+      hour: `${hour.toString().padStart(2, '0')}:00`,
+      value: parseFloat((valueInSecs / 3600 / dayCount).toFixed(3)),
+    }));
   }, [data, dayCount]);
 
   return {
     chartData,
+    granularity,
     hourlyHeatmapData,
     totalScopeHours,
     dayCount,
-    isLoading,
+    isLoading: enabled && isLoading,
+    isFetching,
     error,
     refetch,
   };

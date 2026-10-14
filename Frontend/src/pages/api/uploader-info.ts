@@ -1,5 +1,6 @@
 import type { APIRoute } from 'astro';
-import { configuredBackendApiBase, isMockApiMode, shouldAllowImplicitMockApiMode } from '../../lib/env';
+import { isMockApiMode, usesLocalMockApi } from '../../lib/env';
+import { readUploadTargetConfig } from '../../lib/serverUploadConfig';
 
 export const prerender = false;
 
@@ -16,22 +17,18 @@ export const OPTIONS: APIRoute = async () => {
   });
 };
 
+// Tells the upload UI whether uploads go to real storage or the mock route.
+// Must agree with POST /api/upload-url, which reads the same configuration.
 export const GET: APIRoute = async () => {
-  const backendApiBase = configuredBackendApiBase;
-  const awsAccessKeyId =
-    import.meta.env.CUSTOM_AWS_ACCESS_KEY_ID || process.env.CUSTOM_AWS_ACCESS_KEY_ID;
-  const awsSecretAccessKey =
-    import.meta.env.CUSTOM_AWS_SECRET_ACCESS_KEY || process.env.CUSTOM_AWS_SECRET_ACCESS_KEY;
-  const awsRegion =
-    import.meta.env.CUSTOM_AWS_REGION || process.env.CUSTOM_AWS_REGION;
-  const s3Bucket = import.meta.env.S3_BUCKET || process.env.S3_BUCKET;
-  const hasAwsKeys = !!(awsAccessKeyId && awsSecretAccessKey && awsRegion && s3Bucket);
-  const hasImplicitMockFallback = shouldAllowImplicitMockApiMode && !hasAwsKeys && !backendApiBase;
+  const target = readUploadTargetConfig();
+  const liveUploads = !isMockApiMode && target.configured;
+  const mockUploads = !liveUploads && usesLocalMockApi;
 
   return new Response(
     JSON.stringify({
-      isMock: isMockApiMode || hasImplicitMockFallback,
-      uploadConfigured: isMockApiMode || hasAwsKeys || hasImplicitMockFallback,
+      isMock: mockUploads,
+      uploadConfigured: liveUploads || mockUploads,
+      provider: liveUploads ? target.provider : mockUploads ? 'mock' : null,
     }),
     {
       status: 200,

@@ -40,14 +40,20 @@ Set `PUBLIC_API_URL` to the backend origin, for example:
 PUBLIC_API_URL=http://127.0.0.1:8000
 ```
 
-Set `PUBLIC_MOCK_API=false` to fail clearly instead of falling back to local
-mock routes when live backend or S3 upload config is missing. Set
-`PUBLIC_MOCK_API=true` only for UI-only mock development.
+`PUBLIC_*` values are compiled in at build time, so on Netlify set them with
+the "Builds" scope and redeploy after changing them.
 
-When a backend origin is set, the Astro upload helper requires
-`CUSTOM_AWS_ACCESS_KEY_ID`, `CUSTOM_AWS_SECRET_ACCESS_KEY`,
-`CUSTOM_AWS_REGION`, and `S3_BUCKET`; otherwise it fails before registering an
-import with the real backend.
+Set `PUBLIC_MOCK_API=false` to fail clearly instead of falling back to local
+mock routes when live backend or upload config is missing. Set
+`PUBLIC_MOCK_API=true` only for UI-only mock development; the UI then shows a
+"Mock mode" banner on every console page.
+
+When a backend origin is set, the Astro upload helper needs
+`CUSTOM_AWS_ACCESS_KEY_ID`, `CUSTOM_AWS_SECRET_ACCESS_KEY`, `S3_BUCKET`, and
+either `S3_ENDPOINT_URL` (Cloudflare R2: `https://<account-id>.r2.cloudflarestorage.com`)
+or `CUSTOM_AWS_REGION` (AWS S3). These are read at runtime by the Netlify
+function. The bucket needs a CORS rule allowing `PUT` with the `content-type`
+header from the site origin (see `docs/backend/deployment.md`).
 
 Same-origin Astro helper routes:
 
@@ -58,6 +64,24 @@ PUT /api/mock-s3-upload
 ```
 
 `PUT /api/mock-s3-upload` is mock-only and must not be used for live imports.
+
+## Free-tier behaviour
+
+- The backend on Render's free plan sleeps after 15 minutes. Every console
+  page pings `GET /health` first and shows "Waking the server" until it
+  answers (usually under a minute).
+- Archives over 20 MB are slimmed in the browser before upload: videos,
+  photos and other media are dropped so only history files are sent (limit
+  200 MB after slimming). zip.js is loaded only when needed.
+- Dates and hours are shown in the browser's timezone; the population
+  benchmark uses UTC.
+
+## Deploy on Netlify
+
+`netlify.toml` (in this folder) builds with Node 22; the Netlify site's base
+directory must be `Frontend`. In the Netlify site
+settings, set `PUBLIC_API_URL` and `PUBLIC_MOCK_API=false` (Builds scope) and
+the upload variables above (Functions scope), then trigger a deploy.
 
 ## Contract Notes
 

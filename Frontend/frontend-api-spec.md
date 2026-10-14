@@ -16,10 +16,15 @@ Frontend runtime convention:
 - Browser calls to backend-owned endpoints should use `PUBLIC_API_URL` as the
   backend origin when configured.
 - Astro-only helper routes such as upload URL generation stay same-origin.
-- When a backend origin is configured, the frontend upload helper must have S3
-  credentials through `CUSTOM_AWS_ACCESS_KEY_ID`,
-  `CUSTOM_AWS_SECRET_ACCESS_KEY`, `CUSTOM_AWS_REGION`, and the same `S3_BUCKET`
-  value as the backend.
+- When a backend origin is configured, the frontend upload helper must have
+  upload storage credentials through `CUSTOM_AWS_ACCESS_KEY_ID`,
+  `CUSTOM_AWS_SECRET_ACCESS_KEY`, the same `S3_BUCKET` value as the backend,
+  and either `S3_ENDPOINT_URL` (Cloudflare R2 or another S3-compatible store)
+  or `CUSTOM_AWS_REGION` (AWS S3).
+- The free-tier backend sleeps when idle. The frontend pings `GET /health` on
+  load, shows a "waking the server" state, and gates data requests until it
+  answers. Browser requests use a 90-second timeout and retry 5xx/network
+  errors.
 - `PUBLIC_MOCK_API=true`, `1`, `yes`, or `on` forces local mock API mode and
   ignores backend URLs.
 - `PUBLIC_MOCK_API=false` disables silent fallback to local mock routes. Local
@@ -32,13 +37,14 @@ Frontend runtime convention:
 
 Endpoint ownership:
 
-- Backend-owned: `GET /health`, `POST /api/imports`,
+- Backend-owned: `GET /health`, `GET /api/me`, `POST /api/imports`,
   `GET /api/imports/{import_id}`, `POST /api/query`, `POST /api/population`.
+  The browser calls all of them directly on `PUBLIC_API_URL`.
 - Frontend/Astro helper-owned: `GET /api/uploader-info`,
   `POST /api/upload-url`.
 - Mock-only frontend routes such as `PUT /api/mock-s3-upload`, local
-  `POST /api/query`, and local `POST /api/imports` are development shims, not
-  production backend contract.
+  `GET /api/me`, `POST /api/query`, `POST /api/population` and
+  `POST /api/imports` are development shims, not production backend contract.
 
 ## Identity
 
@@ -54,15 +60,24 @@ backend derives identity from this header and maps it internally to the Postgres
 
 Do not send `ldihk_id`, `user_id`, or `person_id` in request bodies.
 
+Format: `^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$`; anything else is rejected with
+`401 invalid_authorization`. The frontend generates IDs with
+`crypto.getRandomValues`: a friendly prefix plus a 12-character base32 suffix
+(60 random bits), e.g. `ldihk-cosmic-pegasus-k3j9x2m4q7ab`. The ID is the only
+credential, so it must not be guessable.
+
 Example:
 
 ```text
-Authorization: Bearer demo-user-123
+Authorization: Bearer ldihk-cosmic-pegasus-k3j9x2m4q7ab
 ```
 
 Backend behavior:
 
-- Finds or creates an internal user for `external_id = demo-user-123`.
+- `POST /api/imports` finds or creates an internal user for that
+  `external_id`. Logging in does not create users: the frontend validates an
+  entered ID with `GET /api/me`, which answers `404 unknown_ldihk_id` for IDs
+  that never uploaded anything.
 - On `POST /api/imports`, optional `age` and `sex` request fields are accepted
   as profile attributes for that user creation path.
 - Stores the internal UUID as `user_id` in Postgres.
@@ -72,15 +87,18 @@ This is demo identity, not production authentication.
 
 ## Platform Scope
 
-Supported user-uploaded export ZIPs in v5 are YouTube Takeout and TikTok data
-export ZIPs. The query API also supports seeded synthetic population rows for
-these normalized platforms:
+Supported user-uploaded export ZIPs are YouTube Takeout (in English, German,
+Spanish, French, Italian, Portuguese and Dutch), TikTok and Instagram data
+exports (HTML or JSON). The query API also supports seeded synthetic
+population rows for these normalized platforms:
 
 Supported datasets:
 
 ```text
 usage_analytics
 youtube_usage
+tiktok_usage
+instagram_usage
 ```
 
 Seeded synthetic platforms:
@@ -97,11 +115,16 @@ linkedin
 
 1. User selects a supported export ZIP in the frontend: YouTube Takeout or
    TikTok data export.
-2. Frontend uploads the ZIP to S3 under `uploads/<LDiHKID>/<filename>.zip`.
+2. Frontend uploads the ZIP to object storage (Cloudflare R2 or S3) under
+   `uploads/<LDiHKID>/<filename>.zip` with a presigned PUT URL. Archives over
+   20 MB are first slimmed in the browser: videos, photos and other media are
+   removed so only history files are uploaded (at most 200 MB).
 3. Frontend calls `POST /api/imports` with S3 object metadata.
 4. Backend creates a queued import in Postgres.
-5. Worker polls Postgres, downloads the ZIP from S3, parses supported YouTube
-   and TikTok files, and writes normalized rows.
+5. The import worker (a thread inside the backend web process on free
+   hosting) picks up the import, downloads the ZIP, parses supported YouTube,
+   TikTok and Instagram files, and writes normalized rows. An archive with no
+   supported files fails with `error_message` starting `no_supported_files`.
 6. Frontend polls `GET /api/imports/{import_id}`.
 7. Frontend calls `POST /api/query` for dashboard data.
 
@@ -126,6 +149,50 @@ Response:
   "status": "ok"
 }
 ```
+
+### Get Current User
+
+```text
+GET /api/me?timezone=<IANA name>
+```
+
+Headers:
+
+```text
+Authorization: Bearer <LDiHKID>
+```
+
+Used for login validation, per-platform date bounds and resuming an import.
+`timezone` (default `UTC`) sets the calendar for `min_date` / `max_date`.
+
+Response:
+
+```json
+{
+  "ldihk_id": "ldihk-cosmic-pegasus-k3j9x2m4q7ab",
+  "exists": true,
+  "timezone": "Europe/Berlin",
+  "datasets": {
+    "youtube": {
+      "event_count": 52310,
+      "watch_event_count": 48800,
+      "first_event_at": "2019-01-02T10:00:00+00:00",
+      "last_event_at": "2026-10-01T20:00:00+00:00",
+      "min_date": "2019-01-02",
+      "max_date": "2026-10-01"
+    }
+  },
+  "latest_import": null
+}
+```
+
+`latest_import` has the shape of `GET /api/imports/{import_id}` or is `null`.
+A user whose first import is still queued or running has `datasets: {}` and a
+`latest_import`.
+
+Errors: `missing_authorization`, `invalid_authorization`,
+`invalid_timezone` (400), `unknown_ldihk_id` (404), `database_unavailable`
+(503).
 
 ### Get Uploader Info
 
@@ -161,8 +228,11 @@ mock-ready.
 POST /api/upload-url
 ```
 
-Owned by the frontend Astro server. This route creates the browser-to-S3 upload
-configuration. It must use the same S3 bucket as the backend import API.
+Owned by the frontend Astro server. This route creates the browser-to-storage
+upload configuration (AWS S3, or Cloudflare R2 via `S3_ENDPOINT_URL`). It must
+use the same bucket as the backend import API. Presigned URLs carry no
+checksum parameters. The file name must end in `.zip` (any case); the key
+always ends in lowercase `.zip`.
 
 Headers:
 
@@ -218,6 +288,7 @@ Errors:
 
 - `missing_authorization`
 - `invalid_authorization`
+- `invalid_filename` (400, not a `.zip`)
 - `upload_not_configured`
 - `s3_signature_failure`
 
@@ -436,9 +507,12 @@ Authorization: Bearer <LDiHKID>
 Content-Type: application/json
 ```
 
-Live user-upload scope supports YouTube and TikTok for the MVP. Other
-multi-product population benchmarks are mock-only until those ingestion paths
-are stable.
+The browser calls this endpoint directly on the backend. The live population
+benchmark compares YouTube watch time only (`platforms: ["youtube"]`; anything
+else is `400 unsupported_platform`), and its days and hours are UTC so every
+user is measured on the same clock. When the user has no YouTube watch history
+in the range the response is `{"ready": false, "message": ...}`. Other
+multi-product population benchmarks are mock-only.
 
 Request body:
 
@@ -634,11 +708,16 @@ Allowed fields:
 - `include_zero_buckets`: boolean. Currently applies to hourly heatmaps when
   dimensions are exactly `["date", "hour"]` and both `start_date` and `end_date`
   are present.
-- `limit`: positive integer result limit. The backend caps this at its maximum.
+- `limit`: positive integer result limit (default 500). The backend caps it at
+  10000. Rows are ordered ascending by dimensions, so always request enough
+  rows for the range, or use coarser dimensions (`month`, `weekday`, `hour`)
+  for long ranges.
 - `sort_by`: requested metric name, such as `event_count`.
 - `sort_direction`: `asc` or `desc`.
-
-Date and hour buckets use UTC in v5.
+- `timezone`: IANA timezone name, e.g. `Europe/Berlin`, applied to `date`,
+  `hour`, `weekday` and `month` buckets and to `start_date` / `end_date`.
+  Defaults to the backend's `QUERY_BUCKET_TIMEZONE` (`UTC`). The frontend sends
+  the browser timezone.
 
 ## Example Queries
 
@@ -796,6 +875,10 @@ Expected codes:
 - `invalid_date_range`
 - `invalid_limit`
 - `invalid_sort`
+- `invalid_timezone`
+- `invalid_filename`
+- `unknown_ldihk_id`
+- `unsupported_platform`
 - `unauthorized_import`
 
 ## Compatibility Notes

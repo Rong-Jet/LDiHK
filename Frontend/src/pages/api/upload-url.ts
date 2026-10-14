@@ -2,9 +2,10 @@ import type { APIRoute } from 'astro';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { configuredBackendApiBase, isMockApiMode, shouldAllowImplicitMockApiMode } from '../../lib/env';
+import { configuredBackendApiBase, isMockApiMode, shouldAllowImplicitMockApiMode, usesLocalMockApi } from '../../lib/env';
+import { isValidLdihkId } from '../../lib/ldihkId';
+import { presignZipUpload } from '../../lib/s3Presign';
+import { readUploadTargetConfig } from '../../lib/serverUploadConfig';
 
 export const prerender = false;
 
@@ -16,6 +17,29 @@ export const INITIAL_STATE = {
   lastUploadPlatform: null,
   startedAt: 0
 };
+
+const JSON_HEADERS = {
+  'Content-Type': 'application/json',
+  'Access-Control-Allow-Origin': '*',
+};
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: JSON_HEADERS });
+}
+
+/**
+ * Upload object key: `uploads/<LDiHK-ID>/<name>.zip`. Path separators and
+ * control characters are replaced, and the extension is lowercased because
+ * the backend only queues keys ending in `.zip`.
+ */
+export function uploadKeyFor(ldihkId: string, rawFilename: unknown): string | null {
+  const name = (typeof rawFilename === 'string' ? rawFilename : 'data.zip')
+    .replace(/[\/\\\x00-\x1F]+/g, '_')
+    .trim();
+  if (!/\.zip$/i.test(name)) return null;
+  const stem = name.slice(0, -4).replace(/^\.+/, '') || 'data';
+  return `uploads/${ldihkId}/${stem}.zip`;
+}
 
 // Handle OPTIONS preflight requests for CORS compatibility
 export const OPTIONS: APIRoute = async () => {
@@ -30,175 +54,91 @@ export const OPTIONS: APIRoute = async () => {
   });
 };
 
+// Resets the simulated pipeline. Mock mode only: in live mode there is no
+// local state to reset, and an unauthenticated GET must not change anything.
 export const GET: APIRoute = async () => {
-  // Reset state to initial mock state (YouTube ready)
+  if (!usesLocalMockApi) {
+    return json({ error: 'not_found' }, 404);
+  }
   const statePath = path.join(os.tmpdir(), 'ldihk_state.json');
   try {
     await fs.writeFile(statePath, JSON.stringify(INITIAL_STATE, null, 2));
   } catch (err) {
     console.error('Failed to reset state file:', err);
   }
-
-  return new Response(
-    JSON.stringify({ success: true, message: 'Pipeline status reset successfully.' }),
-    {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      },
-    }
-  );
+  return json({ success: true, message: 'Pipeline status reset successfully.' });
 };
 
 export const POST: APIRoute = async ({ request }) => {
   const authHeader = request.headers.get('Authorization') || '';
   if (!authHeader.startsWith('Bearer ')) {
-    return new Response(JSON.stringify({ error: 'missing_authorization' }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-    });
+    return json({ error: 'missing_authorization' }, 401);
   }
 
-  const ldihkId = authHeader.replace('Bearer ', '').trim();
-  if (!ldihkId) {
-    return new Response(JSON.stringify({ error: 'invalid_authorization' }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-    });
+  const ldihkId = authHeader.slice('Bearer '.length).trim();
+  if (!isValidLdihkId(ldihkId)) {
+    return json({ error: 'invalid_authorization' }, 401);
   }
 
   let body: any = {};
   try {
     body = await request.json();
-  } catch (e) {
-    // Fallback if empty payload
+  } catch {
+    // Empty payload: fall back to the default file name.
   }
 
-  const rawFilename = typeof body.filename === 'string' ? body.filename : 'data.zip';
-  const filename = rawFilename.replace(/[\/\\\x00-\x1F]+/g, '_').trim() || 'data.zip';
-  const contentType = body.contentType || 'application/zip';
-  const urlObj = new URL(request.url);
-  const s3Key = `uploads/${ldihkId}/${filename}`;
+  const s3Key = uploadKeyFor(ldihkId, body.filename);
+  if (!s3Key) {
+    return json({ error: 'invalid_filename', message: 'Only .zip archives can be uploaded.' }, 400);
+  }
+  const contentType = typeof body.contentType === 'string' && body.contentType ? body.contentType : 'application/zip';
 
-  // AWS Configuration lookup
-  const awsAccessKeyId =
-    import.meta.env.CUSTOM_AWS_ACCESS_KEY_ID || process.env.CUSTOM_AWS_ACCESS_KEY_ID;
-  const awsSecretAccessKey =
-    import.meta.env.CUSTOM_AWS_SECRET_ACCESS_KEY || process.env.CUSTOM_AWS_SECRET_ACCESS_KEY;
-  const awsRegion =
-    import.meta.env.CUSTOM_AWS_REGION || process.env.CUSTOM_AWS_REGION;
-  const s3Bucket = import.meta.env.S3_BUCKET || process.env.S3_BUCKET;
-  const backendApiBase = configuredBackendApiBase;
-
-  const hasAwsKeys = !isMockApiMode && !!(awsAccessKeyId && awsSecretAccessKey && awsRegion && s3Bucket);
-
-  if (hasAwsKeys) {
+  const target = readUploadTargetConfig();
+  if (!isMockApiMode && target.configured && target.config) {
     try {
-      const s3Client = new S3Client({
-        region: awsRegion,
-        credentials: {
-          accessKeyId: awsAccessKeyId,
-          secretAccessKey: awsSecretAccessKey,
-        }
+      const presignedUrl = await presignZipUpload(target.config, s3Key, contentType);
+      return json({
+        url: presignedUrl,
+        method: 'PUT',
+        headers: { 'Content-Type': contentType },
+        s3Bucket: target.config.bucket,
+        s3Key,
+        isMock: false,
       });
-
-      const command = new PutObjectCommand({
-        Bucket: s3Bucket,
-        Key: s3Key,
-        ContentType: contentType,
-      });
-
-      // Generate a real AWS S3 pre-signed PUT URL valid for 15 minutes (900 seconds)
-      const presignedUrl = await getSignedUrl(s3Client, command, { expiresIn: 900 });
-
-      return new Response(
-        JSON.stringify({
-          url: presignedUrl,
-          method: 'PUT',
-          headers: {
-            'Content-Type': contentType,
-          },
-          s3Bucket,
-          s3Key,
-          isMock: false
-        }),
-        {
-          status: 200,
-          headers: {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*',
-          },
-        }
-      );
     } catch (err: any) {
-      console.error('Failed to generate S3 pre-signed URL:', err);
-      return new Response(
-        JSON.stringify({ error: 's3_signature_failure', message: err.message }),
-        {
-          status: 500,
-          headers: {
-            'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*',
-          },
-        }
-      );
+      console.error('Failed to generate pre-signed upload URL:', err);
+      return json({ error: 's3_signature_failure', message: err?.message || 'Signing failed' }, 500);
     }
   }
 
-  if (!isMockApiMode && backendApiBase) {
-    return new Response(
-      JSON.stringify({
-        error: 'upload_not_configured',
-        message: 'AWS upload credentials are required when PUBLIC_API_URL points at a backend.',
-      }),
-      {
-        status: 503,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-        },
-      }
-    );
+  if (!isMockApiMode && configuredBackendApiBase) {
+    return json({
+      error: 'upload_not_configured',
+      message: 'Upload storage credentials (CUSTOM_AWS_*, S3_BUCKET, S3_ENDPOINT_URL) are required when PUBLIC_API_URL points at a backend.',
+    }, 503);
   }
 
   if (!isMockApiMode && !shouldAllowImplicitMockApiMode) {
-    return new Response(
-      JSON.stringify({
-        error: 'upload_not_configured',
-        message: 'Mock uploads are disabled. Configure AWS upload credentials or set PUBLIC_MOCK_API=true.',
-      }),
-      {
-        status: 503,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-        },
-      }
-    );
+    return json({
+      error: 'upload_not_configured',
+      message: 'Mock uploads are disabled. Configure upload storage credentials or set PUBLIC_MOCK_API=true.',
+    }, 503);
   }
 
-  // Fallback: Return S3 pre-signed upload credentials under mock uploader
-  return new Response(
-    JSON.stringify({
-      url: `${urlObj.origin}/api/mock-s3-upload`,
-      method: 'PUT',
-      headers: {
-        'Content-Type': contentType,
-        'x-amz-meta-filename': filename,
-        'x-amz-meta-ldihkid': ldihkId,
-        'x-amz-s3-key': s3Key
-      },
-      s3Bucket: 'local-mock-bucket',
-      s3Key,
-      isMock: true
-    }),
-    {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-      },
-    }
-  );
+  // Mock mode: upload to the local mock route instead of real storage.
+  const filename = s3Key.split('/').pop() || 'data.zip';
+  const urlObj = new URL(request.url);
+  return json({
+    url: `${urlObj.origin}/api/mock-s3-upload`,
+    method: 'PUT',
+    headers: {
+      'Content-Type': contentType,
+      'x-amz-meta-filename': filename,
+      'x-amz-meta-ldihkid': ldihkId,
+      'x-amz-s3-key': s3Key,
+    },
+    s3Bucket: 'local-mock-bucket',
+    s3Key,
+    isMock: true,
+  });
 };

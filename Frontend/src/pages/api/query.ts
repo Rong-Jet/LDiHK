@@ -231,7 +231,7 @@ export const POST: APIRoute = async ({ request }) => {
       current.setDate(current.getDate() + 1);
     }
 
-    let responseRows = [];
+    let responseRows: any[] = [];
 
     // Aggregate based on dimensions
     if (dimensions.includes('date') && dimensions.includes('hour')) {

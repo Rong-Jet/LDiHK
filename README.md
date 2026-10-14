@@ -22,7 +22,7 @@ LDiHK runs entirely on free plans:
 
 | Part | Provider | Config |
 | --- | --- | --- |
-| Frontend (Astro) | Netlify free | `netlify.toml`, `Frontend/.env.example` |
+| Frontend (Astro) | Netlify free | `Frontend/netlify.toml` (base directory `Frontend`), `Frontend/.env.example` |
 | Backend API + import and enrichment workers | One Render free web service | `render.yaml`, `Dockerfile` |
 | Postgres | Neon free | `DATABASE_URL` |
 | Upload storage | Cloudflare R2 | `S3_ENDPOINT_URL`, bucket CORS + 1-day lifecycle rule |

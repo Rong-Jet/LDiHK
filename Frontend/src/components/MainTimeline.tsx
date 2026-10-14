@@ -1,10 +1,20 @@
 import React, { useState, useMemo } from 'react';
-import { 
+import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer 
+  Tooltip, ResponsiveContainer
 } from 'recharts';
 import { Calendar, Filter, Layers, CheckSquare, Square, ChevronDown, ChevronUp } from 'lucide-react';
 import type { FlattenedTimelineRecord } from '../hooks/useAnalyticsData';
+import { usesLocalMockApi } from '../lib/api';
+import {
+  DATE_PRESETS,
+  detectPreset,
+  formatAxisLabel,
+  formatCalendarValue,
+  getPresetRange,
+  isYearMonth,
+  type DateGranularity,
+} from '../lib/dates';
 
 interface MainTimelineProps {
   data: FlattenedTimelineRecord[];
@@ -12,14 +22,16 @@ interface MainTimelineProps {
   setActivePlatforms: (platforms: string[]) => void;
   selectedDate: string | null;
   onSelectDate: (date: string) => void;
-  
+
   // Date range filters for the timeline query
   startDate: string;
   endDate: string;
   setDateRange: (start: string, end: string) => void;
 
   datasets?: Record<string, { status: string; min_date?: string; max_date?: string }>;
-  dateBounds?: { minDate: string; maxDate: string };
+  dateBounds?: { minDate: string; maxDate: string } | null;
+  /** `month` when the range is long enough to be charted as monthly averages. */
+  granularity?: DateGranularity;
 }
 
 const ALL_PLATFORMS = ['YouTube', 'Instagram', 'TikTok', 'Spotify', 'Twitter', 'LinkedIn'];
@@ -44,46 +56,9 @@ const PLATFORM_LABELS: Record<string, string> = {
 };
 
 const FALLBACK_REFERENCE_DATE = '2026-06-06';
-const PRESETS = ['1D', '7D', '15D', '30D', '1Y', '5Y', 'all'];
 
-const parseUtcDate = (dateString: string) => {
-  const [year, month, day] = dateString.split('-').map(Number);
-  return new Date(Date.UTC(year, month - 1, day));
-};
-
-const formatUtcDate = (date: Date) => date.toISOString().split('T')[0];
-
-const clampStartDate = (start: string, minDate?: string) => (
-  minDate && start < minDate ? minDate : start
-);
-
-const getPresetRange = (preset: string, referenceDate: string, minDate?: string) => {
-  const refDateObj = parseUtcDate(referenceDate);
-  let start = referenceDate;
-
-  if (preset === '7D') {
-    refDateObj.setUTCDate(refDateObj.getUTCDate() - 6);
-    start = formatUtcDate(refDateObj);
-  } else if (preset === '15D') {
-    refDateObj.setUTCDate(refDateObj.getUTCDate() - 14);
-    start = formatUtcDate(refDateObj);
-  } else if (preset === '30D') {
-    refDateObj.setUTCDate(refDateObj.getUTCDate() - 29);
-    start = formatUtcDate(refDateObj);
-  } else if (preset === '1Y') {
-    refDateObj.setUTCFullYear(refDateObj.getUTCFullYear() - 1);
-    refDateObj.setUTCDate(refDateObj.getUTCDate() + 1);
-    start = formatUtcDate(refDateObj);
-  } else if (preset === '5Y') {
-    refDateObj.setUTCFullYear(refDateObj.getUTCFullYear() - 5);
-    refDateObj.setUTCDate(refDateObj.getUTCDate() + 1);
-    start = formatUtcDate(refDateObj);
-  } else if (preset === 'all') {
-    start = minDate || referenceDate;
-  }
-
-  return { start: clampStartDate(start, minDate), end: referenceDate };
-};
+/** Spotify is simulated by the mock routes only; the live backend cannot ingest it yet. */
+const COMING_SOON_PLATFORMS: string[] = usesLocalMockApi ? [] : ['spotify'];
 
 export default function MainTimeline({
   data,
@@ -96,6 +71,7 @@ export default function MainTimeline({
   setDateRange,
   datasets,
   dateBounds,
+  granularity = 'day',
 }: MainTimelineProps) {
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
 
@@ -132,16 +108,10 @@ export default function MainTimeline({
   const referenceDate = activeDateBounds.maxDate || dateBounds?.maxDate || endDate || FALLBACK_REFERENCE_DATE;
 
   // Determine active preset label based on startDate
-  const activePreset = useMemo(() => {
-    if (endDate !== referenceDate) return 'custom';
-
-    for (const preset of PRESETS) {
-      const range = getPresetRange(preset, referenceDate, activeDateBounds.minDate);
-      if (startDate === range.start) return preset;
-    }
-
-    return 'custom';
-  }, [activeDateBounds.minDate, endDate, referenceDate, startDate]);
+  const activePreset = useMemo(
+    () => detectPreset(startDate, endDate, referenceDate, activeDateBounds.minDate),
+    [activeDateBounds.minDate, endDate, referenceDate, startDate]
+  );
 
   // Handle Preset Click
   const applyPreset = (preset: string) => {
@@ -183,14 +153,18 @@ export default function MainTimeline({
           </div>
           <div>
             <h3 className="font-bold text-brand-navy text-lg">Daily Watchtime Allocation</h3>
-            <p className="text-xs text-brand-navy/50">Stacked area representation of hours used per day.</p>
+            <p className="text-xs text-brand-navy/50">
+              {granularity === 'month'
+                ? 'Stacked area of average hours per day, grouped by month (long ranges).'
+                : 'Stacked area representation of hours used per day.'}
+            </p>
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
           {/* Preset Buttons Grid */}
           <div className="flex items-center bg-brand-beige/60 p-1 rounded-xl border border-brand-navy/5 flex-wrap">
-            {['1D', '7D', '15D', '30D', '1Y', '5Y', 'all'].map((preset) => (
+            {DATE_PRESETS.map((preset) => (
               <button
                 key={preset}
                 onClick={() => applyPreset(preset)}
@@ -263,6 +237,26 @@ export default function MainTimeline({
             const key = platform.toLowerCase();
             const isSupported = key === 'youtube' || key === 'instagram' || key === 'tiktok' || key === 'spotify';
 
+            if (COMING_SOON_PLATFORMS.includes(key)) {
+              return (
+                <button
+                  key={platform}
+                  disabled={true}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold border border-transparent bg-brand-navy/5 text-brand-navy/35 cursor-not-allowed"
+                  title={`${platform} imports are not supported by the live backend yet`}
+                >
+                  <span
+                    className="w-2.5 h-2.5 rounded-full"
+                    style={{ backgroundColor: '#CBD5E1' }}
+                  ></span>
+                  <span>{platform}</span>
+                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-brand-navy/10 text-brand-navy/40 font-bold ml-1">
+                    Coming soon
+                  </span>
+                </button>
+              );
+            }
+
             if (!isSupported) {
               return (
                 <button
@@ -271,8 +265,8 @@ export default function MainTimeline({
                   className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold border border-transparent bg-brand-navy/5 text-brand-navy/35 cursor-not-allowed"
                   title={`${platform} is unsupported in v5 (hosted YouTube-only demo)`}
                 >
-                  <span 
-                    className="w-2.5 h-2.5 rounded-full" 
+                  <span
+                    className="w-2.5 h-2.5 rounded-full"
                     style={{ backgroundColor: '#CBD5E1' }}
                   ></span>
                   <span>{platform}</span>
@@ -282,7 +276,7 @@ export default function MainTimeline({
                 </button>
               );
             }
-            
+
             const datasetInfo = datasets?.[key] || { status: 'NOT_UPLOADED' };
             const isReady = datasetInfo.status === 'READY';
             const isProcessing = datasetInfo.status === 'PROCESSING';
@@ -303,15 +297,15 @@ export default function MainTimeline({
                     : 'bg-brand-navy/5 border-transparent text-brand-navy/35 cursor-not-allowed'
                 }`}
                 title={
-                  isProcessing 
-                    ? 'Extracting and normalizing dataset logs...' 
-                    : !isReady 
-                    ? 'Dataset not uploaded. Upload a ZIP file to unlock.' 
+                  isProcessing
+                    ? 'Extracting and normalizing dataset logs...'
+                    : !isReady
+                    ? 'Dataset not uploaded. Upload a ZIP file to unlock.'
                     : `Toggle ${platform}`
                 }
               >
-                <span 
-                  className={`w-2.5 h-2.5 rounded-full ${isProcessing ? 'animate-pulse' : ''}`} 
+                <span
+                  className={`w-2.5 h-2.5 rounded-full ${isProcessing ? 'animate-pulse' : ''}`}
                   style={{ backgroundColor: isReady || isProcessing ? PLATFORM_COLORS[key] : '#CBD5E1' }}
                 ></span>
                 <span>{platform}</span>
@@ -338,11 +332,8 @@ export default function MainTimeline({
         <div className="flex items-center gap-3">
           <button
             onClick={() => {
-              const ready = [];
-              if (datasets?.['youtube']?.status === 'READY') ready.push('youtube');
-              if (datasets?.['instagram']?.status === 'READY') ready.push('instagram');
-              if (datasets?.['tiktok']?.status === 'READY') ready.push('tiktok');
-              if (datasets?.['spotify']?.status === 'READY') ready.push('spotify');
+              const ready = ['youtube', 'instagram', 'tiktok', 'spotify']
+                .filter((platform) => datasets?.[platform]?.status === 'READY');
               if (ready.length > 0) setActivePlatforms(ready);
             }}
             className="text-[10px] uppercase tracking-wider font-extrabold text-brand-teal hover:underline cursor-pointer"
@@ -352,9 +343,9 @@ export default function MainTimeline({
           <span className="text-brand-navy/25 text-xs">|</span>
           <button
             onClick={() => {
-              if (datasets?.['youtube']?.status === 'READY') {
-                setActivePlatforms(['youtube']);
-              }
+              const firstReady = ['youtube', 'instagram', 'tiktok', 'spotify']
+                .find((platform) => datasets?.[platform]?.status === 'READY');
+              if (firstReady) setActivePlatforms([firstReady]);
             }}
             className="text-[10px] uppercase tracking-wider font-extrabold text-brand-navy/60 hover:underline cursor-pointer"
           >
@@ -387,39 +378,22 @@ export default function MainTimeline({
               data={data}
               margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
               onClick={(state) => {
-                if (state && state.activeLabel) {
-                  onSelectDate(state.activeLabel);
+                if (state && state.activeLabel !== undefined && state.activeLabel !== null) {
+                  onSelectDate(String(state.activeLabel));
                 }
               }}
               className="cursor-pointer"
             >
               <CartesianGrid strokeDasharray="3 3" stroke="#537D96" strokeOpacity={0.07} />
-              <XAxis 
-                dataKey="date" 
-                tickFormatter={(str) => {
-                  const parts = str.split('-');
-                  if (parts.length === 3) {
-                    const dateObj = new Date(str);
-                    const diffDays = data.length;
-                    
-                    if (diffDays > 730) {
-                      // 5Y / All: Show Year only (e.g. 2024)
-                      return dateObj.toLocaleDateString('en-US', { year: 'numeric' });
-                    }
-                    if (diffDays > 30) {
-                      // 1Y: Show Month & Year (e.g. Jun 25)
-                      return dateObj.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
-                    }
-                    // 7D / 15D / 30D / 1D: Show Month/Day
-                    return `${parts[1]}/${parts[2]}`;
-                  }
-                  return str;
-                }}
+              <XAxis
+                dataKey="date"
+                // Calendar labels without timezone shifts (YYYY-MM-DD / YYYY-MM buckets).
+                tickFormatter={(value) => formatAxisLabel(String(value), data.length)}
                 tick={{ fill: '#537D96', fontSize: 10, fontWeight: 600 }}
                 axisLine={{ stroke: '#537D96', strokeOpacity: 0.15 }}
                 tickLine={false}
               />
-              <YAxis 
+              <YAxis
                 tickFormatter={(val) => `${val}h`}
                 tick={{ fill: '#537D96', fontSize: 10, fontWeight: 600 }}
                 axisLine={{ stroke: '#537D96', strokeOpacity: 0.15 }}
@@ -434,15 +408,22 @@ export default function MainTimeline({
                   fontFamily: 'Outfit, sans-serif',
                 }}
                 labelClassName="font-extrabold text-brand-navy text-xs mb-2 block border-b border-brand-navy/5 pb-1"
-                formatter={(value: any, name: string) => {
+                labelFormatter={(label) => {
+                  const value = String(label);
+                  return isYearMonth(value)
+                    ? `${formatCalendarValue(value, { month: 'long', year: 'numeric' })} (avg per day)`
+                    : formatCalendarValue(value, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+                }}
+                formatter={(value: any, name: any) => {
                   if (value === null || value === undefined) return null;
+                  const unit = granularity === 'month' ? 'hrs/day' : 'hrs';
                   if (PLATFORM_LABELS[name]) {
-                    return [`${value} hrs`, PLATFORM_LABELS[name]];
+                    return [`${value} ${unit}`, PLATFORM_LABELS[name]];
                   }
-                  return [`${value} hrs`, name];
+                  return [`${value} ${unit}`, name];
                 }}
               />
-              
+
               {/* Stacked Areas in hours */}
               {activePlatforms.includes('youtube') && (
                 <Area
@@ -520,7 +501,8 @@ export default function MainTimeline({
         </div>
         {selectedDate && (
           <div className="text-brand-teal font-extrabold">
-            Selected Date: {selectedDate}
+            Selected {isYearMonth(selectedDate) ? 'Month' : 'Date'}:{' '}
+            {isYearMonth(selectedDate) ? formatCalendarValue(selectedDate, { month: 'long', year: 'numeric' }) : selectedDate}
           </div>
         )}
       </div>

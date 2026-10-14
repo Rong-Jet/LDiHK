@@ -1,0 +1,12 @@
+# Netlify build settings for the Astro frontend (free plan).
+# The Netlify site's "Base directory" must be `Frontend` (this file lives
+# there, and Netlify reads netlify.toml from the base directory).
+# PUBLIC_* variables are read at build time: set them in the Netlify UI with
+# the "Builds" scope and redeploy after changing them.
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  # Astro 6 requires Node >= 22.12.
+  NODE_VERSION = "22"
