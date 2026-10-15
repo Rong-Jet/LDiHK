@@ -1,13 +1,16 @@
 import React, { useState } from 'react';
 import {
   RefreshCw, Database, ShieldAlert, UploadCloud, Key, Copy, Check, LogOut,
-  Eye, EyeOff, ShieldCheck, Lock, AlertTriangle, CloudOff, Info, X,
+  Eye, EyeOff, ShieldCheck, Lock, AlertTriangle, CloudOff, Info, X, Trash2,
 } from 'lucide-react';
 import UploadZone from './UploadZone';
 import { UploadProvider } from '../hooks/useUploadController';
 import type { BackendStatus } from '../hooks/useBackendStatus';
 import type { ConsoleSession } from '../hooks/useConsoleSession';
-import { describeApiError, isPendingEnrichment, usesLocalMockApi, type ImportStatus } from '../lib/api';
+import { deleteMyData, describeApiError, isPendingEnrichment, usesLocalMockApi, type ImportStatus } from '../lib/api';
+
+/** One-time message shown on the login screen after the account was deleted. */
+const DELETION_NOTICE_KEY = 'ldihk_deletion_notice';
 
 export type ConsoleTab = 'dashboard' | 'population' | 'risk';
 
@@ -71,9 +74,94 @@ function ConsoleTitle() {
   );
 }
 
+function readDeletionNotice(): string | null {
+  try {
+    const notice = sessionStorage.getItem(DELETION_NOTICE_KEY);
+    if (notice) sessionStorage.removeItem(DELETION_NOTICE_KEY);
+    return notice;
+  } catch {
+    return null;
+  }
+}
+
+/** Confirms and performs the permanent deletion of the account. */
+function DeleteDataDialog({ session, onClose }: { session: ConsoleSession; onClose: () => void }) {
+  const [confirmInput, setConfirmInput] = useState('');
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const token = session.sessionToken ?? '';
+  const matches = confirmInput.trim() === token;
+
+  const handleDelete = async () => {
+    if (!matches || pending) return;
+    setPending(true);
+    setError(null);
+    try {
+      const result = await deleteMyData(token, confirmInput.trim());
+      try {
+        sessionStorage.setItem(
+          DELETION_NOTICE_KEY,
+          `Your data has been deleted: ${result.events_deleted.toLocaleString()} events and ${result.imports_deleted} import(s). This LDiHK-ID no longer exists.`
+        );
+      } catch {
+        // Session storage unavailable: the deletion still happened.
+      }
+      session.logout();
+    } catch (deleteError) {
+      setError(describeApiError(deleteError, 'Deleting your data failed. Nothing was changed; please retry.'));
+      setPending(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-brand-navy/40 backdrop-blur-sm flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="delete-data-title">
+      <div className="bg-white rounded-3xl shadow-2xl max-w-md w-full p-6 text-left space-y-4 border border-brand-peach/30">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-xl bg-brand-peach/15 flex items-center justify-center text-brand-peach shrink-0">
+            <Trash2 className="w-5 h-5" />
+          </div>
+          <div>
+            <h3 id="delete-data-title" className="font-black text-brand-navy text-lg">Delete all my data</h3>
+            <p className="text-xs text-brand-navy/70 leading-relaxed mt-1">
+              This permanently deletes your usage history, imports and LDiHK-ID from our database and removes uploaded archives from storage. It cannot be undone.
+            </p>
+          </div>
+        </div>
+        <label className="block space-y-1.5">
+          <span className="text-[10px] uppercase tracking-wider font-extrabold text-brand-navy/50 block">Type your LDiHK-ID to confirm</span>
+          <input
+            type="text"
+            value={confirmInput}
+            onChange={(event) => setConfirmInput(event.target.value)}
+            autoComplete="off"
+            spellCheck={false}
+            disabled={pending}
+            className="w-full bg-white border border-brand-navy/20 rounded-2xl px-4 py-3 text-sm font-mono text-brand-navy focus:outline-none focus:ring-2 focus:ring-brand-peach/30 focus:border-brand-peach disabled:opacity-60"
+          />
+        </label>
+        {error && <p className="text-xs font-semibold text-brand-peach" role="alert">{error}</p>}
+        <div className="flex justify-end gap-3 pt-1">
+          <button onClick={onClose} disabled={pending} className="px-4 py-2.5 rounded-xl border border-brand-navy/15 text-brand-navy text-xs font-bold cursor-pointer disabled:opacity-60">
+            Cancel
+          </button>
+          <button
+            onClick={handleDelete}
+            disabled={!matches || pending}
+            className="px-4 py-2.5 rounded-xl bg-brand-peach text-white text-xs font-bold flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {pending ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+            Delete permanently
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LoginScreen({ backend, session }: { backend: BackendStatus; session: ConsoleSession }) {
   const [loginIdInput, setLoginIdInput] = useState('');
   const [showLoginPassword, setShowLoginPassword] = useState(false);
+  const [deletionNotice] = useState(readDeletionNotice);
   const { pending, error } = session.loginState;
 
   const handleLoginSubmit = (e: React.FormEvent) => {
@@ -92,6 +180,13 @@ function LoginScreen({ backend, session }: { backend: BackendStatus; session: Co
 
       <MockModeBanner />
       <ServerWakeBanner backend={backend} />
+
+      {deletionNotice && (
+        <div className="mb-6 bg-brand-teal/10 border border-brand-teal/25 rounded-2xl p-4 text-brand-navy text-xs font-semibold flex items-center gap-3" role="status">
+          <ShieldCheck className="w-5 h-5 text-brand-teal shrink-0" />
+          {deletionNotice}
+        </div>
+      )}
 
       {/* Glassmorphic Auth Panel */}
       <div className="bg-white border border-brand-navy/15 rounded-[32px] overflow-hidden shadow-2xl relative">
@@ -390,6 +485,7 @@ function ConsoleShellBody({
   const [copiedToken, setCopiedToken] = useState(false);
   const [showToken, setShowToken] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
   const { sessionToken, pipelineStatus, readyPlatforms, phase } = session;
 
@@ -483,6 +579,16 @@ function ConsoleShellBody({
             </button>
           )}
 
+          {/* Delete My Data button */}
+          <button
+            onClick={() => setShowDeleteDialog(true)}
+            className="px-4 py-2.5 rounded-xl border border-brand-peach/30 hover:bg-brand-peach/10 text-brand-navy text-xs font-bold transition-all flex items-center gap-2 duration-150 cursor-pointer"
+            title="Permanently delete all data stored for this LDiHK-ID"
+          >
+            <Trash2 className="w-3.5 h-3.5 text-brand-peach" />
+            Delete My Data
+          </button>
+
           {/* Log Out button */}
           <button
             onClick={handleLogout}
@@ -494,6 +600,8 @@ function ConsoleShellBody({
           </button>
         </div>
       </div>
+
+      {showDeleteDialog && <DeleteDataDialog session={session} onClose={() => setShowDeleteDialog(false)} />}
 
       {/* View Switcher Sub-Navigation Tabs */}
       <div className="mb-8 border-b border-brand-navy/10 flex gap-4 text-left">

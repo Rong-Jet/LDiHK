@@ -417,5 +417,79 @@ class EnrichmentAvailabilityTests(unittest.TestCase):
             self.assertEqual(status_payload(self._job("queued"))["enrichment_status"], "queued")
 
 
+
+class DeleteMyDataTests(unittest.TestCase):
+    class _NoUserConnection:
+        def execute(self, sql, parameters=None):
+            class _Cursor:
+                rowcount = 0
+
+                def fetchone(self):
+                    return None
+
+            return _Cursor()
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            pass
+
+    def test_deletion_requires_repeating_the_id(self):
+        client = _app(lambda: self._NoUserConnection()).test_client()
+
+        for body in (None, {}, {"confirm": "someone-else"}):
+            with self.subTest(body=body):
+                response = client.delete("/api/me", headers=auth_headers(), json=body)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.get_json(), {"error": "confirmation_mismatch"})
+
+    def test_deleting_an_unknown_id_is_404(self):
+        client = _app(lambda: self._NoUserConnection()).test_client()
+        ldihk_id = "ldihk-cosmic-nebula-abcdefgh2345"
+
+        response = client.delete("/api/me", headers=auth_headers(ldihk_id), json={"confirm": ldihk_id})
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_preflight_allows_delete(self):
+        with mock.patch.dict(os.environ, {"FRONTEND_ALLOWED_ORIGINS": "https://ldihk.xyz"}, clear=False):
+            app = _app(lambda: self._NoUserConnection())
+        response = app.test_client().options(
+            "/api/me",
+            headers={"Origin": "https://ldihk.xyz", "Access-Control-Request-Method": "DELETE"},
+        )
+
+        self.assertIn("DELETE", response.headers["Access-Control-Allow-Methods"])
+
+    def test_upload_cleanup_deletes_every_object_under_the_user_prefix(self):
+        from backend.user_data import delete_user_uploads
+
+        class FakeS3:
+            def __init__(self):
+                self.deleted = []
+                self.prefixes = []
+
+            def list_objects_v2(self, Bucket, Prefix, ContinuationToken=None):
+                self.prefixes.append(Prefix)
+                if ContinuationToken is None:
+                    return {"Contents": [{"Key": Prefix + "a.zip"}], "IsTruncated": True, "NextContinuationToken": "t"}
+                return {"Contents": [{"Key": Prefix + "b.zip"}], "IsTruncated": False}
+
+            def delete_objects(self, Bucket, Delete):
+                self.deleted.extend(item["Key"] for item in Delete["Objects"])
+
+        s3 = FakeS3()
+        count = delete_user_uploads("ldihk-x-abc", s3_client=s3, environ={"S3_BUCKET": "bucket"})
+
+        self.assertEqual(count, 2)
+        self.assertEqual(s3.deleted, ["uploads/ldihk-x-abc/a.zip", "uploads/ldihk-x-abc/b.zip"])
+        self.assertEqual(set(s3.prefixes), {"uploads/ldihk-x-abc/"})
+        self.assertIsNone(delete_user_uploads("ldihk-x-abc", s3_client=s3, environ={}))
+
+
 if __name__ == "__main__":
     unittest.main()

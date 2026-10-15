@@ -330,7 +330,7 @@ export default function UploadZone({ sessionToken, onSessionGenerated }: UploadZ
                 <Lock className="w-5 h-5 text-brand-teal shrink-0 mt-0.5" />
                 <div className="text-xs text-brand-navy/80 leading-relaxed">
                   <strong className="block text-brand-teal font-bold mb-0.5">Anonymous Storage:</strong>
-                  No personal names, user handles, or account markers are stored. All database records are fully <span className="font-semibold text-brand-teal">anonymous</span>.
+                  No personal names, user handles, or account markers are stored. All database records are fully <span className="font-semibold text-brand-teal">anonymous</span>, and you can delete everything at any time with "Delete My Data" in the console.
                 </div>
               </div>
             </div>

@@ -44,6 +44,7 @@ from backend.query_api import (
     validate_query_request,
     validate_timezone_name,
 )
+from backend.user_data import delete_user_data, delete_user_uploads
 from backend.youtube_sql import (
     DEFAULT_SQLITE_PATH,
     QueryValidationError,
@@ -165,6 +166,47 @@ def create_app(
                 "datasets": {},
             }
         return jsonify({**summary, "latest_import": latest_import})
+
+    @app.delete("/api/me")
+    def delete_current_user():
+        """Erase the caller's data; the body must repeat the ID to confirm."""
+        connection = None
+        try:
+            identity = require_bearer_identity()
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict) or payload.get("confirm") != identity.ldihk_id:
+                return jsonify({"error": "confirmation_mismatch"}), 400
+            connection = query_connection_factory()
+            summary = delete_user_data(connection, ldihk_id=identity.ldihk_id)
+        except PublicBoundaryError as error:
+            return public_boundary_error_response(error)
+        except DatabaseConfigError as error:
+            return database_unavailable(error)
+        except Exception as error:
+            if is_database_unavailable_error(error):
+                LOGGER.warning("Database unavailable: %s", error)
+                return database_unavailable()
+            raise
+        finally:
+            if connection is not None:
+                connection.close()
+
+        if summary is None:
+            return jsonify({"error": "unknown_ldihk_id"}), 404
+        LOGGER.info(
+            "Deleted a user: %s events, %s imports",
+            summary.events_deleted,
+            summary.imports_deleted,
+        )
+        return jsonify(
+            {
+                "deleted": True,
+                "events_deleted": summary.events_deleted,
+                "imports_deleted": summary.imports_deleted,
+                "subscriptions_deleted": summary.subscriptions_deleted,
+                "uploads_deleted": delete_user_uploads(identity.ldihk_id),
+            }
+        )
 
     @app.post("/api/query")
     def youtube_usage_structured_query():

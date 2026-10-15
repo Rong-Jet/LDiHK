@@ -31,6 +31,7 @@ export const jsonHeaders = {
 export const apiRoutes = {
   health: () => backendApiUrl('/health'),
   me: (timeZone: string) => backendApiUrl(`/api/me?timezone=${encodeURIComponent(timeZone)}`),
+  deleteMe: () => backendApiUrl('/api/me'),
   query: () => backendApiUrl('/api/query'),
   imports: () => backendApiUrl('/api/imports'),
   importStatus: (importId: string) => backendApiUrl(`/api/imports/${encodeURIComponent(importId)}`),
@@ -83,6 +84,7 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
   backend_not_configured: 'The analytics backend is not configured (PUBLIC_API_URL).',
   unsupported_platform: 'Population benchmarks currently support YouTube only.',
   rate_limited: 'Too many requests in a short time. Please wait a few minutes and try again.',
+  confirmation_mismatch: 'The ID you typed does not match your LDiHK-ID.',
   file_too_large: 'The archive is too large. Export only your history files and try again.',
 };
 
@@ -139,7 +141,7 @@ async function readErrorBody(response: Response): Promise<{ code: string | null;
 }
 
 export interface ApiRequestOptions {
-  method?: 'GET' | 'POST' | 'PUT';
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
   token?: string | null;
   body?: unknown;
   signal?: AbortSignal;
@@ -303,6 +305,18 @@ export interface CreateImportPayload {
 
 export function createImport(token: string, payload: CreateImportPayload): Promise<{ import_id: string; ldihk_id: string; status: ImportState }> {
   return apiFetchJson(apiRoutes.imports(), { token, body: payload });
+}
+
+export interface DeleteMyDataResponse {
+  deleted: boolean;
+  events_deleted: number;
+  imports_deleted: number;
+  uploads_deleted: number | null;
+}
+
+/** DELETE /api/me: erases the account and all its data. `confirm` must equal the ID. */
+export function deleteMyData(token: string, confirm: string): Promise<DeleteMyDataResponse> {
+  return apiFetchJson<DeleteMyDataResponse>(apiRoutes.deleteMe(), { token, method: 'DELETE', body: { confirm } });
 }
 
 export function fetchPopulationJson<T>(token: string, payload: Record<string, unknown>, signal?: AbortSignal): Promise<T> {

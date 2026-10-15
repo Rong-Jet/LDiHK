@@ -40,7 +40,7 @@ export const OPTIONS: APIRoute = async () => {
     status: 204,
     headers: {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Methods': 'GET, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       'Access-Control-Max-Age': '86400',
     },
@@ -99,4 +99,46 @@ export const GET: APIRoute = async ({ request, url }) => {
       ? { enrichment_status: null, enrichment_started_at: null, enrichment_finished_at: null, ...latestImport }
       : null,
   });
+};
+
+// Mock of DELETE /api/me: forgets this ID's simulated imports.
+export const DELETE: APIRoute = async ({ request }) => {
+  if (!usesLocalMockApi) {
+    return json({ error: 'backend_not_configured' }, 503);
+  }
+  const authHeader = request.headers.get('Authorization') || '';
+  const ldihkId = authHeader.startsWith('Bearer ') ? authHeader.slice('Bearer '.length).trim() : '';
+  if (!isValidLdihkId(ldihkId)) {
+    return json({ error: 'invalid_authorization' }, 401);
+  }
+  let body: any = null;
+  try {
+    body = await request.json();
+  } catch {
+    // Missing body is a confirmation mismatch below.
+  }
+  if (body?.confirm !== ldihkId) {
+    return json({ error: 'confirmation_mismatch' }, 400);
+  }
+
+  const statePath = path.join(os.tmpdir(), 'ldihk_state.json');
+  let state: any = { datasets: {}, imports: {} };
+  try {
+    state = JSON.parse(await fs.readFile(statePath, 'utf-8'));
+  } catch {
+    // No mock state yet.
+  }
+  let importsDeleted = 0;
+  for (const [importId, record] of Object.entries<any>(state.imports ?? {})) {
+    if (record?.ldihk_id === ldihkId) {
+      delete state.imports[importId];
+      importsDeleted += 1;
+    }
+  }
+  try {
+    await fs.writeFile(statePath, JSON.stringify(state, null, 2));
+  } catch (error) {
+    console.error('Failed to update mock state:', error);
+  }
+  return json({ deleted: true, events_deleted: 0, imports_deleted: importsDeleted, subscriptions_deleted: 0, uploads_deleted: null });
 };

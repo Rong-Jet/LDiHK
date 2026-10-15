@@ -192,7 +192,35 @@ A user whose first import is still queued or running has `datasets: {}` and a
 
 Errors: `missing_authorization`, `invalid_authorization`,
 `invalid_timezone` (400), `unknown_ldihk_id` (404), `database_unavailable`
-(503).
+(503), `rate_limited` (429, failed lookups are limited).
+
+### Delete Current User
+
+```text
+DELETE /api/me
+```
+
+Headers: `Authorization: Bearer <LDiHKID>`, `Content-Type: application/json`.
+
+Request body (must repeat the ID):
+
+```json
+{ "confirm": "ldihk-cosmic-pegasus-k3j9x2m4q7ab" }
+```
+
+Permanently deletes the user's usage events, subscriptions, imports, import
+warnings, enrichment jobs and the user row, then removes objects under
+`uploads/<LDiHKID>/` from storage (best effort; `uploads_deleted` is `null`
+when that was not possible). The shared YouTube video cache is kept.
+
+Response:
+
+```json
+{ "deleted": true, "events_deleted": 52310, "imports_deleted": 2, "subscriptions_deleted": 140, "uploads_deleted": 1 }
+```
+
+Errors: `confirmation_mismatch` (400), `unknown_ldihk_id` (404),
+`rate_limited` (429), `database_unavailable` (503).
 
 ### Get Uploader Info
 
@@ -246,9 +274,14 @@ Request body:
 ```json
 {
   "filename": "takeout.zip",
-  "contentType": "application/zip"
+  "contentType": "application/zip",
+  "size": 6264
 }
 ```
+
+`size` (bytes, required) is signed into the URL as `Content-Length`: the
+upload must be exactly that size, and at most `MAX_IMPORT_ZIP_BYTES`
+(200 MB). Signing is rate-limited per ID and per client address.
 
 Live response:
 
@@ -289,6 +322,8 @@ Errors:
 - `missing_authorization`
 - `invalid_authorization`
 - `invalid_filename` (400, not a `.zip`)
+- `invalid_size` (400), `file_too_large` (413)
+- `rate_limited` (429, with `Retry-After`)
 - `upload_not_configured`
 - `s3_signature_failure`
 
@@ -877,6 +912,10 @@ Expected codes:
 - `invalid_sort`
 - `invalid_timezone`
 - `invalid_filename`
+- `invalid_size`
+- `file_too_large`
+- `rate_limited` (429, `Retry-After` header and `retry_after` seconds)
+- `confirmation_mismatch`
 - `unknown_ldihk_id`
 - `unsupported_platform`
 - `unauthorized_import`

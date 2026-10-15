@@ -129,6 +129,7 @@ The web service exposes the hosted API routes:
 ```text
 GET /health
 GET /api/me
+DELETE /api/me
 POST /api/imports
 GET /api/imports/{import_id}
 POST /api/query
