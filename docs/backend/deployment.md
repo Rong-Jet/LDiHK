@@ -36,7 +36,7 @@ declares every variable; secrets are entered in the dashboard.
 | `ALLOW_LOCALHOST_ORIGINS` | No | Web | Default `true`. Set `false` in production to drop the localhost dev origins. |
 | `ENABLE_LOCAL_FILE_ROUTES` | No | Web | Default `true`. Set `false` in production to remove the unauthenticated local-file routes. |
 | `RUN_WORKERS_IN_PROCESS` | Yes on free hosting | Web | `true` starts the import and enrichment threads inside the web process. |
-| `WORKER_ACTIVE_WINDOW_SECONDS` | No | Web | Default `900`. In-process workers only poll the database this long after the last API request. |
+| `WORKER_ACTIVE_WINDOW_SECONDS` | No | Web | Default `120`. In-process workers only poll the database this long after the last API request; import status polling keeps them active during an import. Longer values keep a free Neon database awake longer. |
 | `WORKER_POLL_INTERVAL_SECONDS` | No | Web | Default `30`. Poll interval while active; new imports wake the worker immediately. |
 | `ALLOW_IDENTIFIER_DIMENSIONS` | Yes | Web | Set to `true` for top-channel and top-video dashboard queries. |
 | `QUERY_BUCKET_TIMEZONE` | No | Web | Default bucket timezone when a query sends no `options.timezone`. Any IANA name; default `UTC`. |

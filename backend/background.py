@@ -26,7 +26,11 @@ LOGGER = logging.getLogger(__name__)
 RUN_WORKERS_IN_PROCESS_ENV = "RUN_WORKERS_IN_PROCESS"
 WORKER_ACTIVE_WINDOW_ENV = "WORKER_ACTIVE_WINDOW_SECONDS"
 WORKER_POLL_INTERVAL_ENV = "WORKER_POLL_INTERVAL_SECONDS"
-DEFAULT_ACTIVE_WINDOW_SECONDS = 900.0
+# Short on purpose: Neon stays awake ~5 minutes after the last query, so each
+# minute here costs compute hours. Imports keep the loops active anyway: the
+# frontend polls import status every few seconds, and a finished import wakes
+# the enrichment loop directly.
+DEFAULT_ACTIVE_WINDOW_SECONDS = 120.0
 DEFAULT_POLL_INTERVAL_SECONDS = 30.0
 MAX_ERROR_BACKOFF_SECONDS = 300.0
 
