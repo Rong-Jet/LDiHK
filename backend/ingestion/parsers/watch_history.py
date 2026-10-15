@@ -127,6 +127,13 @@ TITLE_SUFFIXES = (
 )
 HTML_PARSE_CHUNK_BYTES = 64 * 1024
 GOOGLE_ADS_WARNING = "google_ads_watch_skipped"
+NON_VIDEO_WARNING = "non_video_activity_skipped"
+# Link-less ad summaries in the watch history ("Hat Anzeigen bei YouTube
+# Shorts angesehen"). Only checked for records without a video link.
+AD_SUMMARY_RE = re.compile(
+    r"\b(ads|anzeigen|annonces|anuncios|annunci|an[úu]ncios|advertenties)\b",
+    re.IGNORECASE,
+)
 
 
 def parse_watch_history(content: bytes, *, source_path: str) -> ParseResult:
@@ -184,11 +191,16 @@ def parse_watch_card(
     if mentions_google_ads(card.caption):
         return None, [ParseWarning(code=GOOGLE_ADS_WARNING, sample=sample)]
 
+    video_id, title = _html_video_reference(card.anchors)
+    if video_id is None:
+        skipped = _non_video_activity([href for href, _ in card.anchors], body)
+        if skipped is not None:
+            return None, [ParseWarning(code=skipped, sample=sample)]
+
     occurred_at, timestamp_warning = parse_text_timestamp(body)
     if timestamp_warning is not None:
         warnings.append(ParseWarning(code=timestamp_warning, sample=sample))
 
-    video_id, title = _html_video_reference(card.anchors)
     channel_id = _html_channel_id(card.anchors)
     raw_status = _raw_status(body, localized=video_id is None)
 
@@ -284,6 +296,12 @@ def parse_watch_json_record(
 
     title_url = _first_string(record, "titleUrl", "title_url", "url")
     video_id = _extract_video_id(title_url)
+    if video_id is None:
+        skipped = _non_video_activity(
+            [title_url] if title_url else [], _first_string(record, "title", "name") or ""
+        )
+        if skipped is not None:
+            return None, [ParseWarning(code=skipped, sample=sample)]
     channel_id = _json_channel_id(record)
     raw_status = _raw_status(
         " ".join(_json_status_texts(record)), localized=video_id is None
@@ -316,6 +334,27 @@ def parse_watch_json_record(
         ),
         warnings,
     )
+
+
+def _non_video_activity(urls: list[str], text: str) -> str | None:
+    """Warning code for a watch-history record without a video link that is
+    not a video watch at all, or None to keep it (removed/private videos).
+
+    The watch history also lists ad summaries without a link, viewed
+    community posts (youtube.com/post/...) and visited pages outside YouTube
+    (google.com/url ad clicks). None of them is watch time.
+    """
+    if not urls:
+        return GOOGLE_ADS_WARNING if AD_SUMMARY_RE.search(text) else None
+    parsed_urls = [urlparse(_absolute_url(url)) for url in urls]
+    if any(
+        _is_youtube_host(parsed.netloc.lower()) and parsed.path.startswith("/post/")
+        for parsed in parsed_urls
+    ):
+        return NON_VIDEO_WARNING
+    if not any(_is_youtube_video_host(parsed.netloc.lower()) for parsed in parsed_urls):
+        return NON_VIDEO_WARNING
+    return None
 
 
 def is_google_ads_json_record(record: Mapping[str, Any]) -> bool:

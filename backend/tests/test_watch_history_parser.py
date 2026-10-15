@@ -517,5 +517,118 @@ class GoogleAdsWatchTests(unittest.TestCase):
         )
 
 
+class GermanNonVideoRecordTests(unittest.TestCase):
+    """Shapes seen in a real German Takeout (2026): ads and other activity
+    that sit in Wiedergabeverlauf.html but are not video watches."""
+
+    def test_german_html_ads_and_non_video_cards_are_not_watch_events(self):
+        html = export_html(
+            activity_card(
+                "YouTube",
+                """
+                <a href="https://www.youtube.com/watch?v=ad123">Werbespot</a> angesehen<br>
+                <a href="https://www.youtube.com/channel/UCad">Werbekanal</a><br>
+                06.06.2026, 08:50:12 MESZ<br>
+                """,
+                details="Von Google Anzeigen",
+            )
+            + activity_card(
+                "YouTube",
+                "Hat Anzeigen bei YouTube Shorts angesehen<br>06.06.2026, 08:45:12 MESZ<br>",
+            )
+            + activity_card(
+                "YouTube",
+                "Hat Anzeigen auf der YouTube-Startseite angesehen<br>06.06.2026, 08:44:12 MESZ<br>",
+            )
+            + activity_card(
+                "YouTube",
+                """
+                <a href="https://www.youtube.com/post/UgkxPost">Neues Video ist online</a> angesehen<br>
+                <a href="https://www.youtube.com/channel/UCposter">Kanal</a><br>
+                06.06.2026, 08:40:12 MESZ<br>
+                """,
+            )
+            + activity_card(
+                "YouTube",
+                """
+                <a href="https://www.google.com/url?q=https://example.com/angebot">example.com</a> aufgerufen<br>
+                06.06.2026, 08:35:12 MESZ<br>
+                """,
+            )
+            + activity_card(
+                "YouTube",
+                "Ein Video angesehen, das entfernt wurde<br>06.06.2026, 08:30:12 MESZ<br>",
+            )
+            + activity_card(
+                "YouTube",
+                """
+                <a href="https://www.youtube.com/watch?v=real123">Wie man Anzeigen schaltet</a> angesehen<br>
+                06.06.2026, 08:20:12 MESZ<br>
+                """,
+            )
+        )
+
+        result = parse_watch_history(
+            html, source_path="Takeout/YouTube und YouTube Music/Verlauf/Wiedergabeverlauf.html"
+        )
+
+        self.assertEqual(result.records_seen, 7)
+        # The removed video still counts; so does a real video about ads.
+        self.assertEqual(
+            [(event.video_id, event.raw_status) for event in result.events],
+            [(None, "deleted"), ("real123", None)],
+        )
+        self.assertEqual(
+            [warning.code for warning in result.warnings],
+            [
+                "google_ads_watch_skipped",
+                "google_ads_watch_skipped",
+                "google_ads_watch_skipped",
+                "non_video_activity_skipped",
+                "non_video_activity_skipped",
+                "deleted_watch",
+            ],
+        )
+
+    def test_german_json_ads_and_non_video_records_are_not_watch_events(self):
+        payload = [
+            {
+                "header": "YouTube",
+                "title": "Werbespot angesehen",
+                "titleUrl": "https://www.youtube.com/watch?v=ad123",
+                "time": "2026-06-06T06:50:12.000Z",
+                "details": [{"name": "Von Google Anzeigen"}],
+            },
+            {
+                "header": "YouTube",
+                "title": "Hat Anzeigen bei YouTube Shorts angesehen",
+                "time": "2026-06-06T06:45:12.000Z",
+            },
+            {
+                "header": "YouTube",
+                "title": "Neues Video ist online angesehen",
+                "titleUrl": "https://www.youtube.com/post/UgkxPost",
+                "time": "2026-06-06T06:40:12.000Z",
+            },
+            {
+                "header": "YouTube",
+                "title": "Echtes Video angesehen",
+                "titleUrl": "https://www.youtube.com/watch?v=real123",
+                "time": "2026-06-06T06:20:12.000Z",
+            },
+        ]
+
+        result = parse_watch_history(
+            json.dumps(payload).encode("utf-8"),
+            source_path="Takeout/YouTube und YouTube Music/Verlauf/Wiedergabeverlauf.json",
+        )
+
+        self.assertEqual([event.video_id for event in result.events], ["real123"])
+        self.assertEqual(
+            [warning.code for warning in result.warnings],
+            ["google_ads_watch_skipped", "google_ads_watch_skipped", "non_video_activity_skipped"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

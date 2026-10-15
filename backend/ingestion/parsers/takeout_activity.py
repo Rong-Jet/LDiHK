@@ -451,11 +451,12 @@ def fold_text(value: str) -> str:
 # --------------------------------------------------------------------------
 
 GOOGLE_ADS_RE = re.compile(
-    r"\bgoogle\s*(?:ads|adwords)\b|google\s*広告|google\s*광고",
+    # German exports say "Von Google Anzeigen", not "Google Ads".
+    r"\bgoogle[\s-]*(?:ads|adwords|anzeigen)\b|google\s*広告|google\s*광고",
     re.IGNORECASE,
 )
 
 
 def mentions_google_ads(text: str | None) -> bool:
-    """True for "From Google Ads", "Von Google Ads", "De Google Ads", ..."""
+    """True for "From Google Ads", "Von Google Anzeigen", "De Google Ads", ..."""
     return bool(text) and GOOGLE_ADS_RE.search(text) is not None
