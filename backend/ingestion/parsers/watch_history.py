@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -11,7 +11,9 @@ from backend.ingestion.parsers.takeout_activity import (
     MONTHS,
     TIMEZONE_OFFSETS,
     ActivityCard,
+    is_json_array,
     iter_activity_cards,
+    iter_json_array,
     mentions_google_ads,
     parse_iso_timestamp,
     parse_text_timestamp,
@@ -217,7 +219,36 @@ def parse_watch_card(
 
 def _parse_json_history(text: str) -> ParseResult:
     try:
-        payload = json.loads(text)
+        if is_json_array(text):
+            # Takeout's watch-history.json is a top-level array: decode it
+            # record by record so a large history fits in a 512 MB instance.
+            records: Iterable[object] = iter_json_array(text)
+        else:
+            payload = json.loads(text)
+            records = json_records(payload)
+            if records is None:
+                return ParseResult(
+                    events=[],
+                    subscriptions=[],
+                    warnings=[ParseWarning(code="json_shape_unsupported", sample=None)],
+                    records_seen=0,
+                )
+
+        events: list[ParsedEvent] = []
+        warnings: list[ParseWarning] = []
+        records_seen = 0
+
+        for sequence, record in enumerate(records, start=1):
+            records_seen = sequence
+            sample = _sample(sequence)
+            if not isinstance(record, dict):
+                warnings.append(ParseWarning(code="malformed_json_record", sample=sample))
+                continue
+
+            event, record_warnings = parse_watch_json_record(record, sequence=sequence)
+            warnings.extend(record_warnings)
+            if event is not None:
+                events.append(event)
     except json.JSONDecodeError:
         return ParseResult(
             events=[],
@@ -226,34 +257,11 @@ def _parse_json_history(text: str) -> ParseResult:
             records_seen=0,
         )
 
-    records = json_records(payload)
-    if records is None:
-        return ParseResult(
-            events=[],
-            subscriptions=[],
-            warnings=[ParseWarning(code="json_shape_unsupported", sample=None)],
-            records_seen=0,
-        )
-
-    events: list[ParsedEvent] = []
-    warnings: list[ParseWarning] = []
-
-    for sequence, record in enumerate(records, start=1):
-        sample = _sample(sequence)
-        if not isinstance(record, dict):
-            warnings.append(ParseWarning(code="malformed_json_record", sample=sample))
-            continue
-
-        event, record_warnings = parse_watch_json_record(record, sequence=sequence)
-        warnings.extend(record_warnings)
-        if event is not None:
-            events.append(event)
-
     return ParseResult(
         events=events,
         subscriptions=[],
         warnings=warnings,
-        records_seen=len(records),
+        records_seen=records_seen,
     )
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -10,7 +10,9 @@ from urllib.parse import parse_qs, unquote, urlparse
 from backend.ingestion.models import ParseResult, ParseWarning, ParsedEvent
 from backend.ingestion.parsers.takeout_activity import (
     ActivityCard,
+    is_json_array,
     iter_activity_cards,
+    iter_json_array,
     parse_iso_timestamp,
     parse_text_timestamp,
 )
@@ -54,7 +56,41 @@ def parse_search_history(content: bytes, *, source_path: str) -> ParseResult:
 
 def _parse_json_history(text: str, *, source_path: str) -> ParseResult:
     try:
-        payload = json.loads(text)
+        if is_json_array(text):
+            # "My Activity" exports can hold every YouTube activity; decode
+            # them record by record instead of all at once.
+            records: Iterable[object] = iter_json_array(text)
+        else:
+            payload = json.loads(text)
+            records = _json_records(payload)
+            if records is None:
+                return ParseResult(
+                    events=[],
+                    subscriptions=[],
+                    warnings=[ParseWarning(code="json_shape_unsupported", sample=None)],
+                    records_seen=0,
+                )
+
+        events: list[ParsedEvent] = []
+        warnings: list[ParseWarning] = []
+        source_path_is_youtube = _source_path_is_youtube(source_path)
+        records_seen = 0
+
+        for sequence, record in enumerate(records, start=1):
+            records_seen = sequence
+            sample = _sample(sequence)
+            if not isinstance(record, Mapping):
+                warnings.append(ParseWarning(code="malformed_json_record", sample=sample))
+                continue
+
+            event, record_warnings = _parse_json_record(
+                record,
+                sequence=sequence,
+                source_path_is_youtube=source_path_is_youtube,
+            )
+            warnings.extend(record_warnings)
+            if event is not None:
+                events.append(event)
     except json.JSONDecodeError:
         return ParseResult(
             events=[],
@@ -63,39 +99,11 @@ def _parse_json_history(text: str, *, source_path: str) -> ParseResult:
             records_seen=0,
         )
 
-    records = _json_records(payload)
-    if records is None:
-        return ParseResult(
-            events=[],
-            subscriptions=[],
-            warnings=[ParseWarning(code="json_shape_unsupported", sample=None)],
-            records_seen=0,
-        )
-
-    events: list[ParsedEvent] = []
-    warnings: list[ParseWarning] = []
-    source_path_is_youtube = _source_path_is_youtube(source_path)
-
-    for sequence, record in enumerate(records, start=1):
-        sample = _sample(sequence)
-        if not isinstance(record, Mapping):
-            warnings.append(ParseWarning(code="malformed_json_record", sample=sample))
-            continue
-
-        event, record_warnings = _parse_json_record(
-            record,
-            sequence=sequence,
-            source_path_is_youtube=source_path_is_youtube,
-        )
-        warnings.extend(record_warnings)
-        if event is not None:
-            events.append(event)
-
     return ParseResult(
         events=events,
         subscriptions=[],
         warnings=warnings,
-        records_seen=len(records),
+        records_seen=records_seen,
     )
 
 

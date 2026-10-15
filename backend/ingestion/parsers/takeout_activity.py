@@ -15,6 +15,7 @@ Spanish, French, Italian, Portuguese and Dutch exports.
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from collections.abc import Iterator
@@ -42,6 +43,49 @@ class ActivityCard:
 
     caption: str
     """Whitespace-normalised text of the caption cells ("Products", "Details")."""
+
+
+# --------------------------------------------------------------------------
+# Streaming JSON arrays
+# --------------------------------------------------------------------------
+
+_JSON_WHITESPACE = re.compile(r"[ \t\n\r]*")
+
+
+def is_json_array(text: str) -> bool:
+    """True when the document's top-level value is an array."""
+    return text.startswith("[", _JSON_WHITESPACE.match(text, 0).end())
+
+
+def iter_json_array(text: str) -> Iterator[object]:
+    """Yield the items of a top-level JSON array one at a time.
+
+    ``json.loads`` builds every record of a large export as Python objects at
+    once (about +314 MB for a 150k-entry watch history, measured), which is
+    too much for a 512 MB instance. Decoding item by item keeps only the
+    current record alive. Raises ``json.JSONDecodeError`` on malformed input.
+    """
+    decoder = json.JSONDecoder()
+    position = _JSON_WHITESPACE.match(text, 0).end()
+    if not text.startswith("[", position):
+        raise json.JSONDecodeError("Expecting '['", text, position)
+    position = _JSON_WHITESPACE.match(text, position + 1).end()
+    if text.startswith("]", position):
+        position += 1
+    else:
+        while True:
+            item, position = decoder.raw_decode(text, position)
+            yield item
+            position = _JSON_WHITESPACE.match(text, position).end()
+            if text.startswith(",", position):
+                position = _JSON_WHITESPACE.match(text, position + 1).end()
+                continue
+            if text.startswith("]", position):
+                position += 1
+                break
+            raise json.JSONDecodeError("Expecting ',' delimiter", text, position)
+    if _JSON_WHITESPACE.match(text, position).end() != len(text):
+        raise json.JSONDecodeError("Extra data", text, position)
 
 
 # --------------------------------------------------------------------------

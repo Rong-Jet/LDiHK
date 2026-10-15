@@ -16,12 +16,16 @@ history, exactly like the English ``watch-history`` parser does.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from backend.ingestion.models import ParseResult, ParseWarning, ParsedEvent
 from backend.ingestion.parsers import search_history, watch_history
-from backend.ingestion.parsers.takeout_activity import iter_activity_cards
+from backend.ingestion.parsers.takeout_activity import (
+    is_json_array,
+    iter_activity_cards,
+    iter_json_array,
+)
 
 WATCH = "watch"
 SEARCH = "search"
@@ -49,45 +53,72 @@ def _parse_json(content: bytes) -> ParseResult:
         warnings.append(ParseWarning(code="invalid_utf8", sample=None))
 
     try:
-        payload = json.loads(text)
+        if is_json_array(text):
+            # Decode record by record so large localized histories stay
+            # within a 512 MB instance (see takeout_activity.iter_json_array).
+            records: Iterable[Any] = iter_json_array(text)
+        else:
+            payload = json.loads(text)
+            records = _json_records(payload)
+            if records is None:
+                return _result(
+                    [], warnings + [ParseWarning(code="json_shape_unsupported")], 0
+                )
+
+        # One pass. Records with a link are converted immediately; link-less
+        # ones (e.g. "watched a removed video") are kept until the file's
+        # dominant kind is known, then emitted in their original position.
+        entries: list[tuple[str | None, Any]] = []
+        kinds: list[str | None] = []
+        records_seen = 0
+        for sequence, record in enumerate(records, start=1):
+            records_seen = sequence
+            if not isinstance(record, dict):
+                kinds.append(None)
+                entries.append(
+                    (
+                        "malformed",
+                        ParseWarning(
+                            code="malformed_json_record", sample=_sample(sequence)
+                        ),
+                    )
+                )
+                continue
+            kind = _classify_json_record(record)
+            kinds.append(kind)
+            if kind == SEARCH:
+                entries.append(
+                    (kind, search_history.parse_search_json_record(record, sequence=sequence))
+                )
+            elif kind == WATCH:
+                entries.append(
+                    (kind, watch_history.parse_watch_json_record(record, sequence=sequence))
+                )
+            else:
+                entries.append((None, (sequence, record)))
     except json.JSONDecodeError:
         return _result([], warnings + [ParseWarning(code="json_decode_failed")], 0)
     del text
 
-    records = _json_records(payload)
-    if records is None:
-        return _result([], warnings + [ParseWarning(code="json_shape_unsupported")], 0)
-
-    kinds = [_classify_json_record(record) for record in records]
     file_kind = _file_kind(kinds)
     events: list[ParsedEvent] = []
-
-    for sequence, (record, kind) in enumerate(zip(records, kinds), start=1):
-        if not isinstance(record, dict):
-            warnings.append(
-                ParseWarning(code="malformed_json_record", sample=_sample(sequence))
-            )
+    for kind, payload in entries:
+        if kind == "malformed":
+            warnings.append(payload)
             continue
-
-        effective_kind = kind or (WATCH if file_kind == WATCH else None)
-        if effective_kind == SEARCH:
-            event, record_warnings = search_history.parse_search_json_record(
-                record, sequence=sequence
-            )
-        elif effective_kind == WATCH:
-            event, record_warnings = watch_history.parse_watch_json_record(
-                record, sequence=sequence
-            )
-        else:
-            continue
-
+        if kind is None:
+            if file_kind != WATCH:
+                continue
+            sequence, record = payload
+            payload = watch_history.parse_watch_json_record(record, sequence=sequence)
+        event, record_warnings = payload
         warnings.extend(record_warnings)
         if event is not None:
             events.append(event)
 
-    if file_kind is None and records:
+    if file_kind is None and records_seen:
         warnings.append(ParseWarning(code="youtube_activity_unrecognized"))
-    return _result(events, warnings, len(records))
+    return _result(events, warnings, records_seen)
 
 
 def _json_records(payload: Any) -> list[Any] | None:
