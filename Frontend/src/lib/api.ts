@@ -187,7 +187,8 @@ export async function apiFetchJson<T>(url: string, options: ApiRequestOptions = 
 // ---------------------------------------------------------------------------
 
 export type ImportState = 'queued' | 'running' | 'completed' | 'failed';
-export type EnrichmentState = 'queued' | 'running' | 'completed' | 'failed' | null;
+/** `unavailable`: no YouTube API key is configured, durations stay estimated. */
+export type EnrichmentState = 'queued' | 'running' | 'completed' | 'failed' | 'unavailable' | null;
 
 export interface ImportStatus {
   import_id: string;

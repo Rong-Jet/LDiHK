@@ -516,10 +516,20 @@ def _status_payload(job: ImportJob) -> dict[str, object]:
         "created_at": _serialize_timestamp(job.created_at),
         "started_at": _serialize_timestamp(job.started_at),
         "finished_at": _serialize_timestamp(job.finished_at),
-        "enrichment_status": job.enrichment_status,
+        "enrichment_status": _public_enrichment_status(job.enrichment_status),
         "enrichment_started_at": _serialize_timestamp(job.enrichment_started_at),
         "enrichment_finished_at": _serialize_timestamp(job.enrichment_finished_at),
     }
+
+
+def _public_enrichment_status(status: str | None) -> str | None:
+    # A job nobody will process is reported as "unavailable" rather than
+    # "queued", so clients stop waiting for durations that never arrive.
+    from backend.background import enrichment_available
+
+    if status == "queued" and not enrichment_available():
+        return "unavailable"
+    return status
 
 
 def _serialize_timestamp(value: datetime | str | None) -> str | None:

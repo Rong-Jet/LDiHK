@@ -379,5 +379,43 @@ class WorkerLoopTests(unittest.TestCase):
         self.assertFalse(thread.is_alive())
 
 
+
+class EnrichmentAvailabilityTests(unittest.TestCase):
+    def _job(self, enrichment_status):
+        return ImportJob(
+            import_id="00000000-0000-0000-0000-000000000003",
+            user_id="ldihk-cosmic-nebula-abcdefgh2345",
+            status="completed",
+            records_seen=1,
+            records_imported=1,
+            warnings_count=0,
+            error_message=None,
+            created_at=None,
+            started_at=None,
+            finished_at=None,
+            enrichment_status=enrichment_status,
+        )
+
+    def test_queued_enrichment_without_api_key_is_reported_unavailable(self):
+        from backend.imports_api import status_payload
+
+        with mock.patch.dict(os.environ, {"RUN_WORKERS_IN_PROCESS": "true"}, clear=False):
+            os.environ.pop("YOUTUBE_API_KEY", None)
+            self.assertEqual(status_payload(self._job("queued"))["enrichment_status"], "unavailable")
+            self.assertEqual(status_payload(self._job("completed"))["enrichment_status"], "completed")
+
+        with mock.patch.dict(
+            os.environ, {"RUN_WORKERS_IN_PROCESS": "true", "YOUTUBE_API_KEY": "key"}, clear=False
+        ):
+            self.assertEqual(status_payload(self._job("queued"))["enrichment_status"], "queued")
+
+    def test_separate_worker_deployments_keep_queued_status(self):
+        from backend.imports_api import status_payload
+
+        with mock.patch.dict(os.environ, {"RUN_WORKERS_IN_PROCESS": "false"}, clear=False):
+            os.environ.pop("YOUTUBE_API_KEY", None)
+            self.assertEqual(status_payload(self._job("queued"))["enrichment_status"], "queued")
+
+
 if __name__ == "__main__":
     unittest.main()

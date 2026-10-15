@@ -317,6 +317,18 @@ def start_in_process_workers(
         return _started_workers
 
 
+def enrichment_available(environ: Mapping[str, str] = os.environ) -> bool:
+    """Whether queued duration-enrichment jobs will ever be processed.
+
+    With in-process workers (free hosting) the enrichment thread only starts
+    when YOUTUBE_API_KEY is set, so without it jobs would stay queued forever.
+    Separate worker deployments are assumed to have their own key.
+    """
+    if not in_process_workers_enabled(environ):
+        return True
+    return bool(environ.get("YOUTUBE_API_KEY", "").strip())
+
+
 def _truthy(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
 
