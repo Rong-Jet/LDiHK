@@ -38,6 +38,13 @@ DEFAULT_IMPORT_MAX_ATTEMPTS = 3
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 60.0
 USAGE_EVENT_INSERT_BATCH_SIZE = 500
 IMPORT_WARNING_INSERT_BATCH_SIZE = 1000
+# One VALUES row for usage_events. The SHA-256 columns (title_hash,
+# search_query_hash, event_fingerprint) are bytea since migration 006; they
+# are passed as hex and stored as 32 raw bytes.
+_USAGE_EVENT_ROW_SQL = (
+    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+    "decode(%s, 'hex'), decode(%s, 'hex'), %s, decode(%s, 'hex'), %s)"
+)
 NO_SUPPORTED_FILES_MESSAGE = (
     "no_supported_files: the archive contains no YouTube, TikTok or Instagram "
     "history files that LDiHK can read"
@@ -732,7 +739,7 @@ class PostgresImportRepository:
         if not events:
             return 0
 
-        row_placeholders = ", ".join(f"({', '.join(['%s'] * 15)})" for _ in events)
+        row_placeholders = ", ".join(_USAGE_EVENT_ROW_SQL for _ in events)
         parameters: list[object] = []
         for event in events:
             parameters.extend(

@@ -36,12 +36,21 @@ class PostgresSchemaContractTests(unittest.TestCase):
 
         self.assertEqual(
             [migration.version for migration in migrations],
-            ["001", "002", "003", "004", "005"],
+            ["001", "002", "003", "004", "005", "006"],
         )
         sql = compact_sql("\n".join(migration.sql for migration in migrations))
 
         self.assertIn("add column if not exists heartbeat_at timestamptz", sql)
         self.assertIn("add column if not exists attempts integer not null default 0", sql)
+        for dropped in (
+            "idx_usage_events_user_time",
+            "idx_usage_events_user_type_time",
+            "idx_usage_events_synthetic_type_time",
+        ):
+            self.assertIn(f"drop index if exists {dropped};", sql)
+        self.assertIn("alter column event_fingerprint type bytea", sql)
+        self.assertIn("alter column title_hash type bytea", sql)
+        self.assertIn("alter column search_query_hash type bytea", sql)
 
         for table in REQUIRED_TABLES:
             self.assertIn(f"create table if not exists {table}", sql)

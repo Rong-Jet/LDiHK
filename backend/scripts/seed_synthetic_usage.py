@@ -516,7 +516,9 @@ def _insert_usage_events(
             is_synthetic
         )
         VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            decode(%s, 'hex'), decode(%s, 'hex'), %s, decode(%s, 'hex'),
+            %s, %s, %s
         )
         ON CONFLICT (user_id, event_fingerprint) DO NOTHING
     """
