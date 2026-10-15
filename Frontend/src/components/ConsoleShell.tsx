@@ -4,7 +4,7 @@ import {
   Eye, EyeOff, ShieldCheck, Lock, AlertTriangle, CloudOff, Info, X, Trash2,
 } from 'lucide-react';
 import UploadZone from './UploadZone';
-import { UploadProvider } from '../hooks/useUploadController';
+import { UploadProvider, useUploadController } from '../hooks/useUploadController';
 import type { BackendStatus } from '../hooks/useBackendStatus';
 import type { ConsoleSession } from '../hooks/useConsoleSession';
 import { deleteMyData, describeApiError, isPendingEnrichment, usesLocalMockApi, type ImportStatus } from '../lib/api';
@@ -486,6 +486,7 @@ function ConsoleShellBody({
   const [showToken, setShowToken] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const upload = useUploadController();
 
   const { sessionToken, pipelineStatus, readyPlatforms, phase } = session;
 
@@ -502,6 +503,13 @@ function ConsoleShellBody({
   const handleLogout = () => {
     setShowUploadZone(false);
     session.logout();
+  };
+
+  const toggleUploadZone = () => {
+    // Upload state is shared by every upload zone, so a finished upload would
+    // still show "Upload Complete" when the panel is opened later.
+    if (!showUploadZone && upload.phase === 'SUCCESS') upload.reset();
+    setShowUploadZone(!showUploadZone);
   };
 
   const handleReset = async () => {
@@ -552,7 +560,7 @@ function ConsoleShellBody({
           {/* Ingest Data Toggle Button */}
           {hasData && (
             <button
-              onClick={() => setShowUploadZone(!showUploadZone)}
+              onClick={toggleUploadZone}
               className={`px-4 py-2.5 rounded-xl border transition-all text-xs font-bold flex items-center gap-2 duration-150 cursor-pointer ${
                 showUploadZone
                   ? 'bg-brand-navy text-white border-brand-navy shadow-md'
