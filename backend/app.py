@@ -9,6 +9,7 @@ from typing import Callable
 from flask import Flask, jsonify, request
 
 from backend.background import start_in_process_workers
+from backend.compression import configure_compression
 from backend.db import (
     DatabaseConfigError,
     connect,
@@ -69,6 +70,7 @@ def create_app(
     app = Flask(__name__)
     _configure_logging()
     configure_cors(app)
+    configure_compression(app)
     processed_path = Path(processed_path)
     sqlite_path = Path(sqlite_path)
     imports_repository = (
