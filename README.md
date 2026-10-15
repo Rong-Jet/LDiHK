@@ -49,13 +49,40 @@ deploys the API from it.
 1. Work on a branch. Pushing it or opening a pull request creates a free
    Netlify branch deploy or deploy preview. Previews run on the mock API
    (`Frontend/netlify.toml`), so they cannot read or write live data.
-2. Test real flows locally against a local backend (see Quick Start).
+2. Test real flows locally with the one-command local stack (below).
 3. Only the project owner merges to `main`, after testing. That triggers the
    production deploys. Each Netlify production deploy costs 15 of the 300
    free monthly credits, so batch changes into releases: about 20 production
    deploys in a month use up the credits and pause every site on the account.
 4. If a release adds a migration, run `python backend/scripts/run_migrations.py`
    against the production database right before merging it.
+
+## Local Stack (one command)
+
+Runs the whole app on your machine with no hosted services: embedded Postgres
+(data in `.dev-stack/`), a local S3 stand-in instead of R2, the API with its
+import and enrichment workers, and the frontend in live mode. A synthetic
+population is seeded on first start, so the Population page has people to
+compare with.
+
+```sh
+uv run python scripts/dev_stack.py
+```
+
+Then open http://localhost:4321/ and upload a Takeout ZIP.
+Ctrl+C stops everything.
+
+- `--fresh` starts from an empty database.
+- `--mock` runs only the frontend with simulated data.
+- `--database-url postgresql://...` uses your own Postgres (for example
+  `docker run -p 5432:5432 -e POSTGRES_PASSWORD=dev postgres:16`) instead of
+  the embedded one.
+- Set `YOUTUBE_API_KEY` in your shell to try duration enrichment.
+
+Needs uv and Node.js 22. The first start downloads Python 3.12 and the local
+service packages into uv's cache (the embedded Postgres has no wheels for
+newer Pythons). If uv cannot write its Python directory, point
+`UV_PYTHON_INSTALL_DIR` at a writable folder.
 
 ## Quick Start
 
