@@ -84,6 +84,21 @@ service packages into uv's cache (the embedded Postgres has no wheels for
 newer Pythons). If uv cannot write its Python directory, point
 `UV_PYTHON_INSTALL_DIR` at a writable folder.
 
+## Tests and CI
+
+- Backend: `uv run python -m unittest discover -s backend/tests`. Set
+  `TEST_DATABASE_URL` to a Postgres the tests may create throwaway databases
+  on (for example the local stack's) to also run the Postgres integration
+  tests.
+- Browser end-to-end: once, `npx playwright install --only-shell chromium` in
+  `Frontend/`; then `npm run test:e2e` starts a fresh local stack, uploads a
+  generated Takeout export and checks the dashboards, the population
+  comparison, signing in again and "Delete My Data". Set
+  `E2E_BASE_URL=http://localhost:4321` to reuse a stack you already started.
+- GitHub Actions (`.github/workflows/ci.yml`) runs all of this on every push,
+  on any branch, against Python 3.12 and Postgres 16. It only tests and never
+  deploys, so check it is green before merging to `main`.
+
 ## Quick Start
 
 Set up the local Python environment:
