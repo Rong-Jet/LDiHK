@@ -133,6 +133,9 @@ DISPATCH_TABLE: tuple[ParserRoute, ...] = (
         COMMENTS_LIVE_CHAT_CALLABLE,
         "comments.csv",
         "live chats.csv",
+        # German Takeout: "Kommentare/Kommentare.csv", one CSV per chat in "Livechats/".
+        "kommentare/*.csv",
+        "livechats/*.csv",
         "my-comments/*.html",
         "my-live-chat-messages/*.html",
         "youtube*/meine kommentare/*.html",

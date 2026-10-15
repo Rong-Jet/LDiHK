@@ -21,18 +21,21 @@ COMMENT_ID_FIELDS = (
     "Comment ID",
     "commentId",
     "comment_id",
+    "Kommentar-ID",  # de
 )
 LIVE_CHAT_ID_FIELDS = (
     "Live Chat ID",
     "Live Chat Id",
     "liveChatId",
     "live_chat_id",
+    "Livechat-ID",  # de
 )
 COMMENT_TIMESTAMP_FIELDS = (
     "Comment Create Timestamp",
     "Comment create timestamp",
     "Comment Created Timestamp",
     "Comment created timestamp",
+    "Zeitstempel der Erstellung des Kommentars",  # de
     "createdAt",
     "created_at",
     "timestamp",
@@ -43,6 +46,7 @@ LIVE_CHAT_TIMESTAMP_FIELDS = (
     "Live Chat create timestamp",
     "Live Chat Created Timestamp",
     "Live Chat created timestamp",
+    "Zeitstempel bei Erstellung des Livechats",  # de
     "createdAt",
     "created_at",
     "timestamp",
@@ -227,7 +231,7 @@ def _decode_content(content: bytes) -> tuple[str, list[ParseWarning]]:
 
 def _event_type_for_source_path(source_path: str) -> str:
     normalized = source_path.replace("\\", "/").lower()
-    if "live chat" in normalized or "live-chat" in normalized:
+    if "live chat" in normalized or "live-chat" in normalized or "livechat" in normalized:
         return LIVE_CHAT_EVENT_TYPE
     return COMMENT_EVENT_TYPE
 

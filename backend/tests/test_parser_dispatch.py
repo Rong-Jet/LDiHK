@@ -74,6 +74,24 @@ class ParserDispatchTests(unittest.TestCase):
                 source_path = f"Takeout/YouTube and YouTube Music/{suffix}"
                 self.assertEqual(parser_name_for_path(source_path), parser_name)
 
+    def test_routes_german_youtube_takeout_paths(self):
+        # File layout of a real German Takeout (2026).
+        cases = {
+            "Verlauf/Wiedergabeverlauf.html": "watch_history",
+            "Verlauf/Suchverlauf.html": "search_history",
+            "Abos/Abos.csv": "subscriptions",
+            "Playlists/Später ansehen-Videos.csv": "likes_playlists",
+            "Kommentare/Kommentare.csv": "comments_live_chat",
+            "Livechats/Livechat 1.csv": "comments_live_chat",
+            "Kanäle/Kanal.csv": None,
+            "Video-Metadaten/Videos.csv": None,
+        }
+
+        for suffix, parser_name in cases.items():
+            with self.subTest(suffix=suffix):
+                source_path = f"Takeout/YouTube und YouTube Music/{suffix}"
+                self.assertEqual(parser_name_for_path(source_path), parser_name)
+
     def test_routes_youtube_my_activity_json_to_search_parser(self):
         result = dispatch_member_path("Takeout/My Activity/YouTube/MyActivity.json")
 
