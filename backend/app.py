@@ -13,10 +13,10 @@ from backend.compression import configure_compression
 from backend.rate_limit import configure_rate_limits
 from backend.db import (
     DatabaseConfigError,
-    connect,
     is_database_unavailable_error,
     is_invalid_timezone_error,
 )
+from backend.db_pool import pooled_connect
 from backend.http_boundary import (
     PublicBoundaryError,
     configure_cors,
@@ -64,7 +64,7 @@ def create_app(
     processed_path: Path | str = DEFAULT_OUTPUT_PATH,
     sqlite_path: Path | str = DEFAULT_SQLITE_PATH,
     imports_repository: ImportRepository | None = None,
-    query_connection_factory: Callable[[], object] = connect,
+    query_connection_factory: Callable[[], object] = pooled_connect,
     *,
     enable_local_file_routes: bool | None = None,
     start_workers: bool = True,

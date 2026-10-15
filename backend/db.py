@@ -57,6 +57,18 @@ def connect(
         raise RuntimeError(
             "psycopg is required for Postgres connections; run `uv sync` first"
         ) from error
+    return psycopg.connect(
+        database_url,
+        **connection_kwargs(autocommit=autocommit, statement_timeout_ms=statement_timeout_ms),
+    )
+
+
+def connection_kwargs(
+    *,
+    autocommit: bool = False,
+    statement_timeout_ms: int | None = None,
+) -> dict[str, object]:
+    """Keyword arguments for psycopg.connect (shared with the pool)."""
     if statement_timeout_ms is None:
         statement_timeout_ms = _env_int(
             DATABASE_STATEMENT_TIMEOUT_ENV, DEFAULT_STATEMENT_TIMEOUT_MS
@@ -72,7 +84,7 @@ def connect(
     }
     if statement_timeout_ms > 0:
         connect_kwargs["options"] = f"-c statement_timeout={statement_timeout_ms}"
-    return psycopg.connect(database_url, **connect_kwargs)
+    return connect_kwargs
 
 
 def is_invalid_timezone_error(error: BaseException) -> bool:

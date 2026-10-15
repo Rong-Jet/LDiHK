@@ -32,6 +32,8 @@ declares every variable; secrets are entered in the dashboard.
 | `DATABASE_URL` | Yes | Web, workers, migrations | Neon pooled connection string (`...-pooler...neon.tech/...?sslmode=require`). Any `postgres://` or `postgresql://` URL works. |
 | `DATABASE_CONNECT_TIMEOUT_SECONDS` | No | All | Default `10`. |
 | `DATABASE_STATEMENT_TIMEOUT_MS` | No | Web, workers | Default `60000`; migrations run without a statement timeout. |
+| `DATABASE_POOL_SIZE` | No | Web | Default `4` (one per gunicorn thread). Request handlers reuse pooled connections; `0` opens a new connection per request. |
+| `DATABASE_POOL_MAX_IDLE_SECONDS` | No | Web | Default `60`. Pooled connections idle this long are closed, so they never keep a scale-to-zero database (Neon) awake. |
 | `FRONTEND_ALLOWED_ORIGINS` | Yes for browser access | Web | Comma-separated exact frontend origins, e.g. `https://ldihk.xyz`. |
 | `ALLOW_LOCALHOST_ORIGINS` | No | Web | Default `true`. Set `false` in production to drop the localhost dev origins. |
 | `ENABLE_LOCAL_FILE_ROUTES` | No | Web | Default `true`. Set `false` in production to remove the unauthenticated local-file routes. |

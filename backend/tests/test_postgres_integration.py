@@ -111,6 +111,9 @@ class PostgresIntegrationTests(unittest.TestCase):
     def tearDownClass(cls):
         import psycopg
 
+        from backend import db_pool
+
+        db_pool.close_pool()
         cls.env.stop()
         with psycopg.connect(TEST_DATABASE_URL, autocommit=True) as admin:
             admin.execute(f'DROP DATABASE IF EXISTS "{cls.database_name}" WITH (FORCE)')
@@ -343,6 +346,28 @@ class PostgresIntegrationTests(unittest.TestCase):
         self.assertEqual(len(payload["deciles"]), 7)
         self.assertTrue(all(day["top10"] > 0 for day in payload["deciles"]), payload["deciles"])
         self.assertGreater(payload["userDailyAverageHours"], 0)
+
+    def test_request_connections_are_pooled_and_rolled_back(self):
+        from backend.db_pool import pooled_connect
+
+        marker = self._new_id()
+        with self.assertNoLogs("psycopg.pool", level="WARNING"):
+            first = pooled_connect()
+            pid = first.execute("SELECT pg_backend_pid()").fetchone()[0]
+            first.execute(
+                "INSERT INTO users (id, external_id, is_synthetic) VALUES (%s, %s, false)",
+                (uuid.uuid4(), marker),
+            )
+            first.close()  # uncommitted: must be rolled back, not kept
+            second = pooled_connect()
+            try:
+                self.assertEqual(second.execute("SELECT pg_backend_pid()").fetchone()[0], pid)
+                self.assertEqual(
+                    second.execute("SELECT count(*) FROM users WHERE external_id = %s", (marker,)).fetchone()[0],
+                    0,
+                )
+            finally:
+                second.close()
 
     def test_delete_my_data_erases_only_that_user(self):
         keep_id, delete_id = self._new_id(), self._new_id()

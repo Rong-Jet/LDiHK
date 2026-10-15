@@ -10,7 +10,7 @@ from typing import Callable, Protocol
 
 from flask import Blueprint, jsonify, request
 
-from backend import db
+from backend import db, db_pool
 from backend.http_boundary import (
     PublicBoundaryError,
     identity_field_error_response,
@@ -103,7 +103,7 @@ class PostgresImportRepository:
         age: int | None = None,
         sex: str | None = None,
     ) -> ImportJob:
-        connection = db.connect()
+        connection = db_pool.pooled_connect()
         try:
             user_id = self._find_or_create_user(
                 connection,
@@ -157,7 +157,7 @@ class PostgresImportRepository:
         except ValueError:
             return None
 
-        connection = db.connect()
+        connection = db_pool.pooled_connect()
         try:
             row = connection.execute(
                 f"""
@@ -174,7 +174,7 @@ class PostgresImportRepository:
             connection.close()
 
     def get_latest_import_for_user(self, external_id: str) -> ImportJob | None:
-        connection = db.connect()
+        connection = db_pool.pooled_connect()
         try:
             row = connection.execute(
                 f"""
