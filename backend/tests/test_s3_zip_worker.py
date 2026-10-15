@@ -547,6 +547,56 @@ class S3ZipWorkerTests(unittest.TestCase):
         self.assertEqual(repository.records_imported, 0)
         self.assertEqual(repository.source_files[0].records_imported, 0)
 
+    def _run_with_statistics_hook(self, *, event_insert_results, refresh_error=None):
+        calls = []
+
+        class StatisticsRepository(FakeImportRepository):
+            def refresh_query_statistics(self):
+                calls.append("analyze")
+                if refresh_error is not None:
+                    raise refresh_error
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_zip = Path(tmpdir) / "takeout.zip"
+            write_zip(source_zip, {"watch-history.html": b"history"})
+            repository = StatisticsRepository(
+                ImportJob(
+                    id="import-stats",
+                    user_id="user-1",
+                    s3_bucket="bucket",
+                    s3_key="uploads/user-1/takeout.zip",
+                ),
+                event_insert_results=event_insert_results,
+            )
+            result = S3ZipImportWorker(
+                repository=repository,
+                s3_client=FakeS3Client(source_zip),
+                dispatch_member=fake_dispatch_member,
+                parser_loader=lambda dispatch: successful_parser,
+            ).process_one()
+        return result, calls
+
+    def test_statistics_are_refreshed_after_an_import_added_rows(self):
+        result, calls = self._run_with_statistics_hook(event_insert_results=[True, True])
+
+        self.assertEqual(result.status, IMPORT_STATUS_COMPLETED)
+        self.assertEqual(calls, ["analyze"])
+
+    def test_statistics_are_not_refreshed_when_nothing_new_was_imported(self):
+        result, calls = self._run_with_statistics_hook(event_insert_results=[False, False])
+
+        self.assertEqual(result.records_imported, 0)
+        self.assertEqual(calls, [])
+
+    def test_statistics_refresh_failure_does_not_fail_the_import(self):
+        with self.assertLogs("backend.ingestion.worker", level="WARNING"):
+            result, calls = self._run_with_statistics_hook(
+                event_insert_results=[True, True], refresh_error=RuntimeError("permission denied")
+            )
+
+        self.assertEqual(result.status, IMPORT_STATUS_COMPLETED)
+        self.assertEqual(calls, ["analyze"])
+
     def test_later_write_failure_rolls_back_partial_parser_output(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             source_zip = Path(tmpdir) / "takeout.zip"

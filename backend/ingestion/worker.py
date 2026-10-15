@@ -283,6 +283,8 @@ class S3ZipImportWorker:
                 source_files=failure_summary.source_files,
                 error_message=error_message,
             )
+        if summary.records_imported > 0:
+            self._refresh_query_statistics(job.id)
         return WorkerRunResult(
             import_id=job.id,
             status=IMPORT_STATUS_COMPLETED,
@@ -416,6 +418,21 @@ class S3ZipImportWorker:
                     warnings_count=summary.warnings_count,
                 )
                 self.repository.enqueue_enrichment_for_import(import_id=job.id)
+
+    def _refresh_query_statistics(self, import_id: str) -> None:
+        # Optional repository hook (PostgresImportRepository has it). The
+        # import is already committed, so a failure here only costs speed.
+        refresh = getattr(self.repository, "refresh_query_statistics", None)
+        if refresh is None:
+            return
+        try:
+            refresh()
+        except Exception:
+            LOGGER.warning(
+                "Could not refresh table statistics after import %s",
+                import_id,
+                exc_info=True,
+            )
 
     def _assert_s3_object_within_size_limit(self, job: ImportJob) -> None:
         metadata = self.s3_client.head_object(job.s3_bucket, job.s3_key)
@@ -814,7 +831,9 @@ class PostgresImportRepository:
                     channel_url = EXCLUDED.channel_url,
                     channel_title_hash = EXCLUDED.channel_title_hash,
                     source_path = EXCLUDED.source_path
-                RETURNING id
+                -- True only for a new row: re-uploading an export refreshes
+                -- known subscriptions without counting them as imported.
+                RETURNING (xmax = 0) AS inserted
                 """,
                 (
                     subscription.id,
@@ -827,7 +846,7 @@ class PostgresImportRepository:
                 ),
             ).fetchone()
             self._commit_unless_in_transaction()
-            return row is not None
+            return bool(row and row[0])
         except Exception:
             self._rollback_unless_in_transaction()
             raise
@@ -1003,6 +1022,22 @@ class PostgresImportRepository:
                     import_id,
                 ),
             )
+            self._commit_unless_in_transaction()
+        except Exception:
+            self._rollback_unless_in_transaction()
+            raise
+
+    def refresh_query_statistics(self) -> None:
+        """ANALYZE usage_events after an import added rows.
+
+        The dashboard queries are planned from table statistics that
+        autovacuum refreshes only now and then. Right after a large import
+        the stale statistics led the planner to a plan 250x slower than
+        normal (past the 60 s statement timeout) on a real 50,000-event
+        export. ANALYZE samples a bounded number of rows, so it stays cheap.
+        """
+        try:
+            self.connection.execute("ANALYZE usage_events")
             self._commit_unless_in_transaction()
         except Exception:
             self._rollback_unless_in_transaction()

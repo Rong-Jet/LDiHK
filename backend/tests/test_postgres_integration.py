@@ -369,6 +369,74 @@ class PostgresIntegrationTests(unittest.TestCase):
             finally:
                 second.close()
 
+    def test_german_export_reupload_imports_nothing_new(self):
+        ldihk_id = self._new_id()
+        now = datetime.now(timezone.utc)
+
+        def card(body: str, details: str = "") -> str:
+            # Takeout's activity card markup (see test_watch_history_parser).
+            caption = (
+                '<div class="content-cell mdl-cell mdl-cell--12-col mdl-typography--caption">'
+                f"<b>Produkte:</b><br>&emsp;YouTube<br><b>Details:</b><br>&emsp;{details}<br></div>"
+                if details
+                else ""
+            )
+            return (
+                '<div class="outer-cell mdl-cell mdl-cell--12-col mdl-shadow--2dp"><div class="mdl-grid">'
+                '<div class="header-cell mdl-cell mdl-cell--12-col"><p class="mdl-typography--title">YouTube<br></p></div>'
+                f'<div class="content-cell mdl-cell mdl-cell--6-col mdl-typography--body-1">{body}</div>{caption}</div></div>'
+            )
+
+        def stamp(minutes_ago: int) -> str:
+            # German exports print every time at UTC+2 labelled "MESZ".
+            local = now.astimezone(timezone(timedelta(hours=2))) - timedelta(minutes=minutes_ago)
+            return local.strftime("%d.%m.%Y, %H:%M:%S") + " MESZ"
+
+        history = "".join(
+            [card(f'<a href="https://www.youtube.com/watch?v={ldihk_id[-6:]}{i:05d}">Video {i}</a> angesehen<br>{stamp(30 * i + 5)}') for i in range(8)]
+            + [card(f'<a href="https://www.youtube.com/watch?v=adv{i:08d}">Werbung</a> angesehen<br>{stamp(30 * i + 20)}', "Von Google Anzeigen") for i in range(3)]
+            + [card(f"Hat Anzeigen bei YouTube Shorts angesehen<br>{stamp(7)}", "Von Google Anzeigen")]
+            + [card(f'<a href="https://www.youtube.com/post/Ugkx1">Beitrag</a> angesehen<br>{stamp(9)}')]
+        )
+        abos = "Kanal-ID,Kanal-URL,Kanaltitel\n" + "".join(
+            f"UC{ldihk_id[-6:]}{i:04d},http://www.youtube.com/channel/UC{ldihk_id[-6:]}{i:04d},Kanal {i}\n" for i in range(4)
+        )
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("Takeout/YouTube und YouTube Music/Verlauf/Wiedergabeverlauf.html", f"<html><body>{history}</body></html>")
+            archive.writestr("Takeout/YouTube und YouTube Music/Abos/Abos.csv", abos)
+        for name in ("first.zip", "again.zip"):
+            self.payloads[f"uploads/{ldihk_id}/{name}"] = buffer.getvalue()
+
+        from backend.ingestion.worker import PostgresImportRepository, S3ZipImportWorker
+
+        imported = []
+        for name in ("first.zip", "again.zip"):
+            response = self.client.post(
+                "/api/imports",
+                headers={"Authorization": f"Bearer {ldihk_id}"},
+                json={"s3_bucket": BUCKET, "s3_key": f"uploads/{ldihk_id}/{name}"},
+            )
+            self.assertEqual(response.status_code, 201)
+            with closing(self._connect()) as connection:
+                S3ZipImportWorker(repository=PostgresImportRepository(connection), s3_client=_BytesS3(self.payloads)).process_one()
+                imported.append(
+                    connection.execute(
+                        "SELECT records_imported, warnings_count FROM imports WHERE id = %s",
+                        (response.get_json()["import_id"],),
+                    ).fetchone()
+                )
+
+        # 8 watches + 4 subscriptions; the 3 ads, the ad summary and the post are skipped.
+        self.assertEqual(imported, [(12, 5), (0, 5)])
+        self.assertEqual(
+            self._count(
+                "SELECT count(*) FROM usage_events ue JOIN users u ON u.id = ue.user_id WHERE u.external_id = %s",
+                ldihk_id,
+            ),
+            8,
+        )
+
     def test_delete_my_data_erases_only_that_user(self):
         keep_id, delete_id = self._new_id(), self._new_id()
         self._upload_and_import(keep_id, "keep.zip", _watch_records(4, prefix=keep_id[-6:]))
