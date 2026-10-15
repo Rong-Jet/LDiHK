@@ -82,6 +82,8 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
   invalid_authorization: 'This LDiHK-ID is not valid. Please log in again.',
   backend_not_configured: 'The analytics backend is not configured (PUBLIC_API_URL).',
   unsupported_platform: 'Population benchmarks currently support YouTube only.',
+  rate_limited: 'Too many requests in a short time. Please wait a few minutes and try again.',
+  file_too_large: 'The archive is too large. Export only your history files and try again.',
 };
 
 export function describeApiError(error: unknown, fallback = 'Something went wrong while talking to the server.'): string {

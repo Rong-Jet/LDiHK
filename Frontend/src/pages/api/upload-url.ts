@@ -6,6 +6,13 @@ import { configuredBackendApiBase, isMockApiMode, shouldAllowImplicitMockApiMode
 import { isValidLdihkId } from '../../lib/ldihkId';
 import { presignZipUpload } from '../../lib/s3Presign';
 import { readUploadTargetConfig } from '../../lib/serverUploadConfig';
+import {
+  SIGNING_LIMIT_PER_ID,
+  SIGNING_LIMIT_PER_IP,
+  hitRateLimit,
+  maxUploadBytes,
+  parseUploadSize,
+} from '../../lib/uploadLimits';
 
 export const prerender = false;
 
@@ -69,7 +76,7 @@ export const GET: APIRoute = async () => {
   return json({ success: true, message: 'Pipeline status reset successfully.' });
 };
 
-export const POST: APIRoute = async ({ request }) => {
+export const POST: APIRoute = async ({ request, clientAddress }) => {
   const authHeader = request.headers.get('Authorization') || '';
   if (!authHeader.startsWith('Bearer ')) {
     return json({ error: 'missing_authorization' }, 401);
@@ -91,15 +98,39 @@ export const POST: APIRoute = async ({ request }) => {
   if (!s3Key) {
     return json({ error: 'invalid_filename', message: 'Only .zip archives can be uploaded.' }, 400);
   }
+
+  const parsedSize = parseUploadSize(body.size);
+  if ('error' in parsedSize) {
+    const limitMb = Math.round(maxUploadBytes() / (1024 * 1024));
+    return parsedSize.error === 'file_too_large'
+      ? json({ error: 'file_too_large', message: `The archive is larger than ${limitMb} MB.` }, 413)
+      : json({ error: 'invalid_size', message: 'The upload size is missing or invalid.' }, 400);
+  }
+
+  let ipAddress: string | null = null;
+  try {
+    ipAddress = clientAddress || null;
+  } catch {
+    // Some adapters cannot determine the client address.
+  }
+  const wait = hitRateLimit(`id:${ldihkId}`, SIGNING_LIMIT_PER_ID)
+    ?? (ipAddress ? hitRateLimit(`ip:${ipAddress}`, SIGNING_LIMIT_PER_IP) : null);
+  if (wait !== null) {
+    return new Response(
+      JSON.stringify({ error: 'rate_limited', message: `Too many uploads. Try again in ${Math.ceil(wait / 60)} min.` }),
+      { status: 429, headers: { ...JSON_HEADERS, 'Retry-After': String(wait) } }
+    );
+  }
   const contentType = typeof body.contentType === 'string' && body.contentType ? body.contentType : 'application/zip';
 
   const target = readUploadTargetConfig();
   if (!isMockApiMode && target.configured && target.config) {
     try {
-      const presignedUrl = await presignZipUpload(target.config, s3Key, contentType);
+      const presignedUrl = await presignZipUpload(target.config, s3Key, contentType, parsedSize.size);
       return json({
         url: presignedUrl,
         method: 'PUT',
+        // The browser sets Content-Length itself; it must equal `size`.
         headers: { 'Content-Type': contentType },
         s3Bucket: target.config.bucket,
         s3Key,

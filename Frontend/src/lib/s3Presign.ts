@@ -38,10 +38,16 @@ export function createUploadS3Client(config: S3UploadConfig): S3Client {
   });
 }
 
+/**
+ * Presigned PUT for one ZIP. `contentLength` becomes a signed header, so the
+ * storage rejects any upload whose size differs from the declared one: a
+ * signed URL cannot be reused to push an arbitrarily large file.
+ */
 export async function presignZipUpload(
   config: S3UploadConfig,
   key: string,
   contentType: string,
+  contentLength: number,
   expiresIn: number = PRESIGNED_UPLOAD_TTL_SECONDS
 ): Promise<string> {
   const client = createUploadS3Client(config);
@@ -49,6 +55,7 @@ export async function presignZipUpload(
     Bucket: config.bucket,
     Key: key,
     ContentType: contentType,
+    ContentLength: contentLength,
   });
   return getSignedUrl(client, command, { expiresIn });
 }

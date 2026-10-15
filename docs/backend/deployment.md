@@ -38,6 +38,8 @@ declares every variable; secrets are entered in the dashboard.
 | `RUN_WORKERS_IN_PROCESS` | Yes on free hosting | Web | `true` starts the import and enrichment threads inside the web process. |
 | `WORKER_ACTIVE_WINDOW_SECONDS` | No | Web | Default `120`. In-process workers only poll the database this long after the last API request; import status polling keeps them active during an import. Longer values keep a free Neon database awake longer. |
 | `WORKER_POLL_INTERVAL_SECONDS` | No | Web | Default `30`. Poll interval while active; new imports wake the worker immediately. |
+| `RATE_LIMITS_ENABLED` | No | Web | Default `true`. In-memory limits: imports 20/hour per ID and 300/hour overall, population 120/hour per ID, failed logins 600/hour overall. Over the limit: `429 rate_limited` with `Retry-After`. |
+| `CLIENT_IP_HEADER` | No | Web | Header that carries the real client IP, e.g. `True-Client-IP`. Enables per-IP limits (imports 60/hour, failed logins 30 per 10 minutes). Leave empty unless verified: Render appends to a client-supplied `X-Forwarded-For`, so that header can be spoofed. |
 | `ALLOW_IDENTIFIER_DIMENSIONS` | Yes | Web | Set to `true` for top-channel and top-video dashboard queries. |
 | `QUERY_BUCKET_TIMEZONE` | No | Web | Default bucket timezone when a query sends no `options.timezone`. Any IANA name; default `UTC`. |
 | `S3_ENDPOINT_URL` | Yes for R2 | Web, import worker, smoke script | `https://<account-id>.r2.cloudflarestorage.com`. Leave empty for AWS S3. |
