@@ -10,3 +10,20 @@
 [build.environment]
   # Astro 6 requires Node >= 22.12.
   NODE_VERSION = "22"
+
+# Release rule: the production branch (`main`) is the live site, ldihk.xyz.
+# Changes are merged there only after the project owner has tested them; each
+# production deploy costs 15 of the 300 free monthly credits.
+[context.production.environment]
+  PUBLIC_MOCK_API = "false"
+
+# Deploy previews (pull requests) and branch deploys are free on Netlify's
+# credit plans. They run on the local mock API (with a "Mock mode" banner), so
+# a preview can never read or write the live backend, database or upload
+# bucket, even though the site-wide variables are set. Values in this file
+# override the Netlify UI for these contexts.
+[context.deploy-preview.environment]
+  PUBLIC_MOCK_API = "true"
+
+[context.branch-deploy.environment]
+  PUBLIC_MOCK_API = "true"

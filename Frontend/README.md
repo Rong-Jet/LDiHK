@@ -83,6 +83,11 @@ directory must be `Frontend`. In the Netlify site
 settings, set `PUBLIC_API_URL` and `PUBLIC_MOCK_API=false` (Builds scope) and
 the upload variables above (Functions scope), then trigger a deploy.
 
+Deploy previews and branch deploys are forced into mock mode by
+`netlify.toml`, so they never call the live backend or upload bucket. Only
+merges to `main` (done by the project owner after testing) deploy to
+production.
+
 ## Contract Notes
 
 See `./frontend-api-spec.md` for identity, upload, query,

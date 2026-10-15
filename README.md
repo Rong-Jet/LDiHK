@@ -41,6 +41,22 @@ Moving from the hackathon deployment (Render workers, Supabase, AWS S3): the
 event dedupe key changed, so start with a fresh Neon database and re-upload
 exports rather than copying old `usage_events` rows across.
 
+## Release Workflow
+
+`main` is the live site: Netlify deploys the frontend to ldihk.xyz and Render
+deploys the API from it.
+
+1. Work on a branch. Pushing it or opening a pull request creates a free
+   Netlify branch deploy or deploy preview. Previews run on the mock API
+   (`Frontend/netlify.toml`), so they cannot read or write live data.
+2. Test real flows locally against a local backend (see Quick Start).
+3. Only the project owner merges to `main`, after testing. That triggers the
+   production deploys. Each Netlify production deploy costs 15 of the 300
+   free monthly credits, so batch changes into releases: about 20 production
+   deploys in a month use up the credits and pause every site on the account.
+4. If a release adds a migration, run `python backend/scripts/run_migrations.py`
+   against the production database right before merging it.
+
 ## Quick Start
 
 Set up the local Python environment:

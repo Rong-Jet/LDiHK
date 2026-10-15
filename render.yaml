@@ -1,12 +1,16 @@
 # Render Blueprint for the free LDiHK backend: one free Docker web service
 # that also runs the import and enrichment workers as background threads.
 # Secrets marked `sync: false` are entered in the Render dashboard.
+#
+# Release rule: this service deploys the `main` branch, which is the live
+# site. Changes reach `main` only after the project owner has tested them.
 services:
   - type: web
     name: ldihk-api
     runtime: docker
     plan: free
     dockerfilePath: ./Dockerfile
+    branch: main
     healthCheckPath: /health
     autoDeploy: true
     envVars:
