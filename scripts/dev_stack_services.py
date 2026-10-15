@@ -44,6 +44,10 @@ def run_postgres(data_dir: str) -> None:
 
     pgdata = Path(data_dir).resolve()
     pgdata.mkdir(parents=True, exist_ok=True)
+    # A server left running by a killed stack may be unusable (on Windows its
+    # child processes fail once the console that started it is gone). The
+    # stack owns this data directory, so always start from a fresh server.
+    _stop_postgres(pgdata)
     try:
         server = pgserver.get_server(pgdata, cleanup_mode="stop")
     except (subprocess.TimeoutExpired, AssertionError):
@@ -62,8 +66,14 @@ def run_postgres(data_dir: str) -> None:
     _wait_for_stdin_close()
     server.cleanup()
     # pgserver only stops the server once no other handle is left, and handles
-    # of killed helpers stay listed forever. The stack owns this data
-    # directory, so stop the server explicitly and reset the handle list.
+    # of killed helpers stay listed forever, so stop it explicitly.
+    _stop_postgres(pgdata)
+
+
+def _stop_postgres(pgdata: Path) -> None:
+    """Stop the server on pgdata if one runs, and reset pgserver's handle list."""
+    import pgserver
+
     pg_ctl = Path(pgserver.__file__).parent / "pginstall" / "bin" / ("pg_ctl.exe" if os.name == "nt" else "pg_ctl")
     if (pgdata / "postmaster.pid").exists():
         subprocess.run(
