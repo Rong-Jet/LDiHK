@@ -545,9 +545,21 @@ Content-Type: application/json
 The browser calls this endpoint directly on the backend. The live population
 benchmark compares YouTube watch time only (`platforms: ["youtube"]`; anything
 else is `400 unsupported_platform`), and its days and hours are UTC so every
-user is measured on the same clock. When the user has no YouTube watch history
-in the range the response is `{"ready": false, "message": ...}`. Other
-multi-product population benchmarks are mock-only.
+user is measured on the same clock. Other multi-product population benchmarks
+are mock-only.
+
+Who the user is compared with:
+
+- Other real users whose YouTube history overlaps the range. The requesting
+  user is never part of their own comparison group. Each person counts on the
+  days inside their own history (a day without watching counts as 0 hours),
+  but not before their export starts or after it ends.
+- With `includeSynthetic: true`, the synthetic profiles. They were generated
+  for a fixed window (`syntheticBaseline`); requested days outside that window
+  are compared with the same weekday inside it, so any date range works.
+- Comparisons against fewer than 5 other people are refused
+  (`reason: "insufficient_population"`), because percentiles of such a small
+  group would reveal individual usage.
 
 Request body:
 
@@ -582,6 +594,8 @@ Ready response:
   "userDailyAverageHours": 3.12,
   "includeSynthetic": true,
   "customPercentile": 90,
+  "populationSize": 412,
+  "syntheticBaseline": { "startDate": "2026-05-01", "endDate": "2026-05-14" },
   "distribution": [
     { "hours": 0, "density": 15 },
     { "hours": 1, "density": 85 },
@@ -607,13 +621,32 @@ Ready response:
 }
 ```
 
-Not-ready response:
+- `populationSize`: number of other people (real and synthetic) in the
+  comparison.
+- `syntheticBaseline`: the synthetic profiles' window, or `null` when synthetic
+  data is off or not seeded.
+- `distribution`: number of people per 1-hour bucket of average daily watch
+  time (24 means 24 h or more).
+
+Not-ready responses (HTTP 200; show `message` to the user):
 
 ```json
 {
   "schema_version": "youtube_usage.population.v1",
   "ready": false,
-  "message": "Dataset not ready. Please ingest YouTube data first."
+  "reason": "no_user_data",
+  "message": "No YouTube watch history in the selected date range."
+}
+```
+
+```json
+{
+  "schema_version": "youtube_usage.population.v1",
+  "ready": false,
+  "reason": "insufficient_population",
+  "populationSize": 3,
+  "minPopulationSize": 5,
+  "message": "Fewer than 5 other people have YouTube data for this range, ..."
 }
 ```
 

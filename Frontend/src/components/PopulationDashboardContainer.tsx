@@ -232,6 +232,16 @@ function PopulationDashboardContent() {
   // In production mode the backend may not yet serve population comparison data;
   // hasPopulationData tracks whether we received real comparative metrics.
   const hasPopulationData = popData?.hasPopulationData === true;
+  const tooFewPeople = popData?.reason === 'insufficient_population';
+  const unavailableMessage =
+    popData?.message ??
+    'There is no YouTube watch history in the selected date range. Choose a range with data, or upload a YouTube Takeout export.';
+  const comparisonNote = popData?.populationSize
+    ? ` Compared with ${popData.populationSize.toLocaleString()} other ${popData.populationSize === 1 ? 'person' : 'people'}` +
+      (popData.includeSynthetic && popData.syntheticBaseline
+        ? ` (synthetic profiles act as a weekday baseline from ${popData.syntheticBaseline.startDate} to ${popData.syntheticBaseline.endDate}).`
+        : '.')
+    : '';
 
   const content = (
       <div className="space-y-6 text-left">
@@ -265,14 +275,14 @@ function PopulationDashboardContent() {
                 </>
               ) : popData && !hasPopulationData ? (
                 <h2 className="text-2xl sm:text-3xl font-black tracking-tight leading-tight">
-                  Nothing to compare in this range yet
+                  {tooFewPeople ? 'Not enough people to compare with yet' : 'Nothing to compare in this range yet'}
                 </h2>
               ) : null}
               <p className="text-xs text-white/70 max-w-xl leading-relaxed pt-1">
                 {popData && !hasPopulationData
-                  ? "There is no YouTube watch history in the selected date range. Choose a range with data, or upload a YouTube Takeout export."
+                  ? unavailableMessage
                   : percentileNuance
-                  ? `${percentileNuance.description} Days and hours are compared in UTC so every user is measured on the same clock.`
+                  ? `${percentileNuance.description} Days and hours are compared in UTC so every user is measured on the same clock.${comparisonNote}`
                   : ""}
               </p>
             </div>
@@ -668,7 +678,7 @@ function PopulationDashboardContent() {
                   <div className="text-center p-6 space-y-3 max-w-xs bg-brand-beige/10 rounded-2xl border border-brand-navy/5">
                     <TrendingUp className="w-8 h-8 text-brand-navy/40 mx-auto" />
                     <p className="text-xs font-bold text-brand-navy">Population distribution unavailable</p>
-                    <p className="text-[10px] text-brand-navy/50 leading-relaxed">There is no YouTube watch history in the selected range to place on the distribution.</p>
+                    <p className="text-[10px] text-brand-navy/50 leading-relaxed">{unavailableMessage}</p>
                   </div>
                 ) : isPopLoading || !popData ? (
                   <div className="h-full flex items-center justify-center">
@@ -784,7 +794,7 @@ function PopulationDashboardContent() {
               <div className="text-center p-12 py-16 space-y-3 max-w-md mx-auto bg-brand-beige/10 rounded-2xl border border-brand-navy/5">
                 <Clock className="w-10 h-10 text-brand-navy/25 mx-auto" />
                 <p className="text-sm font-bold text-brand-navy">No comparison for this range</p>
-                <p className="text-xs text-brand-navy/50 leading-relaxed">Hour-by-hour divergence analysis appears once the selected range contains YouTube watch history.</p>
+                <p className="text-xs text-brand-navy/50 leading-relaxed">{tooFewPeople ? unavailableMessage : 'Hour-by-hour divergence analysis appears once the selected range contains YouTube watch history.'}</p>
               </div>
             ) : (
               <div className="space-y-4">

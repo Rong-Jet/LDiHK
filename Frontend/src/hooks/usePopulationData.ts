@@ -25,7 +25,13 @@ export interface PopulationQueryResult {
   ready: boolean;
   /** true when the response carries real population comparison data */
   hasPopulationData: boolean;
+  /** Why there is no comparison: 'no_user_data' or 'insufficient_population'. */
+  reason?: string;
   message?: string;
+  /** Number of other people (real and synthetic) in the comparison. */
+  populationSize: number | null;
+  /** Days the synthetic profiles were generated for (used as a weekday baseline). */
+  syntheticBaseline: { startDate: string; endDate: string } | null;
   userPercentile: number | null;
   userDailyAverageHours: number | null;
   includeSynthetic: boolean;
@@ -61,7 +67,10 @@ const fetchPopulationData = async (
   return {
     ready,
     hasPopulationData: data.hasPopulationData ?? ready,
+    reason: data.reason,
     message: data.message,
+    populationSize: data.populationSize ?? null,
+    syntheticBaseline: data.syntheticBaseline ?? null,
     userPercentile: data.userPercentile ?? null,
     userDailyAverageHours: data.userDailyAverageHours ?? null,
     includeSynthetic: data.includeSynthetic ?? includeSynthetic,

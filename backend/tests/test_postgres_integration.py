@@ -301,6 +301,49 @@ class PostgresIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(response.get_json()["rows"][0]["estimated_watch_seconds"], 60)
 
+    def test_population_needs_five_others_and_maps_synthetic_baseline(self):
+        from backend.population_api import MIN_POPULATION_SIZE
+        from backend.scripts.seed_synthetic_usage import seed_synthetic_usage
+
+        # Real users ~500 days back: nobody from the other tests overlaps, and
+        # the synthetic seed (the last 14 days) lies outside the range.
+        requester, *others = [self._new_id() for _ in range(3)]
+        for ldihk_id in (requester, *others):
+            records = _watch_records(5, newest_hours_ago=500 * 24, prefix=ldihk_id[-6:])
+            self._upload_and_import(ldihk_id, "old.zip", records)
+        watch_day = (datetime.now(timezone.utc) - timedelta(hours=500 * 24)).date()
+        request = {
+            "platforms": ["youtube"],
+            "startDate": (watch_day - timedelta(days=3)).isoformat(),
+            "endDate": (watch_day + timedelta(days=3)).isoformat(),
+            "customPercentile": 90,
+        }
+        auth = {"Authorization": f"Bearer {requester}"}
+
+        real_only = self.client.post("/api/population", headers=auth, json={**request, "includeSynthetic": False})
+        self.assertEqual(real_only.status_code, 200)
+        self.assertEqual(
+            {key: real_only.get_json()[key] for key in ("ready", "reason", "populationSize")},
+            {"ready": False, "reason": "insufficient_population", "populationSize": len(others)},
+        )
+
+        seed_synthetic_usage(
+            total_profiles=12,
+            total_days=14,
+            seed_run_name=f"it-{uuid.uuid4().hex[:8]}",
+            random_seed=7,
+            run_schema_migrations=False,
+        )
+        response = self.client.post("/api/population", headers=auth, json={**request, "includeSynthetic": True})
+        payload = response.get_json()
+        self.assertTrue(payload["ready"], payload)
+        self.assertGreaterEqual(payload["populationSize"], MIN_POPULATION_SIZE)
+        baseline_end = datetime.fromisoformat(payload["syntheticBaseline"]["endDate"]).date()
+        self.assertLessEqual(abs((baseline_end - datetime.now(timezone.utc).date()).days), 1)
+        self.assertEqual(len(payload["deciles"]), 7)
+        self.assertTrue(all(day["top10"] > 0 for day in payload["deciles"]), payload["deciles"])
+        self.assertGreater(payload["userDailyAverageHours"], 0)
+
     def test_delete_my_data_erases_only_that_user(self):
         keep_id, delete_id = self._new_id(), self._new_id()
         self._upload_and_import(keep_id, "keep.zip", _watch_records(4, prefix=keep_id[-6:]))
