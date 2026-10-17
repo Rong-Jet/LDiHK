@@ -27,3 +27,9 @@
 
 [context.branch-deploy.environment]
   PUBLIC_MOCK_API = "true"
+
+# Staging: the `free-hosting` branch deploy talks to the staging backend on
+# Render (PUBLIC_API_URL is set for this branch in the Netlify UI). Upload URLs
+# come from that backend, so this site needs no storage keys.
+[context.free-hosting.environment]
+  PUBLIC_MOCK_API = "false"
