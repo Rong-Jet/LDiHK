@@ -44,9 +44,14 @@ declares every variable; secrets are entered in the dashboard.
 | `CLIENT_IP_HEADER` | No | Web | Header that carries the real client IP, e.g. `True-Client-IP`. Enables per-IP limits (imports 60/hour, failed logins 30 per 10 minutes). Leave empty unless verified: Render appends to a client-supplied `X-Forwarded-For`, so that header can be spoofed. |
 | `ALLOW_IDENTIFIER_DIMENSIONS` | Yes | Web | Set to `true` for top-channel and top-video dashboard queries. |
 | `QUERY_BUCKET_TIMEZONE` | No | Web | Default bucket timezone when a query sends no `options.timezone`. Any IANA name; default `UTC`. |
+| `UPLOADS_ENABLED` | No | Web | Default `true`. `false` stops issuing upload URLs (kill switch). |
+| `UPLOAD_MAX_STORED_BYTES` | No | Web | Default `2147483648` (2 GiB). Archives that may exist in the bucket at once; new upload URLs are refused (`429 upload_storage_full`) beyond it. |
+| `UPLOAD_MAX_PER_MONTH` | No | Web | Default `10000`. Upload URLs per calendar month (UTC); then `429 upload_budget_exhausted` until the 1st. |
+| `UPLOAD_URL_TTL_SECONDS` | No | Web | Default `120`. How long an upload URL can start an upload. |
+| `RUN_MIGRATIONS_ON_START` | No | Web | Default `true`. With `RUN_WORKERS_IN_PROCESS=true`, pending migrations run when the service starts (Render free has no pre-deploy step). |
 | `S3_ENDPOINT_URL` | Yes for R2 | Web, import worker, smoke script | `https://<account-id>.r2.cloudflarestorage.com`. Leave empty for AWS S3. |
 | `S3_BUCKET` | Yes | Web, import worker | Bucket where clients upload ZIPs. The API only accepts imports from this bucket. |
-| `AWS_ACCESS_KEY_ID` | Yes | Import worker | R2 (or AWS) access key that can read `uploads/*`. |
+| `AWS_ACCESS_KEY_ID` | Yes | Web, import worker | R2 (or AWS) key with object read and write on the bucket: the API signs upload URLs, the worker reads and deletes archives. |
 | `AWS_SECRET_ACCESS_KEY` | Yes | Import worker | Secret for the key above. |
 | `AWS_SESSION_TOKEN` | No | Import worker | Only for temporary AWS STS credentials. Leave empty for long-lived IAM access keys and R2 tokens. |
 | `AWS_REGION` | Yes | Import worker | `auto` for R2, the bucket region for AWS. |
@@ -85,9 +90,10 @@ database URL. With in-process workers, that is one service.
    region (Frankfurt for Render `frankfurt`, US East for `virginia`/`ohio`).
 2. In the Neon console, open **Connect** and copy the **pooled** connection
    string (host contains `-pooler`). It already ends in `?sslmode=require`.
-3. Put it in `DATABASE_URL` locally and on Render.
-4. Run migrations once from a development machine. Render's free plan has no
-   pre-deploy command or one-off jobs:
+3. Put it in `DATABASE_URL` on Render (and locally for scripts).
+4. Migrations run when the service starts (`RUN_MIGRATIONS_ON_START`, on by
+   default with in-process workers), because Render's free plan has no
+   pre-deploy command or one-off jobs. To run them by hand instead:
 
 ```sh
 python backend/scripts/run_migrations.py
@@ -132,6 +138,7 @@ The web service exposes the hosted API routes:
 GET /health
 GET /api/me
 DELETE /api/me
+POST /api/uploads
 POST /api/imports
 GET /api/imports/{import_id}
 POST /api/query
@@ -170,15 +177,15 @@ empty).
 
 ## Cloudflare R2 Setup
 
-The frontend owns browser-to-bucket upload through a presigned PUT URL. The
-backend validates queued import requests and the import worker reads the ZIP.
+The backend issues presigned PUT URLs (`POST /api/uploads`), the browser
+uploads straight to the bucket, and the import worker reads the ZIP and
+deletes it when the import ends. The site on Netlify holds no storage keys.
 
 1. In the Cloudflare dashboard, open **R2**, create a bucket (e.g.
    `ldihk-uploads`), and note the account ID.
 2. Create an **R2 API token** with Object Read & Write, scoped to that bucket.
    Use its access key ID and secret for `AWS_ACCESS_KEY_ID` /
-   `AWS_SECRET_ACCESS_KEY` (backend) and `CUSTOM_AWS_ACCESS_KEY_ID` /
-   `CUSTOM_AWS_SECRET_ACCESS_KEY` (Netlify).
+   `AWS_SECRET_ACCESS_KEY` on the backend only.
 3. Set `S3_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com` and
    `AWS_REGION=auto`.
 4. Add a CORS policy to the bucket so browsers can upload:
@@ -188,15 +195,40 @@ backend validates queued import requests and the import worker reads the ZIP.
   {
     "AllowedOrigins": ["https://ldihk.xyz", "http://localhost:4321"],
     "AllowedMethods": ["PUT"],
-    "AllowedHeaders": ["content-type"],
+    "AllowedHeaders": ["content-type", "if-none-match"],
     "ExposeHeaders": ["ETag"],
     "MaxAgeSeconds": 3600
   }
 ]
 ```
 
+   Add each preview origin you test with (e.g. the Netlify branch deploy).
 5. Add an object lifecycle rule that deletes objects under `uploads/` after
-   1 day. Imports are processed within minutes; raw exports should not linger.
+   1 day, as a backstop: the backend already deletes each archive when its
+   import ends, and deletes unused uploads after their URL expired.
+
+### Staying inside the free tier
+
+R2's free tier per month is 10 GB-month of storage (the average of each
+day's peak), 1 million Class A operations (uploads, listings) and 10 million
+Class B operations (reads); deletes and egress are free. Cloudflare has no
+spending cap, so the backend enforces one:
+
+| Limit | Default | Effect |
+| --- | --- | --- |
+| `UPLOAD_MAX_STORED_BYTES` | 2 GiB | Storage peak stays at most 2 GB of the 10 GB-month. |
+| `UPLOAD_MAX_PER_MONTH` | 10,000 | At most about 10,000 uploads (Class A) a month. |
+| Upload URL | single use, exact size, 120 s | A URL creates one object of the signed size; repeats fail with `412`. |
+| Deletion | after each import | Archives exist for minutes; deletes are free. |
+| `UPLOADS_ENABLED=false` | | Stops all new uploads at once. |
+
+The backend never lists the bucket (a billed operation): deletions use the
+keys recorded in Postgres. Reads are two per import (HeadObject, GetObject).
+Remaining exposure: someone holding a valid URL can repeat the request until
+it expires; those repeats fail with `412`, and Cloudflare does not document
+whether failed requests count as operations. Set a budget alert in the
+Cloudflare dashboard (Billing, Budget alerts) as a tripwire; revoking the R2
+token stops every outstanding URL immediately.
 
 Required upload key format:
 

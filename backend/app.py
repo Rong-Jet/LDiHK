@@ -44,6 +44,7 @@ from backend.query_api import (
     validate_query_request,
     validate_timezone_name,
 )
+from backend.uploads import create_uploads_blueprint, forget_user_reservations, user_upload_objects
 from backend.user_data import delete_user_data, delete_user_uploads
 from backend.youtube_sql import (
     DEFAULT_SQLITE_PATH,
@@ -86,6 +87,7 @@ def create_app(
             on_import_created=workers.signal.notify if workers is not None else None,
         )
     )
+    app.register_blueprint(create_uploads_blueprint(query_connection_factory))
     if enable_local_file_routes is None:
         enable_local_file_routes = _env_flag(ENABLE_LOCAL_FILE_ROUTES_ENV, default=True)
 
@@ -177,7 +179,11 @@ def create_app(
             if not isinstance(payload, dict) or payload.get("confirm") != identity.ldihk_id:
                 return jsonify({"error": "confirmation_mismatch"}), 400
             connection = query_connection_factory()
+            # Keys first: afterwards the imports that name them are gone.
+            upload_objects = user_upload_objects(connection, identity.ldihk_id)
             summary = delete_user_data(connection, ldihk_id=identity.ldihk_id)
+            forget_user_reservations(connection, identity.ldihk_id)
+            uploads_deleted = delete_user_uploads(connection, upload_objects)
         except PublicBoundaryError as error:
             return public_boundary_error_response(error)
         except DatabaseConfigError as error:
@@ -204,7 +210,7 @@ def create_app(
                 "events_deleted": summary.events_deleted,
                 "imports_deleted": summary.imports_deleted,
                 "subscriptions_deleted": summary.subscriptions_deleted,
-                "uploads_deleted": delete_user_uploads(identity.ldihk_id),
+                "uploads_deleted": uploads_deleted,
             }
         )
 

@@ -24,6 +24,7 @@ from typing import Callable, Mapping
 LOGGER = logging.getLogger(__name__)
 
 RUN_WORKERS_IN_PROCESS_ENV = "RUN_WORKERS_IN_PROCESS"
+RUN_MIGRATIONS_ON_START_ENV = "RUN_MIGRATIONS_ON_START"
 WORKER_ACTIVE_WINDOW_ENV = "WORKER_ACTIVE_WINDOW_SECONDS"
 WORKER_POLL_INTERVAL_ENV = "WORKER_POLL_INTERVAL_SECONDS"
 # Short on purpose: Neon stays awake ~5 minutes after the last query, so each
@@ -158,6 +159,8 @@ def make_import_run_once(
                 heartbeat=heartbeat,
             )
             result = worker.process_one()
+            if result.status == IMPORT_STATUS_IDLE:
+                _sweep_unused_uploads(connection, s3_client_holder[0])
         if result.status == IMPORT_STATUS_IDLE:
             return False
         LOGGER.info(
@@ -272,6 +275,11 @@ def start_in_process_workers(
         if _started_workers is not None:
             return _started_workers
 
+        # The free Render plan has no pre-deploy step, so the process that runs
+        # the workers brings the schema up to date before they start.
+        if _truthy(environ.get(RUN_MIGRATIONS_ON_START_ENV, "true")):
+            _run_startup_migrations()
+
         signal = WorkerSignal(
             active_window_seconds=_env_float(
                 environ, WORKER_ACTIVE_WINDOW_ENV, DEFAULT_ACTIVE_WINDOW_SECONDS
@@ -315,6 +323,32 @@ def start_in_process_workers(
         )
         _started_workers = InProcessWorkers(signal=signal, loops=loops, threads=threads)
         return _started_workers
+
+
+def _run_startup_migrations() -> None:
+    from backend import db
+
+    try:
+        applied = db.run_migrations()
+    except Exception:
+        LOGGER.exception("Startup migrations failed; the API answers 503 until the database is ready")
+        return
+    if applied:
+        LOGGER.info("Applied migrations: %s", ", ".join(m.version for m in applied))
+
+
+def _sweep_unused_uploads(connection, s3_client) -> None:
+    """Delete archives of upload URLs that expired unused (see backend/uploads.py)."""
+    from backend.uploads import sweep_unused_uploads
+
+    try:
+        sweep_unused_uploads(connection, s3_client.raw)
+    except Exception:
+        LOGGER.warning("Upload cleanup failed", exc_info=True)
+        try:
+            connection.rollback()
+        except Exception:
+            pass
 
 
 def enrichment_available(environ: Mapping[str, str] = os.environ) -> bool:

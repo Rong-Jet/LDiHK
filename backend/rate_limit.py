@@ -78,16 +78,19 @@ class RateLimiter:
 # (method, path) -> rules applied before the request runs.
 PER_ID_LIMITS: dict[tuple[str, str], Limit] = {
     ("POST", "/api/imports"): Limit(20, 3600),
+    ("POST", "/api/uploads"): Limit(20, 3600),
     ("POST", "/api/population"): Limit(120, 3600),
     ("POST", "/api/query"): Limit(1500, 3600),
     ("DELETE", "/api/me"): Limit(5, 3600),
 }
 PER_IP_LIMITS: dict[tuple[str, str], Limit] = {
     ("POST", "/api/imports"): Limit(60, 3600),
+    ("POST", "/api/uploads"): Limit(60, 3600),
 }
 GLOBAL_LIMITS: dict[tuple[str, str], Limit] = {
     # A classroom uploading at once fits; a script creating users does not.
     ("POST", "/api/imports"): Limit(300, 3600),
+    ("POST", "/api/uploads"): Limit(300, 3600),
 }
 # Failed logins (404 unknown_ldihk_id) count after the response.
 UNKNOWN_ID_PER_IP = Limit(30, 600)

@@ -285,15 +285,8 @@ def _start_frontend(args: argparse.Namespace, *, mock: bool) -> Service:
     if mock:
         env.update(PUBLIC_API_URL="", PUBLIC_MOCK_API="true")
     else:
-        env.update(
-            PUBLIC_API_URL=f"http://127.0.0.1:{args.backend_port}",
-            PUBLIC_MOCK_API="false",
-            CUSTOM_AWS_ACCESS_KEY_ID=S3_KEY_ID,
-            CUSTOM_AWS_SECRET_ACCESS_KEY=S3_SECRET,
-            CUSTOM_AWS_REGION="us-east-1",
-            S3_BUCKET=BUCKET,
-            S3_ENDPOINT_URL=f"http://127.0.0.1:{args.storage_port}",
-        )
+        # Upload URLs come from the API, so the frontend holds no storage keys.
+        env.update(PUBLIC_API_URL=f"http://127.0.0.1:{args.backend_port}", PUBLIC_MOCK_API="false")
     npm = shutil.which("npm")
     assert npm is not None
     return Service(

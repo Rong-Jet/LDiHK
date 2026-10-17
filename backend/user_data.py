@@ -1,8 +1,8 @@
 """Erase everything stored about one LDiHK user ("Delete My Data").
 
-Used by DELETE /api/me. Database rows go in one transaction; uploaded
-objects under uploads/<LDiHKID>/ are removed afterwards on a best-effort
-basis (the bucket's 1-day lifecycle rule removes leftovers anyway). The
+Used by DELETE /api/me. Database rows go in one transaction; the user's
+uploaded archives are deleted afterwards on a best-effort basis (the upload
+cleanup and the bucket's 1-day lifecycle rule remove leftovers). The
 shared YouTube video cache (durations, availability) is not personal data
 and stays.
 """
@@ -82,32 +82,28 @@ def delete_user_data(connection, *, ldihk_id: str) -> DeletionSummary | None:
 
 
 def delete_user_uploads(
-    ldihk_id: str,
+    connection,
+    objects: list[tuple[str, str]],
     *,
     s3_client=None,
     environ: Mapping[str, str] = os.environ,
 ) -> int | None:
-    """Delete objects under uploads/<LDiHKID>/; returns the count or None."""
-    bucket = environ.get("S3_BUCKET", "").strip()
-    if not bucket:
+    """Delete the user's uploaded archives; returns the count, or None.
+
+    The keys come from the database (upload reservations and imports):
+    deleting objects is free on R2, but listing the bucket is a billed
+    operation, so it is never listed.
+    """
+    if not environ.get("S3_BUCKET", "").strip():
         return None
     try:
         if s3_client is None:
             from backend.ingestion.s3 import create_boto3_s3_client
 
             s3_client = create_boto3_s3_client(environ)
-        deleted = 0
-        prefix = f"uploads/{ldihk_id}/"
-        continuation: dict[str, str] = {}
-        while True:
-            page = s3_client.list_objects_v2(Bucket=bucket, Prefix=prefix, **continuation)
-            keys = [{"Key": item["Key"]} for item in page.get("Contents", [])]
-            if keys:
-                s3_client.delete_objects(Bucket=bucket, Delete={"Objects": keys, "Quiet": True})
-                deleted += len(keys)
-            if not page.get("IsTruncated"):
-                return deleted
-            continuation = {"ContinuationToken": page["NextContinuationToken"]}
+        from backend.uploads import delete_uploads
+
+        return delete_uploads(connection, s3_client, objects)
     except Exception:
         LOGGER.warning("Could not delete uploads for a deleted user", exc_info=True)
         return None

@@ -54,8 +54,9 @@ deploys the API from it.
    production deploys. Each Netlify production deploy costs 15 of the 300
    free monthly credits, so batch changes into releases: about 20 production
    deploys in a month use up the credits and pause every site on the account.
-4. If a release adds a migration, run `python backend/scripts/run_migrations.py`
-   against the production database right before merging it.
+4. Migrations run automatically when the backend starts (Render redeploys
+   after the merge). To apply one ahead of a release, run
+   `python backend/scripts/run_migrations.py` against the production database.
 
 ## Local Stack (one command)
 

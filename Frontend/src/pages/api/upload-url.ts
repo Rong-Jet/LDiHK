@@ -2,10 +2,8 @@ import type { APIRoute } from 'astro';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
-import { configuredBackendApiBase, isMockApiMode, shouldAllowImplicitMockApiMode, usesLocalMockApi } from '../../lib/env';
+import { usesLocalMockApi } from '../../lib/env';
 import { isValidLdihkId } from '../../lib/ldihkId';
-import { presignZipUpload } from '../../lib/s3Presign';
-import { readUploadTargetConfig } from '../../lib/serverUploadConfig';
 import {
   SIGNING_LIMIT_PER_ID,
   SIGNING_LIMIT_PER_IP,
@@ -77,6 +75,12 @@ export const GET: APIRoute = async () => {
 };
 
 export const POST: APIRoute = async ({ request, clientAddress }) => {
+  // Live uploads are signed by the backend (POST /api/uploads), which enforces
+  // the storage budget; this route only serves the mock upload flow.
+  if (!usesLocalMockApi) {
+    return json({ error: 'upload_moved', message: 'Uploads are signed by the backend (POST /api/uploads).' }, 410);
+  }
+
   const authHeader = request.headers.get('Authorization') || '';
   if (!authHeader.startsWith('Bearer ')) {
     return json({ error: 'missing_authorization' }, 401);
@@ -122,39 +126,6 @@ export const POST: APIRoute = async ({ request, clientAddress }) => {
     );
   }
   const contentType = typeof body.contentType === 'string' && body.contentType ? body.contentType : 'application/zip';
-
-  const target = readUploadTargetConfig();
-  if (!isMockApiMode && target.configured && target.config) {
-    try {
-      const presignedUrl = await presignZipUpload(target.config, s3Key, contentType, parsedSize.size);
-      return json({
-        url: presignedUrl,
-        method: 'PUT',
-        // The browser sets Content-Length itself; it must equal `size`.
-        headers: { 'Content-Type': contentType },
-        s3Bucket: target.config.bucket,
-        s3Key,
-        isMock: false,
-      });
-    } catch (err: any) {
-      console.error('Failed to generate pre-signed upload URL:', err);
-      return json({ error: 's3_signature_failure', message: err?.message || 'Signing failed' }, 500);
-    }
-  }
-
-  if (!isMockApiMode && configuredBackendApiBase) {
-    return json({
-      error: 'upload_not_configured',
-      message: 'Upload storage credentials (CUSTOM_AWS_*, S3_BUCKET, S3_ENDPOINT_URL) are required when PUBLIC_API_URL points at a backend.',
-    }, 503);
-  }
-
-  if (!isMockApiMode && !shouldAllowImplicitMockApiMode) {
-    return json({
-      error: 'upload_not_configured',
-      message: 'Mock uploads are disabled. Configure upload storage credentials or set PUBLIC_MOCK_API=true.',
-    }, 503);
-  }
 
   // Mock mode: upload to the local mock route instead of real storage.
   const filename = s3Key.split('/').pop() || 'data.zip';

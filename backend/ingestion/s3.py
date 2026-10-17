@@ -70,6 +70,14 @@ class Boto3S3Client:
             raise RuntimeError("S3 HeadObject response missing ContentLength") from error
         return S3ObjectMetadata(content_length=content_length)
 
+    @property
+    def raw(self):
+        """The underlying boto3 client (upload cleanup, presigning)."""
+        return self._client
+
+    def delete_object(self, bucket: str, key: str) -> None:
+        self._client.delete_object(Bucket=bucket, Key=key)
+
     def download_zip(self, bucket: str, key: str, destination: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         self._client.download_file(

@@ -48,22 +48,18 @@ mock routes when live backend or upload config is missing. Set
 `PUBLIC_MOCK_API=true` only for UI-only mock development; the UI then shows a
 "Mock mode" banner on every console page.
 
-When a backend origin is set, the Astro upload helper needs
-`CUSTOM_AWS_ACCESS_KEY_ID`, `CUSTOM_AWS_SECRET_ACCESS_KEY`, `S3_BUCKET`, and
-either `S3_ENDPOINT_URL` (Cloudflare R2: `https://<account-id>.r2.cloudflarestorage.com`)
-or `CUSTOM_AWS_REGION` (AWS S3). These are read at runtime by the Netlify
-function. The bucket needs a CORS rule allowing `PUT` with the `content-type`
-header from the site origin (see `docs/backend/deployment.md`).
+Upload URLs come from the backend (`POST /api/uploads`), which keeps the
+storage bucket inside its free tier, so the site needs no storage credentials.
+The bucket's CORS rule must allow `PUT` with the `content-type` and
+`if-none-match` headers from the site origin (see `docs/backend/deployment.md`).
 
 Same-origin Astro helper routes:
 
 ```text
 GET /api/uploader-info
-POST /api/upload-url
-PUT /api/mock-s3-upload
+POST /api/upload-url        (mock mode only)
+PUT /api/mock-s3-upload     (mock mode only)
 ```
-
-`PUT /api/mock-s3-upload` is mock-only and must not be used for live imports.
 
 ## Free-tier behaviour
 

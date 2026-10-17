@@ -274,6 +274,7 @@ class S3ZipImportWorker:
                 records_imported=failure_summary.records_imported,
                 warnings_count=failure_summary.warnings_count,
             )
+            self._delete_uploaded_archive(job)
             return WorkerRunResult(
                 import_id=job.id,
                 status=IMPORT_STATUS_FAILED,
@@ -283,6 +284,7 @@ class S3ZipImportWorker:
                 source_files=failure_summary.source_files,
                 error_message=error_message,
             )
+        self._delete_uploaded_archive(job)
         if summary.records_imported > 0:
             self._refresh_query_statistics(job.id)
         return WorkerRunResult(
@@ -418,6 +420,22 @@ class S3ZipImportWorker:
                     warnings_count=summary.warnings_count,
                 )
                 self.repository.enqueue_enrichment_for_import(import_id=job.id)
+
+    def _delete_uploaded_archive(self, job: ImportJob) -> None:
+        # The archive is not needed once its import has ended, and keeping
+        # storage near zero keeps the bucket inside its free tier (deletes are
+        # free on R2). Optional hooks; failures only log, the upload cleanup
+        # (backend/uploads.py) retries later.
+        delete = getattr(self.s3_client, "delete_object", None)
+        if delete is None:
+            return
+        try:
+            delete(job.s3_bucket, job.s3_key)
+            mark_deleted = getattr(self.repository, "mark_upload_deleted", None)
+            if mark_deleted is not None:
+                mark_deleted(job.s3_key)
+        except Exception:
+            LOGGER.warning("Could not delete the archive of import %s", job.id, exc_info=True)
 
     def _refresh_query_statistics(self, import_id: str) -> None:
         # Optional repository hook (PostgresImportRepository has it). The
@@ -1021,6 +1039,17 @@ class PostgresImportRepository:
                     error_message[:1000],
                     import_id,
                 ),
+            )
+            self._commit_unless_in_transaction()
+        except Exception:
+            self._rollback_unless_in_transaction()
+            raise
+
+    def mark_upload_deleted(self, s3_key: str) -> None:
+        try:
+            self.connection.execute(
+                "UPDATE upload_reservations SET deleted_at = now() WHERE s3_key = %s AND deleted_at IS NULL",
+                (s3_key,),
             )
             self._commit_unless_in_transaction()
         except Exception:

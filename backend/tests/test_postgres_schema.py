@@ -36,10 +36,12 @@ class PostgresSchemaContractTests(unittest.TestCase):
 
         self.assertEqual(
             [migration.version for migration in migrations],
-            ["001", "002", "003", "004", "005", "006"],
+            ["001", "002", "003", "004", "005", "006", "007"],
         )
         sql = compact_sql("\n".join(migration.sql for migration in migrations))
 
+        self.assertIn("create table if not exists upload_reservations", sql)
+        self.assertIn("s3_key text not null unique", sql)
         self.assertIn("add column if not exists heartbeat_at timestamptz", sql)
         self.assertIn("add column if not exists attempts integer not null default 0", sql)
         for dropped in (

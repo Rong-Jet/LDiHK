@@ -108,7 +108,8 @@ def run_storage(port: str, bucket: str, origins: list[str]) -> None:
                 {
                     "AllowedOrigins": origins,
                     "AllowedMethods": ["PUT"],
-                    "AllowedHeaders": ["content-type"],
+                    # if-none-match makes each upload URL single-use.
+                    "AllowedHeaders": ["content-type", "if-none-match"],
                     "ExposeHeaders": ["ETag"],
                     "MaxAgeSeconds": 3600,
                 }

@@ -18,7 +18,7 @@ import unittest
 import uuid
 import zipfile
 from unittest import mock
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from backend.ingestion.s3 import S3ObjectMetadata
 
@@ -65,6 +65,17 @@ class _BytesS3:
         destination.write_bytes(self.payloads[key])
 
 
+class _DeletingS3(_BytesS3):
+    """Records deletes; has no list call, which would be billed on R2."""
+
+    def __init__(self, payloads: dict[str, bytes]):
+        super().__init__(payloads)
+        self.deleted: list[str] = []
+
+    def delete_object(self, bucket=None, key=None, *, Bucket=None, Key=None):
+        self.deleted.append(key or Key)
+
+
 class _FakeYoutube:
     def __init__(self):
         self.requests: list[list[str]] = []
@@ -96,6 +107,10 @@ class PostgresIntegrationTests(unittest.TestCase):
                 "S3_BUCKET": BUCKET,
                 "RATE_LIMITS_ENABLED": "false",
                 "RUN_WORKERS_IN_PROCESS": "false",
+                # Presigning works offline; these never reach a real bucket.
+                "AWS_ACCESS_KEY_ID": "integration-test-key",
+                "AWS_SECRET_ACCESS_KEY": "integration-test-secret",
+                "AWS_REGION": "us-east-1",
             },
             clear=False,
         )
@@ -437,15 +452,146 @@ class PostgresIntegrationTests(unittest.TestCase):
             8,
         )
 
+    def _upload_usage(self) -> tuple[int, int]:
+        with closing(self._connect()) as connection:
+            return connection.execute(
+                """
+                SELECT
+                    (SELECT COALESCE(SUM(size_bytes), 0) FROM upload_reservations WHERE deleted_at IS NULL),
+                    (SELECT count(*) FROM upload_reservations
+                     WHERE created_at >= date_trunc('month', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
+                """
+            ).fetchone()
+
+    def test_upload_budget_refuses_before_the_free_tier(self):
+        from backend.uploads import delete_uploads
+
+        ldihk_id = self._new_id()
+        auth = {"Authorization": f"Bearer {ldihk_id}"}
+        stored, this_month = self._upload_usage()
+        budget = {"UPLOAD_MAX_STORED_BYTES": str(stored + 1000), "UPLOAD_MAX_PER_MONTH": str(this_month + 3)}
+
+        def request_upload(size: int):
+            return self.client.post("/api/uploads", headers=auth, json={"filename": "Takeout.zip", "size": size})
+
+        with mock.patch.dict(os.environ, budget):
+            first = request_upload(600)
+            storage_full = request_upload(600)
+            with closing(self._connect()) as connection:
+                delete_uploads(connection, _DeletingS3({}), [(BUCKET, first.get_json()["s3Key"])])
+            after_delete = request_upload(600)
+            third = request_upload(100)
+            month_full = request_upload(100)
+
+        self.assertEqual(first.status_code, 201, first.get_json())
+        target = first.get_json()
+        self.assertTrue(target["s3Key"].startswith(f"uploads/{ldihk_id}/"))
+        self.assertIn("if-none-match", parse_qs(urlsplit(target["url"]).query)["X-Amz-SignedHeaders"][0])
+        self.assertEqual((storage_full.status_code, storage_full.get_json()["error"]), (429, "upload_storage_full"))
+        self.assertEqual(after_delete.status_code, 201, "deleting an archive frees the storage budget")
+        self.assertEqual(third.status_code, 201)
+        self.assertEqual((month_full.status_code, month_full.get_json()["error"]), (429, "upload_budget_exhausted"))
+        self.assertGreaterEqual(int(month_full.headers["Retry-After"]), 60)
+        with closing(self._connect()) as connection:
+            connection.execute(
+                "UPDATE upload_reservations SET deleted_at = now() WHERE ldihk_id = %s AND deleted_at IS NULL",
+                (ldihk_id,),
+            )
+            connection.commit()
+
+    def test_upload_sweep_deletes_only_expired_unused_archives(self):
+        from backend.uploads import sweep_unused_uploads
+
+        ldihk_id = self._new_id()
+        keys = {name: f"uploads/{ldihk_id}/{name}.zip" for name in ("unused", "importing", "fresh")}
+        user_id, import_id = uuid.uuid4(), uuid.uuid4()
+        with closing(self._connect()) as connection:
+            for name, expires in (("unused", "-2 hours"), ("importing", "-2 hours"), ("fresh", "1 minute")):
+                connection.execute(
+                    "INSERT INTO upload_reservations (id, ldihk_id, s3_bucket, s3_key, size_bytes, expires_at) "
+                    "VALUES (%s, %s, %s, %s, 10, now() + %s::interval)",
+                    (uuid.uuid4(), ldihk_id, BUCKET, keys[name], expires),
+                )
+            connection.execute("INSERT INTO users (id, external_id) VALUES (%s, %s)", (user_id, ldihk_id))
+            # 'running' with a fresh heartbeat: no other test's worker claims it.
+            connection.execute(
+                "INSERT INTO imports (id, user_id, s3_bucket, s3_key, status, started_at, heartbeat_at) "
+                "VALUES (%s, %s, %s, %s, 'running', now(), now())",
+                (import_id, user_id, BUCKET, keys["importing"]),
+            )
+            connection.commit()
+            s3 = _DeletingS3({})
+            sweep_unused_uploads(connection, s3)
+            remaining = dict(
+                connection.execute(
+                    "SELECT s3_key, deleted_at IS NOT NULL FROM upload_reservations WHERE ldihk_id = %s",
+                    (ldihk_id,),
+                ).fetchall()
+            )
+            connection.execute("UPDATE imports SET status = 'failed' WHERE id = %s", (import_id,))
+            connection.execute("UPDATE upload_reservations SET deleted_at = now() WHERE ldihk_id = %s", (ldihk_id,))
+            connection.commit()
+
+        self.assertEqual(s3.deleted, [keys["unused"]])
+        self.assertEqual(remaining, {keys["unused"]: True, keys["importing"]: False, keys["fresh"]: False})
+
+    def test_archive_is_deleted_when_its_import_ends(self):
+        from backend.ingestion.worker import PostgresImportRepository, S3ZipImportWorker
+
+        ldihk_id = self._new_id()
+        auth = {"Authorization": f"Bearer {ldihk_id}"}
+        payload = _takeout_zip(_watch_records(3, prefix=ldihk_id[-6:]))
+        target = self.client.post(
+            "/api/uploads", headers=auth, json={"filename": "Takeout.zip", "size": len(payload)}
+        ).get_json()
+        s3 = _DeletingS3({target["s3Key"]: payload})
+        created = self.client.post(
+            "/api/imports", headers=auth, json={"s3_bucket": BUCKET, "s3_key": target["s3Key"]}
+        )
+        self.assertEqual(created.status_code, 201)
+        with closing(self._connect()) as connection:
+            result = S3ZipImportWorker(repository=PostgresImportRepository(connection), s3_client=s3).process_one()
+            deleted_at = connection.execute(
+                "SELECT deleted_at FROM upload_reservations WHERE s3_key = %s", (target["s3Key"],)
+            ).fetchone()[0]
+
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(s3.deleted, [target["s3Key"]])
+        self.assertIsNotNone(deleted_at)
+
+    def test_delete_my_data_deletes_archives_by_key(self):
+        ldihk_id = self._new_id()
+        auth = {"Authorization": f"Bearer {ldihk_id}"}
+        self._upload_and_import(ldihk_id, "imported.zip", _watch_records(2, prefix=ldihk_id[-6:]))
+        abandoned = self.client.post(
+            "/api/uploads", headers=auth, json={"filename": "abandoned.zip", "size": 50}
+        ).get_json()["s3Key"]
+        s3 = _DeletingS3({})
+
+        with mock.patch("backend.ingestion.s3.create_boto3_s3_client", return_value=s3):
+            response = self.client.delete("/api/me", headers=auth, json={"confirm": ldihk_id})
+
+        self.assertEqual(response.status_code, 200, response.get_json())
+        self.assertEqual(response.get_json()["uploads_deleted"], 2)
+        self.assertEqual(sorted(s3.deleted), sorted([f"uploads/{ldihk_id}/imported.zip", abandoned]))
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT ldihk_id, deleted_at IS NOT NULL FROM upload_reservations WHERE s3_key = %s", (abandoned,)
+            ).fetchone()
+        self.assertEqual(row, (None, True), "the reservation keeps no ID and counts as deleted")
+
     def test_delete_my_data_erases_only_that_user(self):
         keep_id, delete_id = self._new_id(), self._new_id()
         self._upload_and_import(keep_id, "keep.zip", _watch_records(4, prefix=keep_id[-6:]))
         self._upload_and_import(delete_id, "gone.zip", _watch_records(6, prefix=delete_id[-6:]))
         auth = {"Authorization": f"Bearer {delete_id}"}
 
-        mismatch = self.client.delete("/api/me", headers=auth, json={"confirm": keep_id})
-        response = self.client.delete("/api/me", headers=auth, json={"confirm": delete_id})
+        s3 = _DeletingS3({})
+        with mock.patch("backend.ingestion.s3.create_boto3_s3_client", return_value=s3):
+            mismatch = self.client.delete("/api/me", headers=auth, json={"confirm": keep_id})
+            response = self.client.delete("/api/me", headers=auth, json={"confirm": delete_id})
 
+        self.assertEqual(s3.deleted, [f"uploads/{delete_id}/gone.zip"])
         self.assertEqual(mismatch.status_code, 400)
         self.assertEqual(response.status_code, 200, response.get_json())
         body = response.get_json()

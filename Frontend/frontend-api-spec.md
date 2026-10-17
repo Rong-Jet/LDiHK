@@ -15,12 +15,9 @@ Frontend runtime convention:
 
 - Browser calls to backend-owned endpoints should use `PUBLIC_API_URL` as the
   backend origin when configured.
-- Astro-only helper routes such as upload URL generation stay same-origin.
-- When a backend origin is configured, the frontend upload helper must have
-  upload storage credentials through `CUSTOM_AWS_ACCESS_KEY_ID`,
-  `CUSTOM_AWS_SECRET_ACCESS_KEY`, the same `S3_BUCKET` value as the backend,
-  and either `S3_ENDPOINT_URL` (Cloudflare R2 or another S3-compatible store)
-  or `CUSTOM_AWS_REGION` (AWS S3).
+- Upload URLs come from the backend (`POST /api/uploads`), which enforces the
+  storage budget. The frontend site holds no storage credentials; the Astro
+  upload route only serves mock mode.
 - The free-tier backend sleeps when idle. The frontend pings `GET /health` on
   load, shows a "waking the server" state, and gates data requests until it
   answers. Browser requests use a 90-second timeout and retry 5xx/network
@@ -37,10 +34,11 @@ Frontend runtime convention:
 
 Endpoint ownership:
 
-- Backend-owned: `GET /health`, `GET /api/me`, `POST /api/imports`,
-  `GET /api/imports/{import_id}`, `POST /api/query`, `POST /api/population`.
-  The browser calls all of them directly on `PUBLIC_API_URL`.
-- Frontend/Astro helper-owned: `GET /api/uploader-info`,
+- Backend-owned: `GET /health`, `GET /api/me`, `DELETE /api/me`,
+  `POST /api/uploads`, `POST /api/imports`, `GET /api/imports/{import_id}`,
+  `POST /api/query`, `POST /api/population`. The browser calls all of them
+  directly on `PUBLIC_API_URL`.
+- Frontend/Astro helper-owned: `GET /api/uploader-info`; in mock mode also
   `POST /api/upload-url`.
 - Mock-only frontend routes such as `PUT /api/mock-s3-upload`, local
   `GET /api/me`, `POST /api/query`, `POST /api/population` and
@@ -115,18 +113,21 @@ linkedin
 
 1. User selects a supported export ZIP in the frontend: YouTube Takeout or
    TikTok data export.
-2. Frontend uploads the ZIP to object storage (Cloudflare R2 or S3) under
-   `uploads/<LDiHKID>/<filename>.zip` with a presigned PUT URL. Archives over
-   20 MB are first slimmed in the browser: videos, photos and other media are
-   removed so only history files are uploaded (at most 200 MB).
-3. Frontend calls `POST /api/imports` with S3 object metadata.
-4. Backend creates a queued import in Postgres.
-5. The import worker (a thread inside the backend web process on free
+2. Archives over 20 MB are first trimmed in the browser: videos, photos and
+   other media are removed so only history files are uploaded (at most
+   200 MB).
+3. Frontend asks the backend for an upload URL (`POST /api/uploads`) and
+   uploads the ZIP straight to object storage (Cloudflare R2 or S3) under
+   `uploads/<LDiHKID>/<random>-<filename>.zip`.
+4. Frontend calls `POST /api/imports` with that bucket and key.
+5. Backend creates a queued import in Postgres.
+6. The import worker (a thread inside the backend web process on free
    hosting) picks up the import, downloads the ZIP, parses supported YouTube,
    TikTok and Instagram files, and writes normalized rows. An archive with no
    supported files fails with `error_message` starting `no_supported_files`.
-6. Frontend polls `GET /api/imports/{import_id}`.
-7. Frontend calls `POST /api/query` for dashboard data.
+   When the import ends, the archive is deleted from storage.
+7. Frontend polls `GET /api/imports/{import_id}`.
+8. Frontend calls `POST /api/query` for dashboard data.
 
 There is no S3 event/Lambda trigger in the v5 backend flow.
 The backend rejects import requests where `s3_key` is not under the bearer
@@ -228,39 +229,37 @@ Errors: `confirmation_mismatch` (400), `unknown_ldihk_id` (404),
 GET /api/uploader-info
 ```
 
-Owned by the frontend Astro server. Auth is not required. The browser uses this
-to display upload capability state before a ZIP is selected.
+Owned by the frontend Astro server. Auth is not required. The upload UI uses
+it to show whether uploads are live or simulated.
 
 Response:
 
 ```json
 {
   "isMock": false,
-  "uploadConfigured": true
+  "uploadConfigured": true,
+  "provider": "backend"
 }
 ```
 
-Fields:
-
-- `isMock`: `true` only when upload will use the local mock upload route.
-- `uploadConfigured`: `true` when upload can proceed. In live mode this means
-  the frontend server has S3 credentials and bucket configuration. In explicit
-  mock mode this means mock upload is intentionally enabled.
-
-When `PUBLIC_MOCK_API=false`, missing S3 upload config must not be reported as
-mock-ready.
+`isMock` is `true` only in mock mode, where uploads go to the local mock
+route (`provider: "mock"`). In live mode the backend signs uploads.
 
 ### Create Upload URL
 
 ```text
-POST /api/upload-url
+POST /api/uploads
 ```
 
-Owned by the frontend Astro server. This route creates the browser-to-storage
-upload configuration (AWS S3, or Cloudflare R2 via `S3_ENDPOINT_URL`). It must
-use the same bucket as the backend import API. Presigned URLs carry no
-checksum parameters. The file name must end in `.zip` (any case); the key
-always ends in lowercase `.zip`.
+Owned by the backend. Returns a presigned PUT URL for one archive, within the
+storage budget that keeps the bucket inside Cloudflare R2's free tier (R2 has
+no spending cap). The URL:
+
+- is bound to the exact `size` (signed `Content-Length`) and `application/zip`,
+- must start uploading within `UPLOAD_URL_TTL_SECONDS` (default 120),
+- carries a signed `If-None-Match: *`, so it can create its object only once
+  (a repeated upload fails with `412`); the bucket CORS rule must allow the
+  `if-none-match` header.
 
 Headers:
 
@@ -279,56 +278,44 @@ Request body:
 }
 ```
 
-`size` (bytes, required) is signed into the URL as `Content-Length`: the
-upload must be exactly that size, and at most `MAX_IMPORT_ZIP_BYTES`
-(200 MB). Signing is rate-limited per ID and per client address.
+`size` is in bytes, at most `MAX_IMPORT_ZIP_BYTES` (200 MB). The file name
+must end in `.zip` (any case).
 
-Live response:
+Response (`201`):
 
 ```json
 {
-  "url": "https://bucket.s3.region.amazonaws.com/uploads/demo-user-123/takeout.zip?...",
+  "url": "https://<account>.r2.cloudflarestorage.com/ldihk-uploads/uploads/demo-user-123/3f9c2a1b7d4e5f60-takeout.zip?X-Amz-...",
   "method": "PUT",
   "headers": {
-    "Content-Type": "application/zip"
+    "Content-Type": "application/zip",
+    "If-None-Match": "*"
   },
-  "s3Bucket": "existing-bucket",
-  "s3Key": "uploads/demo-user-123/takeout.zip",
+  "s3Bucket": "ldihk-uploads",
+  "s3Key": "uploads/demo-user-123/3f9c2a1b7d4e5f60-takeout.zip",
+  "expiresAt": "2026-10-18T10:02:00+00:00",
   "isMock": false
 }
 ```
 
-Mock response, only when mock mode is enabled or implicit mock fallback is
-allowed:
+Send the PUT with exactly these headers. Errors (each with a `message` to
+show):
 
-```json
-{
-  "url": "http://localhost:4321/api/mock-s3-upload",
-  "method": "PUT",
-  "headers": {
-    "Content-Type": "application/zip",
-    "x-amz-meta-filename": "takeout.zip",
-    "x-amz-meta-ldihkid": "demo-user-123",
-    "x-amz-s3-key": "uploads/demo-user-123/takeout.zip"
-  },
-  "s3Bucket": "local-mock-bucket",
-  "s3Key": "uploads/demo-user-123/takeout.zip",
-  "isMock": true
-}
-```
+- `missing_authorization`, `invalid_authorization` (401)
+- `invalid_payload`, `invalid_filename`, `invalid_size`,
+  `invalid_content_type` (400); `file_too_large` (413)
+- `rate_limited` (429, `Retry-After`): 20 per hour per ID, 300 per hour overall
+- `upload_storage_full` (429, `Retry-After: 3600`): archives waiting to be
+  processed already fill `UPLOAD_MAX_STORED_BYTES`
+- `upload_budget_exhausted` (429, `Retry-After` until the next month):
+  `UPLOAD_MAX_PER_MONTH` upload URLs were issued this calendar month (UTC)
+- `uploads_disabled` (503): `UPLOADS_ENABLED=false`
+- `upload_not_configured` (503), `database_unavailable` (503),
+  `upload_signing_failed` (500)
 
-Errors:
-
-- `missing_authorization`
-- `invalid_authorization`
-- `invalid_filename` (400, not a `.zip`)
-- `invalid_size` (400), `file_too_large` (413)
-- `rate_limited` (429, with `Retry-After`)
-- `upload_not_configured`
-- `s3_signature_failure`
-
-When `PUBLIC_MOCK_API=false`, this endpoint must return `503` with
-`upload_not_configured` instead of falling back to `/api/mock-s3-upload`.
+In mock mode the frontend's `POST /api/upload-url` returns the same shape
+pointing at `/api/mock-s3-upload` (`"isMock": true`); in live mode that route
+answers `410 upload_moved`.
 
 ### Create Import
 

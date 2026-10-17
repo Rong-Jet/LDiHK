@@ -1,6 +1,5 @@
 import type { APIRoute } from 'astro';
-import { isMockApiMode, usesLocalMockApi } from '../../lib/env';
-import { readUploadTargetConfig } from '../../lib/serverUploadConfig';
+import { usesLocalMockApi } from '../../lib/env';
 
 export const prerender = false;
 
@@ -18,17 +17,14 @@ export const OPTIONS: APIRoute = async () => {
 };
 
 // Tells the upload UI whether uploads go to real storage or the mock route.
-// Must agree with POST /api/upload-url, which reads the same configuration.
+// Live uploads are signed by the backend (POST /api/uploads), so this site
+// holds no storage credentials; mock mode uses the local mock routes.
 export const GET: APIRoute = async () => {
-  const target = readUploadTargetConfig();
-  const liveUploads = !isMockApiMode && target.configured;
-  const mockUploads = !liveUploads && usesLocalMockApi;
-
   return new Response(
     JSON.stringify({
-      isMock: mockUploads,
-      uploadConfigured: liveUploads || mockUploads,
-      provider: liveUploads ? target.provider : mockUploads ? 'mock' : null,
+      isMock: usesLocalMockApi,
+      uploadConfigured: true,
+      provider: usesLocalMockApi ? 'mock' : 'backend',
     }),
     {
       status: 200,

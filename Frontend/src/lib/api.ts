@@ -38,7 +38,9 @@ export const apiRoutes = {
   // Called directly on the backend in live mode (no Netlify proxy); in mock mode
   // backendApiBase is empty, so this resolves to the local mock route.
   population: () => backendApiUrl('/api/population'),
-  uploadUrl: () => localApiUrl('/api/upload-url'),
+  // Live uploads are signed by the backend, which enforces the storage budget;
+  // the Astro route only serves the mock upload flow.
+  uploadUrl: () => (usesLocalMockApi ? localApiUrl('/api/upload-url') : backendApiUrl('/api/uploads')),
   uploaderInfo: () => localApiUrl('/api/uploader-info'),
 };
 
@@ -86,6 +88,9 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
   rate_limited: 'Too many requests in a short time. Please wait a few minutes and try again.',
   confirmation_mismatch: 'The ID you typed does not match your LDiHK-ID.',
   file_too_large: 'The archive is too large. Export only your history files and try again.',
+  upload_storage_full: 'Too many archives are waiting to be processed. Please try again in an hour.',
+  upload_budget_exhausted: "This month's upload limit is reached. Uploads open again on the 1st of next month.",
+  uploads_disabled: 'Uploads are switched off at the moment. Please try again later.',
 };
 
 export function describeApiError(error: unknown, fallback = 'Something went wrong while talking to the server.'): string {

@@ -427,6 +427,9 @@ class DeleteMyDataTests(unittest.TestCase):
                 def fetchone(self):
                     return None
 
+                def fetchall(self):
+                    return []
+
             return _Cursor()
 
         def commit(self):
@@ -465,30 +468,33 @@ class DeleteMyDataTests(unittest.TestCase):
 
         self.assertIn("DELETE", response.headers["Access-Control-Allow-Methods"])
 
-    def test_upload_cleanup_deletes_every_object_under_the_user_prefix(self):
+    def test_upload_cleanup_deletes_known_keys_without_listing_the_bucket(self):
         from backend.user_data import delete_user_uploads
 
         class FakeS3:
+            """Only single deletes (free on R2); listing would be billed."""
+
             def __init__(self):
                 self.deleted = []
-                self.prefixes = []
 
-            def list_objects_v2(self, Bucket, Prefix, ContinuationToken=None):
-                self.prefixes.append(Prefix)
-                if ContinuationToken is None:
-                    return {"Contents": [{"Key": Prefix + "a.zip"}], "IsTruncated": True, "NextContinuationToken": "t"}
-                return {"Contents": [{"Key": Prefix + "b.zip"}], "IsTruncated": False}
+            def delete_object(self, Bucket, Key):
+                if Key.endswith("broken.zip"):
+                    raise RuntimeError("network")
+                self.deleted.append((Bucket, Key))
 
-            def delete_objects(self, Bucket, Delete):
-                self.deleted.extend(item["Key"] for item in Delete["Objects"])
-
+        objects = [
+            ("bucket", "uploads/ldihk-x-abc/a.zip"),
+            ("bucket", "uploads/ldihk-x-abc/broken.zip"),
+            ("bucket", "uploads/ldihk-x-abc/b.zip"),
+        ]
         s3 = FakeS3()
-        count = delete_user_uploads("ldihk-x-abc", s3_client=s3, environ={"S3_BUCKET": "bucket"})
+        connection = self._NoUserConnection()
+        with self.assertLogs("backend.uploads", level="WARNING"):
+            count = delete_user_uploads(connection, objects, s3_client=s3, environ={"S3_BUCKET": "bucket"})
 
         self.assertEqual(count, 2)
-        self.assertEqual(s3.deleted, ["uploads/ldihk-x-abc/a.zip", "uploads/ldihk-x-abc/b.zip"])
-        self.assertEqual(set(s3.prefixes), {"uploads/ldihk-x-abc/"})
-        self.assertIsNone(delete_user_uploads("ldihk-x-abc", s3_client=s3, environ={}))
+        self.assertEqual(s3.deleted, [objects[0], objects[2]])
+        self.assertIsNone(delete_user_uploads(connection, objects, s3_client=s3, environ={}))
 
 
 if __name__ == "__main__":
