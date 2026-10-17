@@ -35,7 +35,7 @@ jobs:
       TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           version: "0.11.19"
           # Same Python as the production image (Dockerfile).
@@ -58,6 +58,9 @@ jobs:
           cache: npm
           cache-dependency-path: Frontend/package-lock.json
       - run: npm ci
+      # Generates .astro/types.d.ts (import.meta.env etc.); a fresh checkout
+      # has no generated types, so the type check would fail without it.
+      - run: npx astro sync
       - run: npx tsc --noEmit -p .
       - run: npm run build
 
@@ -68,7 +71,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           version: "0.11.19"
           python-version: "3.12"
@@ -86,7 +89,7 @@ jobs:
       - run: npm run test:e2e
         working-directory: Frontend
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: playwright-report
           path: |

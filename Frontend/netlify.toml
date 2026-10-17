@@ -8,7 +8,7 @@
   publish = "dist"
 
 [build.environment]
-  # Astro 6 requires Node >= 22.12.
+  # Astro 7 requires Node >= 22.12.
   NODE_VERSION = "22"
 
 # Release rule: the production branch (`main`) is the live site, ldihk.xyz.
