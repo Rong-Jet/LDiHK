@@ -29,7 +29,7 @@ declares every variable; secrets are entered in the dashboard.
 | Variable | Required | Used by | Notes |
 | --- | --- | --- | --- |
 | `PORT` | No | Web | Render injects this for web services. Local default is `8000`. |
-| `DATABASE_URL` | Yes | Web, workers, migrations | Neon pooled connection string (`...-pooler...neon.tech/...?sslmode=require`). Any `postgres://` or `postgresql://` URL works. |
+| `DATABASE_URL` | Yes | Web, workers, migrations | Neon direct connection string (`...neon.tech/...?sslmode=require`, no `-pooler` in the host). The app pools its own connections; a pooled string also works, but poolers reject the per-statement timeout, so it is skipped there. Any `postgres://` or `postgresql://` URL works. |
 | `DATABASE_CONNECT_TIMEOUT_SECONDS` | No | All | Default `10`. |
 | `DATABASE_STATEMENT_TIMEOUT_MS` | No | Web, workers | Default `60000`; migrations run without a statement timeout. |
 | `DATABASE_POOL_SIZE` | No | Web | Default `4` (one per gunicorn thread). Request handlers reuse pooled connections; `0` opens a new connection per request. |
@@ -88,8 +88,12 @@ database URL. With in-process workers, that is one service.
 
 1. Create a Neon project (free plan) in the region closest to your Render
    region (Frankfurt for Render `frankfurt`, US East for `virginia`/`ohio`).
-2. In the Neon console, open **Connect** and copy the **pooled** connection
-   string (host contains `-pooler`). It already ends in `?sslmode=require`.
+2. In the Neon console, open **Connect**, turn **Connection pooling** off and
+   copy the direct connection string (no `-pooler` in the host). It already
+   ends in `?sslmode=require`. The backend keeps its own small pool (at most
+   `DATABASE_POOL_SIZE` + 2 connections), so Neon's pooler is not needed, and
+   only direct connections accept `DATABASE_STATEMENT_TIMEOUT_MS`. A pooled
+   string works too: the timeout is then skipped.
 3. Put it in `DATABASE_URL` on Render (and locally for scripts).
 4. Migrations run when the service starts (`RUN_MIGRATIONS_ON_START`, on by
    default with in-process workers), because Render's free plan has no

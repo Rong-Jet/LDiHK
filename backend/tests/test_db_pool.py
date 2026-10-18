@@ -59,6 +59,23 @@ class PooledConnectTests(unittest.TestCase):
         self.assertFalse(kwargs["autocommit"])
         self.assertEqual(kwargs["options"], "-c statement_timeout=1500")
 
+    def test_poolers_get_no_startup_options(self):
+        # Neon's pooler answers "unsupported startup parameter in options:
+        # statement_timeout" and refuses the connection.
+        poolers = [
+            "postgresql://u:p@ep-sweet-rice-ba9cmf3x-pooler.c-8.eu-central-1.aws.neon.tech/neondb?sslmode=require",
+            "postgresql://u:p@aws-0-eu-central-1.pooler.supabase.com:6543/postgres",
+            "postgresql://u:p@db.example.com:6543/postgres",
+        ]
+        direct = "postgresql://u:p@ep-sweet-rice-ba9cmf3x.c-8.eu-central-1.aws.neon.tech/neondb?sslmode=require"
+        with mock.patch.dict(os.environ, {"DATABASE_STATEMENT_TIMEOUT_MS": "1500"}):
+            for url in poolers:
+                with self.subTest(url=url):
+                    self.assertTrue(db.is_transaction_pooler_url(url))
+                    self.assertNotIn("options", db.connection_kwargs(url))
+            self.assertFalse(db.is_transaction_pooler_url(direct))
+            self.assertEqual(db.connection_kwargs(direct)["options"], "-c statement_timeout=1500")
+
 
 if __name__ == "__main__":
     unittest.main()

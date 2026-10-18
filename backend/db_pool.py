@@ -91,7 +91,7 @@ def _create_pool(database_url: str, size: int):
     return ConnectionPool(
         database_url,
         connection_class=PooledConnection,
-        kwargs=db.connection_kwargs(),
+        kwargs=db.connection_kwargs(database_url),
         min_size=0,
         max_size=size,
         max_idle=float(db._env_int(DATABASE_POOL_MAX_IDLE_ENV, DEFAULT_MAX_IDLE_SECONDS)),
