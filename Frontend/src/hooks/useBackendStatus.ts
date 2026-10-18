@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { checkBackendHealth, isBackendMisconfigured, usesLocalMockApi } from '../lib/api';
+import { checkBackendHealth, isBackendMisconfigured, requestBackendWake, usesLocalMockApi } from '../lib/api';
 
 export type BackendState = 'checking' | 'waking' | 'ready' | 'unreachable';
 
@@ -19,6 +19,8 @@ export const WAKING_NOTICE_DELAY_MS = 3_000;
 export const BACKEND_WAKE_BUDGET_MS = 120_000;
 const ATTEMPT_TIMEOUT_MS = 45_000;
 const MAX_BACKOFF_MS = 10_000;
+/** Ask the site's server to wake the backend at most this often while waiting. */
+const WAKE_REPEAT_MS = 30_000;
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -31,9 +33,13 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 /**
- * Pings `${PUBLIC_API_URL}/health` on mount so a sleeping free-tier backend
- * starts waking up immediately, and exposes the wake-up progress so pages can
- * gate their data queries on `isReady`.
+ * Pings `${PUBLIC_API_URL}/health` on mount and exposes the wake-up progress
+ * so pages can gate their data queries on `isReady`. While the browser's own
+ * request gets no answer, it also asks this site's /api/wake route, which
+ * reaches the backend from the server side (and so starts a sleeping one).
+ * When that route reaches it, the backend counts as ready even if this
+ * browser's direct /health request keeps failing (a blocking extension or a
+ * stale cache entry would otherwise leave the page waiting forever).
  */
 export function useBackendStatus(): BackendStatus {
   const initialState: BackendState = usesLocalMockApi ? 'ready' : isBackendMisconfigured ? 'unreachable' : 'checking';
@@ -51,14 +57,26 @@ export function useBackendStatus(): BackendStatus {
     setState('checking');
     setElapsedSeconds(0);
 
+    let lastWakeAt = 0;
+    const wake = () => {
+      if (finished || Date.now() - lastWakeAt < WAKE_REPEAT_MS) return;
+      lastWakeAt = Date.now();
+      void requestBackendWake(controller.signal).then((awake) => {
+        if (awake) stop('ready');
+      });
+    };
+
     const wakingTimer = setTimeout(() => {
-      if (!finished) setState((current) => (current === 'checking' ? 'waking' : current));
+      if (finished) return;
+      setState((current) => (current === 'checking' ? 'waking' : current));
+      wake();
     }, WAKING_NOTICE_DELAY_MS);
     const ticker = setInterval(() => {
       if (!finished) setElapsedSeconds(Math.round((Date.now() - startedAt) / 1000));
     }, 1000);
 
     const stop = (next: BackendState) => {
+      if (finished) return;
       finished = true;
       clearTimeout(wakingTimer);
       clearInterval(ticker);
@@ -67,15 +85,16 @@ export function useBackendStatus(): BackendStatus {
 
     (async () => {
       let backoff = 1_000;
-      while (!controller.signal.aborted) {
+      while (!controller.signal.aborted && !finished) {
         const remaining = BACKEND_WAKE_BUDGET_MS - (Date.now() - startedAt);
         if (remaining <= 0) break;
         const healthy = await checkBackendHealth(controller.signal, Math.min(ATTEMPT_TIMEOUT_MS, remaining));
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || finished) return;
         if (healthy) {
           stop('ready');
           return;
         }
+        wake();
         const wait = Math.min(backoff, BACKEND_WAKE_BUDGET_MS - (Date.now() - startedAt));
         if (wait <= 0) break;
         await sleep(wait, controller.signal);

@@ -57,6 +57,7 @@ Same-origin Astro helper routes:
 
 ```text
 GET /api/uploader-info
+GET /api/wake               (starts a sleeping backend)
 POST /api/upload-url        (mock mode only)
 PUT /api/mock-s3-upload     (mock mode only)
 ```
@@ -65,7 +66,10 @@ PUT /api/mock-s3-upload     (mock mode only)
 
 - The backend on Render's free plan sleeps after 15 minutes. Every console
   page pings `GET /health` first and shows "Waking the server" until it
-  answers (usually under a minute).
+  answers (usually under a minute). While it waits it also calls
+  `GET /api/wake`, which reaches the backend from the server side, so a
+  browser whose own request is blocked still gets in. API calls never use the
+  browser cache.
 - Archives over 20 MB are slimmed in the browser before upload: videos,
   photos and other media are dropped so only history files are sent (limit
   200 MB after slimming). zip.js is loaded only when needed.

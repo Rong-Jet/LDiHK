@@ -89,6 +89,12 @@ def configure_cors(
         origin = request.headers.get("Origin")
         if origin in allowed_origins:
             _set_cors_headers(response, origin)
+        # Answers are live and per user. A browser must never reuse a stored
+        # one, least of all one fetched without (or with another) Origin: it
+        # lacks the CORS header, so the site's request would fail without
+        # ever reaching the server.
+        response.vary.add("Origin")
+        response.headers.setdefault("Cache-Control", "no-store")
         return response
 
 

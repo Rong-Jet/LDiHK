@@ -38,8 +38,8 @@ Endpoint ownership:
   `POST /api/uploads`, `POST /api/imports`, `GET /api/imports/{import_id}`,
   `POST /api/query`, `POST /api/population`. The browser calls all of them
   directly on `PUBLIC_API_URL`.
-- Frontend/Astro helper-owned: `GET /api/uploader-info`; in mock mode also
-  `POST /api/upload-url`.
+- Frontend/Astro helper-owned: `GET /api/uploader-info`, `GET /api/wake`; in
+  mock mode also `POST /api/upload-url`.
 - Mock-only frontend routes such as `PUT /api/mock-s3-upload`, local
   `GET /api/me`, `POST /api/query`, `POST /api/population` and
   `POST /api/imports` are development shims, not production backend contract.
@@ -244,6 +244,21 @@ Response:
 
 `isMock` is `true` only in mock mode, where uploads go to the local mock
 route (`provider: "mock"`). In live mode the backend signs uploads.
+
+### Wake the Backend
+
+```text
+GET /api/wake
+```
+
+Owned by the frontend Astro server. Auth is not required and it takes no
+parameters. While the browser's own `GET /health` gets no answer, console
+pages call it at most every 30 seconds. It requests the backend's `/health`
+from the server side, which also starts a sleeping free-tier backend, waits up
+to 8 seconds, and answers `200 {"status": "ok"}` when the backend is up,
+otherwise `202 {"status": "waking"}`. Pages treat `ok` as ready, so a browser
+whose direct request is blocked (an extension, a stale cache entry) is not left
+waiting forever.
 
 ### Create Upload URL
 

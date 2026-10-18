@@ -42,6 +42,7 @@ export const apiRoutes = {
   // the Astro route only serves the mock upload flow.
   uploadUrl: () => (usesLocalMockApi ? localApiUrl('/api/upload-url') : backendApiUrl('/api/uploads')),
   uploaderInfo: () => localApiUrl('/api/uploader-info'),
+  wake: () => localApiUrl('/api/wake'),
 };
 
 // ---------------------------------------------------------------------------
@@ -170,6 +171,9 @@ export async function apiFetchJson<T>(url: string, options: ApiRequestOptions = 
       headers,
       body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
       signal,
+      // Never answer from the browser cache: a stored response would hide
+      // the live backend.
+      cache: 'no-store',
     });
   } catch (error) {
     if (timeout.aborted) {
@@ -269,6 +273,20 @@ export function isImportInFlight(importStatus: ImportStatus | null | undefined):
 export async function checkBackendHealth(signal: AbortSignal, timeoutMs: number): Promise<boolean> {
   try {
     const body = await apiFetchJson<{ status?: string }>(apiRoutes.health(), { signal, timeoutMs });
+    return body?.status === 'ok';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Asks this site's server to reach the backend (see pages/api/wake.ts), which
+ * also starts a sleeping one. True when the backend answered. Never throws.
+ */
+export async function requestBackendWake(signal: AbortSignal): Promise<boolean> {
+  try {
+    const response = await fetch(apiRoutes.wake(), { signal, cache: 'no-store' });
+    const body = response.ok ? await response.json() : null;
     return body?.status === 'ok';
   } catch {
     return false;

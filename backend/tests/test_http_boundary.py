@@ -16,6 +16,16 @@ class HttpBoundaryTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), {"status": "ok"})
 
+    def test_answers_are_never_reused_from_a_browser_cache(self):
+        # A /health answer stored by a plain browser tab (no Origin, so no CORS
+        # header) must not be reused for the site's cross-origin request.
+        app = create_app()
+
+        response = app.test_client().get("/health")
+
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertIn("Origin", response.headers["Vary"])
+
     def test_cors_allows_configured_frontend_origin(self):
         with patch.dict(
             os.environ,
