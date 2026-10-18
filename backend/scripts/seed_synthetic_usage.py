@@ -6,6 +6,7 @@ import hashlib
 import json
 import random
 import sys
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,6 +22,9 @@ from backend.db import DatabaseConfigError, connect, run_migrations
 GENERATOR_VERSION = "synthetic_usage_raw_events.v1"
 DEFAULT_BATCH_SIZE = 1000
 SYNTHETIC_BUCKET = "synthetic-seed"
+SYNTHETIC_PLATFORMS = ("youtube", "tiktok", "instagram", "spotify", "linkedin")
+# Position of the platform in the event tuples built by generate_user_telemetry.
+EVENT_PLATFORM_INDEX = 4
 
 
 def normalize_weights(weights: list[float]) -> list[float]:
@@ -145,13 +149,26 @@ def seed_synthetic_usage(
     replace_seed_run: bool = False,
     batch_size: int = DEFAULT_BATCH_SIZE,
     run_schema_migrations: bool = True,
+    platforms: Collection[str] | None = None,
 ) -> str:
+    """Seed synthetic profiles; ``platforms`` keeps only those platforms' events.
+
+    Profiles are generated the same way either way, so a YouTube-only seed has
+    the same YouTube events as a full seed with the same random seed.
+    """
     if total_profiles < 1:
         raise ValueError("total_profiles must be positive")
     if total_days < 1:
         raise ValueError("total_days must be positive")
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
+    if platforms is not None:
+        platforms = frozenset(platforms)
+        unknown = platforms - set(SYNTHETIC_PLATFORMS)
+        if not platforms or unknown:
+            raise ValueError(
+                f"platforms must be some of {', '.join(SYNTHETIC_PLATFORMS)}"
+            )
 
     rng = random.Random(random_seed)
     now = datetime.now(timezone.utc)
@@ -163,6 +180,7 @@ def seed_synthetic_usage(
         "duration_defaults_seconds": DEFAULT_DURATIONS_SECONDS,
         "platform_weights": PLATFORM_WEIGHTS,
         "affinity_matrix": AFFINITY_MATRIX,
+        "platforms": sorted(platforms) if platforms is not None else None,
     }
 
     connection = connect()
@@ -213,6 +231,10 @@ def seed_synthetic_usage(
                 persona=persona,
                 created_at=now,
             )
+            if platforms is not None:
+                events = [
+                    event for event in events if event[EVENT_PLATFORM_INDEX] in platforms
+                ]
 
             connection.execute(
                 """
@@ -563,6 +585,24 @@ def _delete_seed_runs_by_name(connection, seed_run_name: str) -> None:
         )
 
 
+def remove_synthetic_usage(connection) -> dict[str, int]:
+    """Delete every synthetic row (all seed runs); real data is never touched.
+
+    Real users, imports and events always have is_synthetic = false and no
+    seed_run_id, so these filters cannot match them.
+    """
+    deleted = {}
+    for table, sql in (
+        ("usage_events", "DELETE FROM usage_events WHERE is_synthetic = true"),
+        ("imports", "DELETE FROM imports WHERE seed_run_id IS NOT NULL"),
+        ("users", "DELETE FROM users WHERE is_synthetic = true"),
+        ("synthetic_seed_runs", "DELETE FROM synthetic_seed_runs"),
+    ):
+        deleted[table] = connection.execute(sql).rowcount
+    connection.commit()
+    return deleted
+
+
 def _base_sessions(cohort: str, platform: str) -> int:
     base_by_cohort = {
         "adolescent_female": {
@@ -676,7 +716,36 @@ def main() -> int:
         action="store_true",
         help="Do not run pending migrations before seeding.",
     )
+    parser.add_argument(
+        "--platforms",
+        help=(
+            "Comma-separated platforms to keep, e.g. youtube (the population "
+            f"page only reads YouTube). Default: all of {','.join(SYNTHETIC_PLATFORMS)}."
+        ),
+    )
+    parser.add_argument(
+        "--remove-all",
+        action="store_true",
+        help="Delete all synthetic data (every seed run) and exit without seeding.",
+    )
     args = parser.parse_args()
+
+    if args.remove_all:
+        try:
+            connection = connect()
+        except DatabaseConfigError as error:
+            print(str(error), file=sys.stderr)
+            return 2
+        try:
+            deleted = remove_synthetic_usage(connection)
+        finally:
+            connection.close()
+        print("Removed synthetic data: " + ", ".join(f"{table} {count}" for table, count in deleted.items()))
+        return 0
+
+    platforms = None
+    if args.platforms:
+        platforms = [name.strip().lower() for name in args.platforms.split(",") if name.strip()]
 
     try:
         seed_run_id = seed_synthetic_usage(
@@ -687,6 +756,7 @@ def main() -> int:
             replace_seed_run=args.replace_seed_run,
             batch_size=args.batch_size,
             run_schema_migrations=not args.skip_migrations,
+            platforms=platforms,
         )
     except (DatabaseConfigError, ValueError) as error:
         print(str(error), file=sys.stderr)

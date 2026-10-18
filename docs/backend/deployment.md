@@ -104,10 +104,21 @@ python backend/scripts/run_migrations.py
 ```
 
 5. Optionally seed the synthetic comparison population. Keep it small: the free
-   plan has 1 GB, and each event costs roughly 0.7 KB including indexes.
+   plan has 1 GB, and each event costs roughly 0.7 KB including indexes. The
+   population page only reads YouTube watches, so seed YouTube only (about
+   85 events per profile per 14 days: 300 profiles are roughly 18 MB; all
+   platforms would be about 3.5 times that).
 
 ```sh
-uv run python backend/scripts/seed_synthetic_usage.py --profiles 300 --days 30
+uv run python backend/scripts/seed_synthetic_usage.py --profiles 300 --days 14 --platforms youtube
+```
+
+   Synthetic rows are marked (`is_synthetic`, `imports.seed_run_id`, one
+   `synthetic_seed_runs` row per run) and never mix with real users. Remove all
+   of them at any time with:
+
+```sh
+uv run python backend/scripts/seed_synthetic_usage.py --remove-all
 ```
 
 6. Confirm these tables exist: `schema_migrations`, `users`, `imports`,

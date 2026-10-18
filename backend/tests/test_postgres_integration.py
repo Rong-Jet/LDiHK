@@ -362,6 +362,52 @@ class PostgresIntegrationTests(unittest.TestCase):
         self.assertTrue(all(day["top10"] > 0 for day in payload["deciles"]), payload["deciles"])
         self.assertGreater(payload["userDailyAverageHours"], 0)
 
+    def test_youtube_only_seed_and_remove_all_keep_real_data(self):
+        from backend.scripts.seed_synthetic_usage import (
+            remove_synthetic_usage,
+            seed_synthetic_usage,
+        )
+
+        ldihk_id = self._new_id()
+        self._upload_and_import(ldihk_id, "real.zip", _watch_records(3, prefix=ldihk_id[-6:]))
+        real_events = self._count("SELECT count(*) FROM usage_events WHERE is_synthetic = false")
+
+        seed_run_id = seed_synthetic_usage(
+            total_profiles=4,
+            total_days=7,
+            seed_run_name=f"it-{uuid.uuid4().hex[:8]}",
+            random_seed=7,
+            run_schema_migrations=False,
+            platforms=["youtube"],
+        )
+        with closing(self._connect()) as connection:
+            seeded_platforms = connection.execute(
+                """
+                SELECT DISTINCT ue.platform
+                FROM usage_events ue JOIN imports i ON i.id = ue.import_id
+                WHERE i.seed_run_id = %s
+                """,
+                (seed_run_id,),
+            ).fetchall()
+        self.assertEqual(seeded_platforms, [("youtube",)])
+
+        with closing(self._connect()) as connection:
+            deleted = remove_synthetic_usage(connection)
+        self.assertGreater(deleted["usage_events"], 0)
+        self.assertGreaterEqual(deleted["users"], 4)
+        for sql in (
+            "SELECT count(*) FROM usage_events WHERE is_synthetic = true",
+            "SELECT count(*) FROM users WHERE is_synthetic = true",
+            "SELECT count(*) FROM imports WHERE seed_run_id IS NOT NULL",
+            "SELECT count(*) FROM synthetic_seed_runs",
+        ):
+            self.assertEqual(self._count(sql), 0, sql)
+        self.assertEqual(
+            self._count("SELECT count(*) FROM usage_events WHERE is_synthetic = false"), real_events
+        )
+        me = self.client.get("/api/me?timezone=UTC", headers={"Authorization": f"Bearer {ldihk_id}"})
+        self.assertEqual(me.status_code, 200)
+
     def test_request_connections_are_pooled_and_rolled_back(self):
         from backend.db_pool import pooled_connect
 
