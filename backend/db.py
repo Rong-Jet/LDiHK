@@ -24,6 +24,7 @@ MIGRATION_LOCK_TIMEOUT = "60s"
 
 LOGGER = logging.getLogger(__name__)
 _warned_pooler_hosts: set[str] = set()
+_warned_schema_missing = False
 
 
 class DatabaseConfigError(RuntimeError):
@@ -139,14 +140,33 @@ def is_invalid_timezone_error(error: BaseException) -> bool:
 
 
 def is_database_unavailable_error(error: BaseException) -> bool:
-    """True for errors that mean "the database is down", not "bad query"."""
+    """True for errors that mean "the database is down", not "bad query".
+
+    A missing table counts too: the database is reachable but not migrated yet.
+    """
     if isinstance(error, DatabaseUnavailableError):
         return True
     try:
         import psycopg
     except ModuleNotFoundError:  # pragma: no cover - depends on env setup
         return False
+    if isinstance(error, psycopg.errors.UndefinedTable):
+        _warn_schema_missing_once(error)
+        return True
     return isinstance(error, (psycopg.OperationalError, psycopg.InterfaceError))
+
+
+def _warn_schema_missing_once(error: BaseException) -> None:
+    global _warned_schema_missing
+    if _warned_schema_missing:
+        return
+    _warned_schema_missing = True
+    LOGGER.error(
+        "The database schema is missing (%s). Migrations run when the service "
+        "starts only with RUN_WORKERS_IN_PROCESS=true; otherwise run "
+        "backend/scripts/run_migrations.py.",
+        str(error).splitlines()[0],
+    )
 
 
 def list_migrations(

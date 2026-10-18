@@ -10,6 +10,7 @@ from unittest import mock
 import psycopg
 from flask import Flask
 
+from backend import db
 from backend.app import create_app
 from backend.background import WorkerLoop, WorkerSignal
 from backend.http_boundary import configure_cors
@@ -188,6 +189,34 @@ class DatabaseOutageTests(unittest.TestCase):
         for response in responses:
             self.assertEqual(response.status_code, 503)
             self.assertEqual(response.get_json(), {"error": "database_unavailable"})
+
+    def test_unmigrated_database_returns_503_and_logs_the_fix(self):
+        # Staging once ran without RUN_WORKERS_IN_PROCESS, so no migrations ran
+        # and every request failed with a bare 500.
+        def unmigrated():
+            connection = mock.MagicMock()
+            connection.execute.side_effect = psycopg.errors.UndefinedTable(
+                'relation "users" does not exist'
+            )
+            return connection
+
+        client = _app(unmigrated).test_client()
+        with mock.patch.object(db, "_warned_schema_missing", False):
+            with self.assertLogs("backend.db", level="ERROR") as logs:
+                responses = [
+                    client.get("/api/me", headers=auth_headers()),
+                    client.post(
+                        "/api/query",
+                        headers=auth_headers(),
+                        json={"dataset": "youtube_usage", "metrics": ["event_count"], "dimensions": []},
+                    ),
+                ]
+
+        for response in responses:
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(response.get_json(), {"error": "database_unavailable"})
+        self.assertEqual(len(logs.records), 1)
+        self.assertIn("RUN_WORKERS_IN_PROCESS=true", logs.output[0])
 
 
 class PostgresTimezoneTests(unittest.TestCase):

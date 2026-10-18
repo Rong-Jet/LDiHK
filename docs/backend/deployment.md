@@ -136,6 +136,14 @@ health check path: /health
 RUN_WORKERS_IN_PROCESS=true
 ```
 
+If you create the web service by hand instead (**New** -> **Web Service**),
+nothing from `render.yaml` applies: set its plain values on the service
+yourself, and the health check path `/health` under **Settings**. Without
+`RUN_WORKERS_IN_PROCESS=true` no upload is imported and the schema is never
+created (every DB route answers `503`, and the log names the fix).
+`ENABLE_LOCAL_FILE_ROUTES=false` and `ALLOW_LOCALHOST_ORIGINS=false` matter
+too: both default to the local-development behaviour.
+
 The web service exposes the hosted API routes:
 
 ```text
@@ -150,7 +158,8 @@ POST /api/population
 ```
 
 `GET /health` does not touch the database. DB-backed routes return `503` with
-`database_unavailable` when the database is missing or unreachable.
+`database_unavailable` when the database is missing, unreachable, or not
+migrated yet.
 
 Free-plan behaviour to expect:
 
