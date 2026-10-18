@@ -65,7 +65,7 @@ PUT /api/mock-s3-upload     (mock mode only)
 ## Free-tier behaviour
 
 - The backend on Render's free plan sleeps after 15 minutes. Every console
-  page pings `GET /health` first and shows "Waking the server" until it
+  page pings `GET /api/ready` first and shows "Waking the server" until it
   answers (usually under a minute). While it waits it also calls
   `GET /api/wake`, which reaches the backend from the server side, so a
   browser whose own request is blocked still gets in. API calls never use the

@@ -33,7 +33,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 /**
- * Pings `${PUBLIC_API_URL}/health` on mount and exposes the wake-up progress
+ * Pings `${PUBLIC_API_URL}/api/ready` on mount and exposes the wake-up progress
  * so pages can gate their data queries on `isReady`. While the browser's own
  * request gets no answer, it also asks this site's /api/wake route, which
  * reaches the backend from the server side (and so starts a sleeping one).

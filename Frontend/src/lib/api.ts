@@ -29,7 +29,8 @@ export const jsonHeaders = {
 } as const;
 
 export const apiRoutes = {
-  health: () => backendApiUrl('/health'),
+  // Not /health: ad and privacy blockers block that path (ERR_BLOCKED_BY_CLIENT).
+  health: () => backendApiUrl('/api/ready'),
   me: (timeZone: string) => backendApiUrl(`/api/me?timezone=${encodeURIComponent(timeZone)}`),
   deleteMe: () => backendApiUrl('/api/me'),
   query: () => backendApiUrl('/api/query'),

@@ -16,6 +16,13 @@ class HttpBoundaryTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), {"status": "ok"})
 
+    def test_ready_answers_like_health_for_browsers(self):
+        # Blockers stop browser requests to /health; the site checks /api/ready.
+        response = create_app().test_client().get("/api/ready")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"status": "ok"})
+
     def test_answers_are_never_reused_from_a_browser_cache(self):
         # A /health answer stored by a plain browser tab (no Origin, so no CORS
         # header) must not be reused for the site's cross-origin request.

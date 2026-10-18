@@ -58,7 +58,7 @@ LOGGER = logging.getLogger(__name__)
 ENABLE_LOCAL_FILE_ROUTES_ENV = "ENABLE_LOCAL_FILE_ROUTES"
 # Requests that should not count as user activity for the worker threads:
 # uptime pings must not keep waking the (free-tier) database.
-_INACTIVE_PATHS = frozenset({"/health"})
+_INACTIVE_PATHS = frozenset({"/health", "/api/ready"})
 
 
 def create_app(
@@ -110,6 +110,13 @@ def create_app(
 
     @app.get("/health")
     def health():
+        return jsonify({"status": "ok"})
+
+    # The same check for the browser: ad and privacy blockers block URLs
+    # ending in /health (net::ERR_BLOCKED_BY_CLIENT), which left the site
+    # waiting for a server that was up.
+    @app.get("/api/ready")
+    def ready():
         return jsonify({"status": "ok"})
 
     if enable_local_file_routes:

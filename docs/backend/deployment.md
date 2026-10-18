@@ -159,6 +159,7 @@ The web service exposes the hosted API routes:
 
 ```text
 GET /health
+GET /api/ready
 GET /api/me
 DELETE /api/me
 POST /api/uploads
@@ -168,7 +169,8 @@ POST /api/query
 POST /api/population
 ```
 
-`GET /health` does not touch the database. DB-backed routes return `503` with
+`GET /health` and `GET /api/ready` (the same check for browsers, whose ad
+blockers often block `/health`) do not touch the database. DB-backed routes return `503` with
 `database_unavailable` when the database is missing, unreachable, or not
 migrated yet.
 

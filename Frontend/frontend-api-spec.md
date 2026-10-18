@@ -18,7 +18,7 @@ Frontend runtime convention:
 - Upload URLs come from the backend (`POST /api/uploads`), which enforces the
   storage budget. The frontend site holds no storage credentials; the Astro
   upload route only serves mock mode.
-- The free-tier backend sleeps when idle. The frontend pings `GET /health` on
+- The free-tier backend sleeps when idle. The frontend pings `GET /api/ready` on
   load, shows a "waking the server" state, and gates data requests until it
   answers. Browser requests use a 90-second timeout and retry 5xx/network
   errors.
@@ -34,7 +34,7 @@ Frontend runtime convention:
 
 Endpoint ownership:
 
-- Backend-owned: `GET /health`, `GET /api/me`, `DELETE /api/me`,
+- Backend-owned: `GET /health`, `GET /api/ready`, `GET /api/me`, `DELETE /api/me`,
   `POST /api/uploads`, `POST /api/imports`, `GET /api/imports/{import_id}`,
   `POST /api/query`, `POST /api/population`. The browser calls all of them
   directly on `PUBLIC_API_URL`.
@@ -139,9 +139,12 @@ identity prefix: `uploads/<LDiHKID>/`.
 
 ```text
 GET /health
+GET /api/ready
 ```
 
-Auth is not required.
+Auth is not required. Both answer the same. The browser uses `/api/ready`:
+ad and privacy blockers block URLs ending in `/health`
+(`net::ERR_BLOCKED_BY_CLIENT`). Uptime checks use `/health`.
 
 Response:
 
@@ -252,7 +255,7 @@ GET /api/wake
 ```
 
 Owned by the frontend Astro server. Auth is not required and it takes no
-parameters. While the browser's own `GET /health` gets no answer, console
+parameters. While the browser's own `GET /api/ready` gets no answer, console
 pages call it at most every 30 seconds. It requests the backend's `/health`
 from the server side, which also starts a sleeping free-tier backend, waits up
 to 8 seconds, and answers `200 {"status": "ok"}` when the backend is up,
