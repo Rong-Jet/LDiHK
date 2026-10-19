@@ -10,9 +10,11 @@ individual usage.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from decimal import Decimal
+
+from backend.demographics import AGE_RANGES, comparable_sex, neighbouring_ranges
 
 
 POPULATION_SCHEMA_VERSION = "youtube_usage.population.v1"
@@ -31,6 +33,9 @@ class PopulationRequest:
     end_date: date
     include_synthetic: bool
     custom_percentile: int
+    # "cohort": people of similar age range and sex (if the requester gave
+    # them); "everyone": the whole population.
+    compare_with: str = "everyone"
 
     @property
     def day_count(self) -> int:
@@ -72,11 +77,16 @@ def validate_population_request(request_payload: object) -> PopulationRequest:
     ):
         raise PopulationValidationError("invalid_custom_percentile")
 
+    compare_with = request_payload.get("compareWith", "everyone")
+    if compare_with not in ("cohort", "everyone"):
+        raise PopulationValidationError("invalid_compare_with")
+
     return PopulationRequest(
         start_date=start_date,
         end_date=end_date,
         include_synthetic=include_synthetic,
         custom_percentile=custom_percentile,
+        compare_with=compare_with,
     )
 
 
@@ -117,6 +127,69 @@ class _PopulationMember:
     first_day: date
     last_day: date
     synthetic: bool
+    user_id: str = ""
+    age_range: str | None = None
+    sex: str | None = None
+
+
+@dataclass(frozen=True)
+class _Requester:
+    user_id: str
+    age_range: str | None
+    sex: str | None
+
+
+# A cohort is widened to neighbouring age ranges until it has this many
+# people, so its percentiles are not dominated by a handful of profiles.
+COHORT_TARGET_SIZE = 30
+
+
+def select_comparison_group(
+    members: list[_PopulationMember],
+    *,
+    age_range: str | None,
+    sex: str | None,
+) -> tuple[list[_PopulationMember], dict[str, object]]:
+    """People of the requester's age range and sex, widened as needed.
+
+    Age widens first (neighbouring 5-year ranges), then sex is dropped. A sex
+    the studies do not report ("diverse") or no answer compares across sexes.
+    """
+    sex_filter = comparable_sex(sex)
+    if age_range not in AGE_RANGES:
+        age_range = None
+    if age_range is None and sex_filter is None:
+        return members, _group_payload("everyone", None, None, len(members))
+
+    def matching(distance: int | None, by_sex: str | None) -> list[_PopulationMember]:
+        ranges = neighbouring_ranges(age_range, distance) if age_range and distance is not None else None
+        return [
+            member
+            for member in members
+            if (ranges is None or member.age_range in ranges)
+            and (by_sex is None or member.sex == by_sex)
+        ]
+
+    for by_sex in ([sex_filter, None] if sex_filter else [None]):
+        distances: list[int | None] = list(range(len(AGE_RANGES))) if age_range else [None]
+        best: list[_PopulationMember] = []
+        for distance in distances:
+            best = matching(distance, by_sex)
+            if len(best) >= COHORT_TARGET_SIZE:
+                break
+        if len(best) >= MIN_POPULATION_SIZE and (by_sex is not None or age_range is not None):
+            ranges = sorted({m.age_range for m in best if m.age_range}, key=AGE_RANGES.index)
+            return best, _group_payload("cohort", ranges, by_sex, len(best))
+    return members, _group_payload("everyone", None, None, len(members))
+
+
+def _group_payload(basis: str, age_ranges: list[str] | None, sex: str | None, size: int) -> dict[str, object]:
+    return {
+        "basis": basis,
+        "ageRanges": [age_ranges[0], age_ranges[-1]] if age_ranges else None,
+        "sex": sex,
+        "size": size,
+    }
 
 
 def query_youtube_population(
@@ -127,7 +200,8 @@ def query_youtube_population(
 ) -> dict[str, object]:
     request = validate_population_request(request_payload)
 
-    requester_id = _fetch_requester_id(connection, ldihk_id)
+    requester_row = _fetch_requester(connection, ldihk_id)
+    requester_id = requester_row.user_id if requester_row else None
     real_profiles = (
         _fetch_usage_profiles(
             connection,
@@ -154,6 +228,13 @@ def query_youtube_population(
         baseline = _fetch_synthetic_window(connection)
         if baseline is not None:
             members.extend(_synthetic_members(connection, baseline))
+
+    group = _group_payload("everyone", None, None, len(members))
+    if request.compare_with == "cohort" and requester_row is not None:
+        members = _with_demographics(connection, members)
+        members, group = select_comparison_group(
+            members, age_range=requester_row.age_range, sex=requester_row.sex
+        )
 
     if len(members) < MIN_POPULATION_SIZE:
         return {
@@ -183,6 +264,7 @@ def query_youtube_population(
         "includeSynthetic": request.include_synthetic,
         "customPercentile": request.custom_percentile,
         "populationSize": len(members),
+        "comparisonGroup": group,
         "syntheticBaseline": (
             {"startDate": baseline[0].isoformat(), "endDate": baseline[1].isoformat()}
             if baseline is not None
@@ -194,19 +276,50 @@ def query_youtube_population(
     }
 
 
-def _fetch_requester_id(connection, ldihk_id: str) -> str | None:
+def _fetch_requester(connection, ldihk_id: str) -> _Requester | None:
     rows = _fetch_rows(
         connection,
         """
             /* population_requester */
-            SELECT id::text AS user_id
+            SELECT id::text AS user_id, age_range, sex
             FROM users
             WHERE external_id = %s
               AND is_synthetic = false
         """,
         [ldihk_id],
     )
-    return str(rows[0]["user_id"]) if rows else None
+    if not rows:
+        return None
+    row = rows[0]
+    return _Requester(
+        user_id=str(row["user_id"]),
+        age_range=row.get("age_range"),
+        sex=row.get("sex"),
+    )
+
+
+def _with_demographics(connection, members: list[_PopulationMember]) -> list[_PopulationMember]:
+    """Attach each member's age range and sex (people without them only count
+    when the comparison falls back to everyone)."""
+    rows = _fetch_rows(
+        connection,
+        """
+            /* population_demographics */
+            SELECT id::text AS user_id, age_range, sex
+            FROM users
+            WHERE age_range IS NOT NULL OR sex IS NOT NULL
+        """,
+        [],
+    )
+    by_id = {str(row["user_id"]): row for row in rows}
+    return [
+        replace(
+            member,
+            age_range=(by_id.get(member.user_id) or {}).get("age_range"),
+            sex=(by_id.get(member.user_id) or {}).get("sex"),
+        )
+        for member in members
+    ]
 
 
 def _fetch_usage_profiles(
@@ -300,6 +413,7 @@ def _real_members(
                 first_day=first,
                 last_day=last,
                 synthetic=False,
+                user_id=user_id,
             )
         )
     return members
@@ -350,8 +464,9 @@ def _synthetic_members(connection, window: tuple[date, date]) -> list[_Populatio
             first_day=window[0],
             last_day=window[1],
             synthetic=True,
+            user_id=user_id,
         )
-        for profile in profiles.values()
+        for user_id, profile in profiles.items()
     ]
 
 
@@ -515,6 +630,140 @@ def _clipped_events_cte(population_scope: str) -> str:
             FROM clipped_events
         )
     """
+
+
+# ---------------------------------------------------------------------------
+# Reference values for the risk score (POST /api/population/reference)
+# ---------------------------------------------------------------------------
+
+# Same definitions as the risk tab: late night is 23:00-04:59, an hour counts
+# as active with at least 5 minutes of watching, metrics are per active day.
+LATE_NIGHT_HOURS = frozenset({23, 0, 1, 2, 3, 4})
+ACTIVE_HOUR_SECONDS = 300
+REFERENCE_METRICS = ("dailyHours", "lateNightHours", "fragmentation")
+
+
+def query_risk_reference(
+    connection,
+    request_payload: object,
+    *,
+    ldihk_id: str,
+) -> dict[str, object]:
+    """Typical risk-score inputs of the requester's cohort and of everyone.
+
+    The risk tab measures a user against people of the same age range and sex
+    (synthetic profiles plus other real users), so cohorts that typically use
+    more or less do not shift the score by that alone.
+    """
+    request = validate_population_request(request_payload)
+    requester = _fetch_requester(connection, ldihk_id)
+    if requester is None:
+        return {"ready": False, "reason": "no_user_data"}
+
+    per_member = _fetch_member_day_metrics(
+        connection,
+        scope=REAL_USERS_SCOPE,
+        start_date=request.start_date,
+        end_date=request.end_date,
+        marker="reference_real_usage",
+    )
+    per_member.pop(requester.user_id, None)
+    if request.include_synthetic:
+        window = _fetch_synthetic_window(connection)
+        if window is not None:
+            per_member.update(
+                _fetch_member_day_metrics(
+                    connection,
+                    scope=SYNTHETIC_USERS_SCOPE,
+                    start_date=window[0],
+                    end_date=window[1],
+                    marker="reference_synthetic_usage",
+                )
+            )
+    members = _with_demographics(
+        connection,
+        [
+            _PopulationMember(
+                profile=_UsageProfile(),
+                covered_days=0,
+                first_day=request.start_date,
+                last_day=request.end_date,
+                synthetic=False,
+                user_id=user_id,
+            )
+            for user_id in per_member
+        ],
+    )
+    if len(members) < MIN_POPULATION_SIZE:
+        return {
+            "ready": False,
+            "reason": "insufficient_population",
+            "populationSize": len(members),
+            "minPopulationSize": MIN_POPULATION_SIZE,
+        }
+    group_members, group = (
+        select_comparison_group(members, age_range=requester.age_range, sex=requester.sex)
+        if request.compare_with == "cohort"
+        else (members, _group_payload("everyone", None, None, len(members)))
+    )
+    return {
+        "ready": True,
+        "comparisonGroup": group,
+        "profile": {"age_range": requester.age_range, "sex": requester.sex},
+        "cohort": _median_metrics([per_member[m.user_id] for m in group_members]),
+        "overall": _median_metrics([per_member[m.user_id] for m in members]),
+    }
+
+
+def _fetch_member_day_metrics(
+    connection,
+    *,
+    scope: str,
+    start_date: date,
+    end_date: date,
+    marker: str,
+) -> dict[str, dict[str, float]]:
+    """Per user: average watch hours, late-night hours and fragmentation per active day."""
+    rows = _fetch_rows(
+        connection,
+        f"""
+            /* {marker} */
+            WITH {_clipped_events_cte(scope)}
+            SELECT
+                user_id::text AS user_id,
+                to_char((occurred_at AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS date,
+                EXTRACT(HOUR FROM occurred_at AT TIME ZONE 'UTC')::int AS hour,
+                COALESCE(SUM(estimated_watch_seconds), 0)::numeric AS seconds
+            FROM events_with_duration
+            GROUP BY 1, 2, 3
+        """,
+        [start_date.isoformat(), end_date.isoformat()],
+    )
+    days: dict[str, dict[str, list[float]]] = {}
+    for row in rows:
+        seconds = _float(row.get("seconds"))
+        day = days.setdefault(str(row["user_id"]), {}).setdefault(str(row["date"]), [0.0, 0.0, 0.0])
+        day[0] += seconds
+        if _int(row.get("hour")) in LATE_NIGHT_HOURS:
+            day[1] += seconds
+        if seconds >= ACTIVE_HOUR_SECONDS:
+            day[2] += 1
+    metrics: dict[str, dict[str, float]] = {}
+    for user_id, by_day in days.items():
+        count = len(by_day)
+        metrics[user_id] = {
+            "dailyHours": sum(d[0] for d in by_day.values()) / 3600 / count,
+            "lateNightHours": sum(d[1] for d in by_day.values()) / 3600 / count,
+            "fragmentation": sum(d[2] for d in by_day.values()) / 24 / count,
+        }
+    return metrics
+
+
+def _median_metrics(values: list[dict[str, float]]) -> dict[str, float]:
+    return {
+        metric: round(_percentile(sorted(v[metric] for v in values), 0.5), 3)
+        for metric in REFERENCE_METRICS
+    }
 
 
 def _percentile_rank(user_average: float, population_averages: list[float]) -> int:

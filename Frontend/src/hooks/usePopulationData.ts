@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { fetchPopulationJson } from '../lib/api';
+import { fetchPopulationJson, type ComparisonGroup } from '../lib/api';
 
 export interface DistributionRow {
   hours: number;
@@ -30,6 +30,8 @@ export interface PopulationQueryResult {
   message?: string;
   /** Number of other people (real and synthetic) in the comparison. */
   populationSize: number | null;
+  /** Whom the user was compared with (missing from older backends). */
+  comparisonGroup: ComparisonGroup | null;
   /** Days the synthetic profiles were generated for (used as a weekday baseline). */
   syntheticBaseline: { startDate: string; endDate: string } | null;
   userPercentile: number | null;
@@ -56,11 +58,12 @@ const fetchPopulationData = async (
   customPercentile: number,
   sessionToken: string,
   visibleStartDate: string,
+  compareWith: 'cohort' | 'everyone',
   signal?: AbortSignal
 ): Promise<PopulationQueryResult> => {
   const data = await fetchPopulationJson<PopulationResponse>(
     sessionToken,
-    { platforms, startDate, endDate, includeSynthetic, customPercentile, visibleStartDate },
+    { platforms, startDate, endDate, includeSynthetic, customPercentile, visibleStartDate, compareWith },
     signal
   );
   const ready = data.ready === true;
@@ -70,6 +73,7 @@ const fetchPopulationData = async (
     reason: data.reason,
     message: data.message,
     populationSize: data.populationSize ?? null,
+    comparisonGroup: data.comparisonGroup ?? null,
     syntheticBaseline: data.syntheticBaseline ?? null,
     userPercentile: data.userPercentile ?? null,
     userDailyAverageHours: data.userDailyAverageHours ?? null,
@@ -89,12 +93,14 @@ export function usePopulationData(
   customPercentile: number,
   isReady: boolean,
   sessionToken: string | null,
-  visibleStartDate: string
+  visibleStartDate: string,
+  /** `cohort`: people of similar age range and sex (falls back to everyone). */
+  compareWith: 'cohort' | 'everyone' = 'everyone'
 ) {
   return useQuery<PopulationQueryResult>({
-    queryKey: ['population', platforms.join(','), startDate, endDate, includeSynthetic, customPercentile, sessionToken, visibleStartDate],
+    queryKey: ['population', platforms.join(','), startDate, endDate, includeSynthetic, customPercentile, sessionToken, visibleStartDate, compareWith],
     queryFn: ({ signal }) => fetchPopulationData(
-      platforms, startDate, endDate, includeSynthetic, customPercentile, sessionToken || '', visibleStartDate, signal
+      platforms, startDate, endDate, includeSynthetic, customPercentile, sessionToken || '', visibleStartDate, compareWith, signal
     ),
     enabled: isReady && !!startDate && !!endDate && !!sessionToken && platforms.length > 0,
   });

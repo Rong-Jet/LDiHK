@@ -36,7 +36,7 @@ class PostgresSchemaContractTests(unittest.TestCase):
 
         self.assertEqual(
             [migration.version for migration in migrations],
-            ["001", "002", "003", "004", "005", "006", "007"],
+            ["001", "002", "003", "004", "005", "006", "007", "008"],
         )
         sql = compact_sql("\n".join(migration.sql for migration in migrations))
 

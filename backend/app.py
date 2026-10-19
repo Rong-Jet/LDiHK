@@ -33,6 +33,7 @@ from backend.imports_api import (
 )
 from backend.population_api import (
     PopulationValidationError,
+    query_risk_reference,
     query_youtube_population,
 )
 from backend.query_api import (
@@ -46,6 +47,12 @@ from backend.query_api import (
 )
 from backend.uploads import create_uploads_blueprint, forget_user_reservations, user_upload_objects
 from backend.user_data import delete_user_data, delete_user_uploads
+from backend.user_profile import (
+    ProfileValidationError,
+    apply_profile,
+    fetch_profile,
+    validate_profile_payload,
+)
 from backend.youtube_sql import (
     DEFAULT_SQLITE_PATH,
     QueryValidationError,
@@ -173,8 +180,39 @@ def create_app(
                 "exists": True,
                 "timezone": bucket_timezone,
                 "datasets": {},
+                "profile": {"age_range": None, "sex": None},
             }
         return jsonify({**summary, "latest_import": latest_import})
+
+    @app.patch("/api/me/profile")
+    def update_current_profile():
+        """Set or clear the caller's age range and sex (both optional)."""
+        connection = None
+        try:
+            identity = require_bearer_identity()
+            update = validate_profile_payload(request.get_json(silent=True))
+            connection = query_connection_factory()
+            found = fetch_profile(connection, ldihk_id=identity.ldihk_id)
+            if found is None:
+                return jsonify({"error": "unknown_ldihk_id"}), 404
+            apply_profile(connection, user_id=found[0], update=update)
+            connection.commit()
+            profile = fetch_profile(connection, ldihk_id=identity.ldihk_id)[1]
+        except PublicBoundaryError as error:
+            return public_boundary_error_response(error)
+        except ProfileValidationError as error:
+            return jsonify({"error": "invalid_profile", "fields": error.errors}), 400
+        except DatabaseConfigError as error:
+            return database_unavailable(error)
+        except Exception as error:
+            if is_database_unavailable_error(error):
+                LOGGER.warning("Database unavailable: %s", error)
+                return database_unavailable()
+            raise
+        finally:
+            if connection is not None:
+                connection.close()
+        return jsonify({"profile": profile})
 
     @app.delete("/api/me")
     def delete_current_user():
@@ -261,6 +299,13 @@ def create_app(
 
     @app.post("/api/population")
     def youtube_population_query():
+        return _population_response(query_youtube_population)
+
+    @app.post("/api/population/reference")
+    def risk_reference_query():
+        return _population_response(query_risk_reference)
+
+    def _population_response(compute):
         connection = None
         try:
             identity = require_bearer_identity()
@@ -270,7 +315,7 @@ def create_app(
                 return identity_field_error_response(identity_errors)
 
             connection = query_connection_factory()
-            payload = query_youtube_population(
+            payload = compute(
                 connection,
                 request_payload,
                 ldihk_id=identity.ldihk_id,

@@ -1,4 +1,10 @@
 #!/usr/bin/env python
+"""Seed synthetic comparison profiles (see backend/synthetic_population.py).
+
+Every row is marked synthetic (users/usage_events.is_synthetic, imports.
+seed_run_id, one synthetic_seed_runs row per run) and never mixes with real
+users. `--remove-all` deletes all of it.
+"""
 from __future__ import annotations
 
 import argparse
@@ -7,7 +13,6 @@ import json
 import random
 import sys
 from collections.abc import Collection
-from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -16,129 +21,17 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from backend import synthetic_population as model
 from backend.db import DatabaseConfigError, connect, run_migrations
+from backend.synthetic_population import Persona
 
 
-GENERATOR_VERSION = "synthetic_usage_raw_events.v1"
+GENERATOR_VERSION = "synthetic_usage_sessions.v2"
 DEFAULT_BATCH_SIZE = 1000
 SYNTHETIC_BUCKET = "synthetic-seed"
-SYNTHETIC_PLATFORMS = ("youtube", "tiktok", "instagram", "spotify", "linkedin")
+SYNTHETIC_PLATFORMS = model.PLATFORMS
 # Position of the platform in the event tuples built by generate_user_telemetry.
 EVENT_PLATFORM_INDEX = 4
-
-
-def normalize_weights(weights: list[float]) -> list[float]:
-    total = sum(weights)
-    return [weight / total for weight in weights]
-
-
-PLATFORM_WEIGHTS = {
-    "tiktok": normalize_weights(
-        [0.05, 0.04, 0.02, 0.01, 0.01, 0.01, 0.02, 0.03, 0.03, 0.03, 0.04, 0.04,
-         0.05, 0.05, 0.06, 0.07, 0.08, 0.08, 0.09, 0.10, 0.10, 0.10, 0.09, 0.08]
-    ),
-    "instagram": normalize_weights(
-        [0.02, 0.01, 0.01, 0.01, 0.01, 0.02, 0.03, 0.05, 0.07, 0.08, 0.08, 0.09,
-         0.10, 0.09, 0.08, 0.07, 0.06, 0.07, 0.08, 0.08, 0.07, 0.06, 0.05, 0.04]
-    ),
-    "youtube_shorts": normalize_weights(
-        [0.02, 0.01, 0.01, 0.01, 0.01, 0.02, 0.04, 0.06, 0.06, 0.05, 0.05, 0.05,
-         0.06, 0.06, 0.07, 0.08, 0.09, 0.10, 0.10, 0.09, 0.08, 0.06, 0.05, 0.04]
-    ),
-    "youtube_long": normalize_weights(
-        [0.03, 0.02, 0.01, 0.01, 0.01, 0.01, 0.02, 0.03, 0.04, 0.03, 0.03, 0.04,
-         0.04, 0.04, 0.05, 0.06, 0.08, 0.10, 0.12, 0.14, 0.14, 0.12, 0.09, 0.06]
-    ),
-    "spotify": normalize_weights(
-        [0.02, 0.01, 0.01, 0.01, 0.01, 0.02, 0.04, 0.08, 0.10, 0.09, 0.08, 0.07,
-         0.07, 0.07, 0.07, 0.08, 0.09, 0.09, 0.06, 0.05, 0.04, 0.03, 0.03, 0.03]
-    ),
-    "linkedin": normalize_weights(
-        [0.005, 0.005, 0.005, 0.005, 0.005, 0.01, 0.03, 0.06, 0.10, 0.12, 0.12,
-         0.10, 0.08, 0.08, 0.10, 0.08, 0.06, 0.05, 0.04, 0.03, 0.02, 0.01, 0.01, 0.01]
-    ),
-}
-
-AFFINITY_MATRIX = {
-    "adolescent_female": {
-        "tiktok": 0.95,
-        "instagram": 0.90,
-        "spotify": 0.85,
-        "youtube_shorts": 0.70,
-        "youtube_long": 0.60,
-        "linkedin": 0.00,
-    },
-    "adolescent_male": {
-        "tiktok": 0.75,
-        "instagram": 0.60,
-        "spotify": 0.80,
-        "youtube_shorts": 0.90,
-        "youtube_long": 0.95,
-        "linkedin": 0.00,
-    },
-    "adult_female": {
-        "tiktok": 0.55,
-        "instagram": 0.80,
-        "spotify": 0.75,
-        "youtube_shorts": 0.50,
-        "youtube_long": 0.65,
-        "linkedin": 0.55,
-    },
-    "adult_male": {
-        "tiktok": 0.40,
-        "instagram": 0.65,
-        "spotify": 0.70,
-        "youtube_shorts": 0.60,
-        "youtube_long": 0.85,
-        "linkedin": 0.65,
-    },
-    "older_female": {
-        "tiktok": 0.15,
-        "instagram": 0.55,
-        "spotify": 0.35,
-        "youtube_shorts": 0.20,
-        "youtube_long": 0.75,
-        "linkedin": 0.30,
-    },
-    "older_male": {
-        "tiktok": 0.10,
-        "instagram": 0.35,
-        "spotify": 0.30,
-        "youtube_shorts": 0.20,
-        "youtube_long": 0.85,
-        "linkedin": 0.45,
-    },
-}
-
-DEFAULT_DURATIONS_SECONDS = {
-    "youtube_shorts": 60,
-    "youtube_long": 600,
-    "tiktok": 60,
-    "instagram": 60,
-    "spotify": 120,
-    "linkedin": 120,
-}
-
-
-@dataclass(frozen=True)
-class Persona:
-    age: int
-    sex: str
-    age_bucket: str
-    cohort: str
-    platforms: list[str]
-    avg_daily_sessions: dict[str, int]
-    usual_times_of_activity: dict[str, list[int]]
-
-
-@dataclass(frozen=True)
-class EventShape:
-    platform: str
-    product: str
-    event_type: str
-    duration_seconds: int
-    video_id: str | None
-
 
 def seed_synthetic_usage(
     *,
@@ -177,9 +70,12 @@ def seed_synthetic_usage(
         "total_profiles": total_profiles,
         "total_days": total_days,
         "random_seed": random_seed,
-        "duration_defaults_seconds": DEFAULT_DURATIONS_SECONDS,
-        "platform_weights": PLATFORM_WEIGHTS,
-        "affinity_matrix": AFFINITY_MATRIX,
+        "calibration": {
+            "total_minutes_median": model.TOTAL_MINUTES_MEDIAN,
+            "platform_share": model.PLATFORM_SHARE,
+            "weekday_factors": model.WEEKDAY_FACTORS,
+            "sessions_per_day": model.SESSIONS_PER_DAY,
+        },
         "platforms": sorted(platforms) if platforms is not None else None,
     }
 
@@ -213,6 +109,7 @@ def seed_synthetic_usage(
             ),
         )
 
+        seeded_events = 0
         for profile_index in range(total_profiles):
             clanker_number = profile_index + 1
             user_id = str(uuid4())
@@ -243,17 +140,19 @@ def seed_synthetic_usage(
                     external_id,
                     is_synthetic,
                     age,
+                    age_range,
                     sex,
                     age_bucket,
                     cohort,
                     created_at
                 )
-                VALUES (%s, %s, true, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, true, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     user_id,
                     external_id,
                     persona.age,
+                    persona.age_range,
                     persona.sex,
                     persona.age_bucket,
                     persona.cohort,
@@ -294,11 +193,9 @@ def seed_synthetic_usage(
                 ),
             )
             _insert_usage_events(connection, events, batch_size=batch_size)
-            print(
-                "Seeded "
-                f"{external_id}: {len(events)} events "
-                f"({clanker_number}/{total_profiles})"
-            )
+            seeded_events += len(events)
+            if clanker_number % 100 == 0 or clanker_number == total_profiles:
+                print(f"Seeded {clanker_number}/{total_profiles} profiles, {seeded_events} events")
 
         connection.commit()
         return seed_run_id
@@ -308,59 +205,8 @@ def seed_synthetic_usage(
     finally:
         connection.close()
 
-
 def generate_user_persona(rng: random.Random) -> Persona:
-    age, sex, age_bucket, cohort = assign_demographics(rng)
-    all_platforms = [
-        "tiktok",
-        "instagram",
-        "youtube_shorts",
-        "youtube_long",
-        "spotify",
-        "linkedin",
-    ]
-    active_platforms = [
-        platform
-        for platform in all_platforms
-        if rng.random() < AFFINITY_MATRIX[cohort][platform]
-    ]
-    if not active_platforms:
-        active_platforms = ["youtube_long"]
-
-    avg_daily_sessions: dict[str, int] = {}
-    usual_times_of_activity: dict[str, list[int]] = {}
-    for platform in active_platforms:
-        base = _base_sessions(cohort, platform)
-        avg_daily_sessions[platform] = max(1, int(rng.gauss(base, base * 0.25)))
-        usual_times_of_activity[platform] = rng.sample(
-            _valid_hours(age_bucket),
-            k=rng.choice([1, 2, 3]),
-        )
-
-    return Persona(
-        age=age,
-        sex=sex,
-        age_bucket=age_bucket,
-        cohort=cohort,
-        platforms=active_platforms,
-        avg_daily_sessions=avg_daily_sessions,
-        usual_times_of_activity=usual_times_of_activity,
-    )
-
-
-def assign_demographics(rng: random.Random) -> tuple[int, str, str, str]:
-    sex = rng.choice(["male", "female"])
-    age_group_roll = rng.random()
-    if age_group_roll < 0.20:
-        age = rng.randint(13, 17)
-        age_bucket = "adolescent"
-    elif age_group_roll < 0.80:
-        age = rng.randint(18, 49)
-        age_bucket = "adult"
-    else:
-        age = rng.randint(50, 75)
-        age_bucket = "older"
-    return age, sex, age_bucket, f"{age_bucket}_{sex}"
+    return model.generate_persona(rng)
 
 
 def generate_user_telemetry(
@@ -373,140 +219,43 @@ def generate_user_telemetry(
     persona: Persona,
     created_at: datetime,
 ) -> list[tuple[object, ...]]:
-    events: list[tuple[object, ...]] = []
-    carryover_time: datetime | None = None
-    event_sequence = 0
+    """usage_events rows for the `total_days` days before `base_date`.
 
-    for day_offset in range(total_days):
-        current_day = base_date - timedelta(days=total_days - day_offset)
-        is_weekend = current_day.weekday() >= 5
-        weekend_mod = _weekend_modifier(persona.age_bucket, is_weekend)
-        raw_events: list[dict[str, object]] = []
-
-        for platform in persona.platforms:
-            if platform == "linkedin" and is_weekend:
-                continue
-            daily_variance = rng.gauss(
-                0,
-                persona.avg_daily_sessions[platform] * 0.15,
-            )
-            sessions = max(
-                0,
-                int(
-                    (persona.avg_daily_sessions[platform] + daily_variance)
-                    * weekend_mod
-                ),
-            )
-            for _ in range(sessions):
-                raw_events.append(
-                    {
-                        "platform": platform,
-                        "occurred_at": _event_timestamp(rng, current_day, persona, platform),
-                    }
-                )
-
-        raw_events.sort(key=lambda event: event["occurred_at"])
-        for index, event in enumerate(raw_events):
-            min_gap = timedelta(minutes=rng.randint(5, 15))
-            occurred_at = event["occurred_at"]
-            if not isinstance(occurred_at, datetime):
-                continue
-            if index == 0:
-                if carryover_time and occurred_at < carryover_time + min_gap:
-                    event["occurred_at"] = carryover_time + min_gap
-            else:
-                previous = raw_events[index - 1]["occurred_at"]
-                if isinstance(previous, datetime) and occurred_at < previous + min_gap:
-                    event["occurred_at"] = previous + min_gap
-
-        if raw_events and isinstance(raw_events[-1]["occurred_at"], datetime):
-            carryover_time = raw_events[-1]["occurred_at"]
-
-        for event in raw_events:
-            activity_platform = str(event["platform"])
-            occurred_at = event["occurred_at"]
-            if not isinstance(occurred_at, datetime):
-                continue
-            event_sequence += 1
-            shape = event_shape(activity_platform, rng)
-            fingerprint = hashlib.sha256(
-                f"{user_id}:{import_id}:{event_sequence}:{occurred_at.isoformat()}".encode(
-                    "utf-8"
-                )
-            ).hexdigest()
-            events.append(
-                (
-                    str(uuid4()),
-                    user_id,
-                    import_id,
-                    None,
-                    shape.platform,
-                    shape.product,
-                    shape.event_type,
-                    occurred_at,
-                    shape.video_id,
-                    None,
-                    None,
-                    None,
-                    "synthetic",
-                    fingerprint,
-                    created_at,
-                    shape.duration_seconds,
-                    True,
-                )
-            )
-
-    return events
-
-
-def event_shape(activity_platform: str, rng: random.Random) -> EventShape:
-    if activity_platform == "youtube_shorts":
-        return EventShape(
-            platform="youtube",
-            product="shorts",
-            event_type="watch",
-            duration_seconds=DEFAULT_DURATIONS_SECONDS[activity_platform],
-            video_id=f"synthetic_youtube_short_{rng.randint(10000, 99999)}",
-        )
-    if activity_platform == "youtube_long":
-        return EventShape(
-            platform="youtube",
-            product="long",
-            event_type="watch",
-            duration_seconds=DEFAULT_DURATIONS_SECONDS[activity_platform],
-            video_id=f"synthetic_youtube_long_{rng.randint(10000, 99999)}",
-        )
-    if activity_platform == "tiktok":
-        return EventShape(
-            platform="tiktok",
-            product="shorts",
-            event_type="watch",
-            duration_seconds=DEFAULT_DURATIONS_SECONDS[activity_platform],
-            video_id=f"synthetic_tiktok_{rng.randint(10000, 99999)}",
-        )
-    if activity_platform == "spotify":
-        return EventShape(
-            platform="spotify",
-            product="audio",
-            event_type="listen",
-            duration_seconds=DEFAULT_DURATIONS_SECONDS[activity_platform],
-            video_id=None,
-        )
-    if activity_platform == "linkedin":
-        return EventShape(
-            platform="linkedin",
-            product="feed",
-            event_type="activity",
-            duration_seconds=DEFAULT_DURATIONS_SECONDS[activity_platform],
-            video_id=None,
-        )
-    return EventShape(
-        platform="instagram",
-        product="feed",
-        event_type="activity",
-        duration_seconds=DEFAULT_DURATIONS_SECONDS["instagram"],
-        video_id=None,
+    Times are generated as local clock times and stored as UTC, the clock the
+    population benchmark compares on. Each row's duration_seconds is the time
+    actually watched; the next item starts right after it.
+    """
+    first_day = (base_date - timedelta(days=total_days)).replace(
+        hour=0, minute=0, second=0, microsecond=0
     )
+    items = model.generate_days(rng, persona, first_day=first_day, total_days=total_days)
+    events: list[tuple[object, ...]] = []
+    for sequence, item in enumerate(items, start=1):
+        fingerprint = hashlib.sha256(
+            f"{user_id}:{import_id}:{sequence}:{item.occurred_at.isoformat()}".encode("utf-8")
+        ).hexdigest()
+        events.append(
+            (
+                str(uuid4()),
+                user_id,
+                import_id,
+                None,
+                item.platform,
+                item.product,
+                item.event_type,
+                item.occurred_at,
+                item.video_id,
+                None,
+                None,
+                None,
+                "synthetic",
+                fingerprint,
+                created_at,
+                item.watched_seconds,
+                True,
+            )
+        )
+    return events
 
 
 def _insert_usage_events(
@@ -601,101 +350,6 @@ def remove_synthetic_usage(connection) -> dict[str, int]:
         deleted[table] = connection.execute(sql).rowcount
     connection.commit()
     return deleted
-
-
-def _base_sessions(cohort: str, platform: str) -> int:
-    base_by_cohort = {
-        "adolescent_female": {
-            "tiktok": 15,
-            "instagram": 15,
-            "youtube_shorts": 10,
-            "youtube_long": 2,
-            "spotify": 5,
-            "linkedin": 1,
-        },
-        "adolescent_male": {
-            "tiktok": 10,
-            "instagram": 8,
-            "youtube_shorts": 12,
-            "youtube_long": 5,
-            "spotify": 5,
-            "linkedin": 1,
-        },
-        "adult_female": {
-            "tiktok": 8,
-            "instagram": 12,
-            "youtube_shorts": 5,
-            "youtube_long": 3,
-            "spotify": 6,
-            "linkedin": 2,
-        },
-        "adult_male": {
-            "tiktok": 6,
-            "instagram": 8,
-            "youtube_shorts": 6,
-            "youtube_long": 4,
-            "spotify": 6,
-            "linkedin": 3,
-        },
-        "older_female": {
-            "tiktok": 2,
-            "instagram": 6,
-            "youtube_shorts": 2,
-            "youtube_long": 4,
-            "spotify": 3,
-            "linkedin": 1,
-        },
-        "older_male": {
-            "tiktok": 1,
-            "instagram": 3,
-            "youtube_shorts": 2,
-            "youtube_long": 5,
-            "spotify": 3,
-            "linkedin": 2,
-        },
-    }
-    return base_by_cohort[cohort][platform]
-
-
-def _valid_hours(age_bucket: str) -> list[int]:
-    if age_bucket == "adolescent":
-        return [7, 15, 16, 17, 20, 21, 22, 23]
-    if age_bucket == "adult":
-        return [7, 8, 12, 17, 18, 20, 21, 22]
-    return [6, 7, 8, 12, 18, 19, 20]
-
-
-def _weekend_modifier(age_bucket: str, is_weekend: bool) -> float:
-    if not is_weekend:
-        return 1.0
-    if age_bucket == "adolescent":
-        return 1.6
-    if age_bucket == "older":
-        return 1.1
-    return 1.3
-
-
-def _event_timestamp(
-    rng: random.Random,
-    current_day: datetime,
-    persona: Persona,
-    platform: str,
-) -> datetime:
-    if rng.random() < 0.80:
-        chosen_time = rng.choice(persona.usual_times_of_activity[platform])
-        base_ts = current_day.replace(hour=chosen_time, minute=0, second=0, microsecond=0)
-        return base_ts + timedelta(
-            minutes=rng.gauss(0, 45),
-            seconds=rng.randint(-30, 30),
-        )
-    hour = rng.choices(range(24), weights=PLATFORM_WEIGHTS[platform], k=1)[0]
-    return current_day.replace(
-        hour=hour,
-        minute=rng.randint(0, 59),
-        second=rng.randint(0, 59),
-        microsecond=0,
-    )
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(

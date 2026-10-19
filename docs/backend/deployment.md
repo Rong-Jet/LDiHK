@@ -105,12 +105,14 @@ python backend/scripts/run_migrations.py
 
 5. Optionally seed the synthetic comparison population. Keep it small: the free
    plan has 1 GB, and each event costs roughly 0.7 KB including indexes. The
-   population page only reads YouTube watches, so seed YouTube only (about
-   85 events per profile per 14 days: 300 profiles are roughly 18 MB; all
-   platforms would be about 3.5 times that).
+   population page only reads YouTube watches, so seed YouTube only. Profiles
+   have an age range and sex (see `backend/synthetic_population.py` for the
+   calibration and its sources); comparisons by age and sex need about 50
+   profiles per range and sex, i.e. 1,500. At about 15 YouTube rows per profile
+   and day, 1,500 profiles over 7 days are roughly 110 MB.
 
 ```sh
-uv run python backend/scripts/seed_synthetic_usage.py --profiles 300 --days 14 --platforms youtube
+uv run python backend/scripts/seed_synthetic_usage.py --profiles 1500 --days 7 --platforms youtube
 ```
 
    Synthetic rows are marked (`is_synthetic`, `imports.seed_run_id`, one

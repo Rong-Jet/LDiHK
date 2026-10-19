@@ -2,6 +2,9 @@ import React, { useState, useRef } from 'react';
 import { UploadCloud, CheckCircle2, AlertTriangle, RefreshCw, Database, Lock, Shield, Copy, Scissors } from 'lucide-react';
 import { generateLdihkId } from '../lib/ldihkId';
 import { formatFileSize, MAX_UPLOAD_BYTES, useUploadController } from '../hooks/useUploadController';
+import { ProfileFields } from './ProfileCard';
+import { EMPTY_PROFILE } from '../lib/profile';
+import type { UserProfile } from '../lib/api';
 
 interface UploadZoneProps {
   sessionToken: string | null;
@@ -17,6 +20,8 @@ export default function UploadZone({ sessionToken, onSessionGenerated }: UploadZ
   const [generatedId, setGeneratedId] = useState('');
   const [copiedId, setCopiedId] = useState(false);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
+  // Optional age range / sex, asked once when a new workspace is created.
+  const [newProfile, setNewProfile] = useState<UserProfile>(EMPTY_PROFILE);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const registerFormRef = useRef<HTMLFormElement>(null);
@@ -105,7 +110,7 @@ export default function UploadZone({ sessionToken, onSessionGenerated }: UploadZ
     // 2. Start the upload first: it runs in the shared upload controller, so it
     //    keeps going (and stays visible) when the parent swaps layouts below.
     if (pendingFile) {
-      upload.start(pendingFile, generatedId);
+      upload.start(pendingFile, generatedId, newProfile);
     }
     setPendingFile(null);
 
@@ -291,7 +296,7 @@ export default function UploadZone({ sessionToken, onSessionGenerated }: UploadZ
       {/* Privacy & Consent Warning Modal */}
       {showWarningModal && pendingFile && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-navy/40 backdrop-blur-sm animate-fade-in">
-          <div className="bg-white border border-brand-navy/10 rounded-3xl p-6 sm:p-8 max-w-lg w-full shadow-2xl space-y-6 relative overflow-hidden animate-scale-up text-left">
+          <div className="bg-white border border-brand-navy/10 rounded-3xl p-6 sm:p-8 max-w-lg w-full max-h-[calc(100vh-2rem)] overflow-y-auto shadow-2xl space-y-6 relative animate-scale-up text-left">
             {/* Visual top accent bar */}
             <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-brand-teal via-brand-peach to-brand-teal"></div>
             
@@ -334,6 +339,16 @@ export default function UploadZone({ sessionToken, onSessionGenerated }: UploadZ
                 </div>
               </div>
             </div>
+
+            {!sessionToken && (
+              <div className="space-y-2 p-3.5 rounded-2xl bg-white border border-brand-navy/10">
+                <div className="text-xs text-brand-navy/80 leading-relaxed">
+                  <strong className="block text-brand-navy font-bold mb-0.5">Optional: age range and sex</strong>
+                  Lets us compare you with people of similar age and sex instead of everyone. You can change or remove it later in the console.
+                </div>
+                <ProfileFields value={newProfile} onChange={setNewProfile} idPrefix="upload-profile" />
+              </div>
+            )}
 
             {/* Call to Actions */}
             <div className="flex flex-col sm:flex-row gap-3 pt-4 border-t border-brand-navy/5">

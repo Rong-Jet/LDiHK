@@ -7,6 +7,8 @@ import {
   describeApiError,
   fetchImportStatus,
   fetchMe,
+  updateProfile,
+  type UserProfile,
   isApiStatus,
   isImportInFlight,
   isPendingEnrichment,
@@ -17,6 +19,7 @@ import {
 } from '../lib/api';
 import { getBrowserTimeZone, isYmd, maxYmd, minYmd, type DateBounds } from '../lib/dates';
 import { isValidLdihkId } from '../lib/ldihkId';
+import { EMPTY_PROFILE } from '../lib/profile';
 
 const TOKEN_KEY = 'ldihk_session_token';
 const IMPORT_ID_KEY = 'ldihk_current_import_id';
@@ -393,8 +396,13 @@ export function useConsoleSession({ backendReady, timeZone: requestedTimeZone }:
   }, [queryClient]);
 
   /** Registers an uploaded object with the backend and starts polling it. */
-  const registerImport = useCallback(async (s3Key: string, s3Bucket: string, token: string) => {
-    const result = await createImport(token, { s3_bucket: s3Bucket, s3_key: s3Key });
+  const registerImport = useCallback(async (s3Key: string, s3Bucket: string, token: string, profile?: UserProfile) => {
+    const answered = profile && (profile.age_range || profile.sex);
+    const result = await createImport(token, {
+      s3_bucket: s3Bucket,
+      s3_key: s3Key,
+      ...(answered ? { age_range: profile.age_range, sex: profile.sex } : {}),
+    });
     if (!result?.import_id) throw new Error('The server did not return an import ID.');
     startTracking({ id: result.import_id, owner: token, startedAt: Date.now() });
   }, [startTracking]);
@@ -435,11 +443,28 @@ export function useConsoleSession({ backendReady, timeZone: requestedTimeZone }:
     await queryClient.invalidateQueries({ queryKey: ['me'] });
   }, [clearTracking, queryClient, tracked]);
 
+  const profile = me?.profile ?? EMPTY_PROFILE;
+
+  /** Saves age range / sex, then refreshes everything compared against them. */
+  const saveProfile = useCallback(async (update: Partial<UserProfile>) => {
+    if (!sessionToken) throw new Error('Not logged in');
+    const result = await updateProfile(sessionToken, update);
+    queryClient.setQueriesData<MeResponse | null>({ queryKey: ['me', sessionToken] }, (current) => (
+      current ? { ...current, profile: result.profile } : current
+    ));
+    await queryClient.invalidateQueries({
+      predicate: (query) => ['population', 'riskReference'].includes(String(query.queryKey[0])),
+    });
+    return result.profile;
+  }, [queryClient, sessionToken]);
+
   return {
     sessionToken,
     timeZone,
     phase,
     me,
+    profile,
+    saveProfile,
     meError: meQuery.error,
     refetchMe: meQuery.refetch,
     isRefreshingMe: meQuery.isFetching,

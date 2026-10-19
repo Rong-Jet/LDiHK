@@ -113,7 +113,7 @@ def _allowed_cors_origins(environ: Mapping[str, str]) -> set[str]:
 def _set_cors_headers(response: Response, origin: str) -> None:
     response.headers["Access-Control-Allow-Origin"] = origin
     response.vary.add("Origin")
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
     response.headers["Access-Control-Max-Age"] = "600"
 

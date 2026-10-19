@@ -11,6 +11,8 @@ import {
   BarChart, Bar, Cell
 } from 'recharts';
 import ConsoleShell from './ConsoleShell';
+import { ProfileCard } from './ProfileCard';
+import { describeComparisonGroup, hasProfile } from '../lib/profile';
 import { usePopulationData } from '../hooks/usePopulationData';
 import { useBackendStatus } from '../hooks/useBackendStatus';
 import { useConsoleSession } from '../hooks/useConsoleSession';
@@ -47,6 +49,9 @@ function PopulationDashboardContent() {
   const { sessionToken, datasets } = session;
 
   const [includeSynthetic, setIncludeSynthetic] = useState(true);
+  // Compare with people of similar age and sex when the user gave either.
+  const [compareEveryone, setCompareEveryone] = useState(false);
+  const compareWith = hasProfile(session.profile) && !compareEveryone ? 'cohort' : 'everyone';
 
   // Custom Percentile Line parameters
   const [showCustomPercentile, setShowCustomPercentile] = useState(false);
@@ -108,7 +113,8 @@ function PopulationDashboardContent() {
     customPercentile,
     backend.isReady && queryPlatforms.length > 0,
     sessionToken,
-    startDate
+    startDate,
+    compareWith
   );
 
   const handleResetView = () => {
@@ -236,8 +242,9 @@ function PopulationDashboardContent() {
   const unavailableMessage =
     popData?.message ??
     'There is no YouTube watch history in the selected date range. Choose a range with data, or upload a YouTube Takeout export.';
+  const groupLabel = describeComparisonGroup(popData?.comparisonGroup);
   const comparisonNote = popData?.populationSize
-    ? ` Compared with ${popData.populationSize.toLocaleString()} other ${popData.populationSize === 1 ? 'person' : 'people'}` +
+    ? (groupLabel ? ` Compared with ${groupLabel}` : ` Compared with ${popData.populationSize.toLocaleString()} other ${popData.populationSize === 1 ? 'person' : 'people'}`) +
       (popData.includeSynthetic && popData.syntheticBaseline
         ? ` (synthetic profiles act as a weekday baseline from ${popData.syntheticBaseline.startDate} to ${popData.syntheticBaseline.endDate}).`
         : '.')
@@ -245,6 +252,13 @@ function PopulationDashboardContent() {
 
   const content = (
       <div className="space-y-6 text-left">
+        {sessionToken && (
+          <ProfileCard
+            profile={session.profile}
+            onSave={session.saveProfile}
+            comparisonGroup={popData?.comparisonGroup}
+          />
+        )}
         {readyPlatforms.length === 0 && (
           <div className="bg-brand-teal/10 border border-brand-teal/25 rounded-2xl px-4 py-3 text-brand-navy text-xs leading-relaxed flex gap-2 items-center">
             <Info className="w-4 h-4 text-brand-teal shrink-0" />
@@ -296,6 +310,32 @@ function PopulationDashboardContent() {
             <p className="text-[10px] text-brand-navy/50">Modify the data source context for comparison statistics.</p>
           </div>
 
+          <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto">
+          {hasProfile(session.profile) && (
+            <div className="flex items-center gap-3 bg-brand-beige/20 border border-brand-navy/10 rounded-2xl p-2.5 px-4 select-none w-full sm:w-auto justify-between">
+              <div>
+                <span className="text-xs font-black text-brand-navy block">Compare With My Age &amp; Sex</span>
+                <span className="text-[9px] text-brand-navy/50 block -mt-0.5">Off: compare with everyone</span>
+              </div>
+              <button
+                onClick={() => setCompareEveryone(!compareEveryone)}
+                className={`relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                  !compareEveryone ? 'bg-brand-teal' : 'bg-brand-navy/20'
+                } cursor-pointer`}
+                role="switch"
+                aria-checked={!compareEveryone}
+                id="toggle-compare-cohort"
+                title="Compare with people of similar age and sex"
+              >
+                <span
+                  aria-hidden="true"
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                    !compareEveryone ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+          )}
           <div className="flex items-center gap-3 bg-brand-beige/20 border border-brand-navy/10 rounded-2xl p-2.5 px-4 select-none w-full sm:w-auto justify-between">
             <div>
               <span className="text-xs font-black text-brand-navy block">Synthetic Population Data</span>
@@ -318,6 +358,7 @@ function PopulationDashboardContent() {
                 }`}
               />
             </button>
+          </div>
           </div>
         </div>
 

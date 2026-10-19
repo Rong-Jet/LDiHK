@@ -13,7 +13,10 @@ import {
 import ConsoleShell from './ConsoleShell';
 import { useBackendStatus } from '../hooks/useBackendStatus';
 import { useConsoleSession } from '../hooks/useConsoleSession';
-import { describeApiError, postQuery, QUERY_LIMIT_MAX, usesLocalMockApi } from '../lib/api';
+import { describeApiError, fetchRiskReference, postQuery, QUERY_LIMIT_MAX, usesLocalMockApi } from '../lib/api';
+import { ProfileCard } from './ProfileCard';
+import { describeComparisonGroup, hasProfile } from '../lib/profile';
+import { coefficientsFor, riskScore, type CohortReference } from '../lib/riskModel';
 import {
   addDays,
   DATE_PRESETS,
@@ -135,6 +138,24 @@ function RiskDashboardContent() {
   };
 
   // RISK COMPUTATION ENGINE (Wellness Score calculation)
+  // Age and sex: score inputs are measured against the user's cohort.
+  const compareWith = hasProfile(session.profile) ? 'cohort' : 'everyone';
+  const coefficients = useMemo(() => coefficientsFor(session.profile), [session.profile]);
+  const { data: referenceData } = useQuery({
+    queryKey: ['riskReference', sessionToken, analysisStart, endDate, compareWith],
+    queryFn: ({ signal }) => fetchRiskReference(sessionToken as string, { startDate: analysisStart, endDate, compareWith }, signal),
+    enabled: backend.isReady && !!sessionToken && !!analysisStart && !!endDate && compareWith === 'cohort',
+    // Without reference values the score is simply not cohort-adjusted.
+    retry: 1,
+  });
+  const cohortReference = useMemo<CohortReference | null>(() => (
+    compareWith === 'cohort' && referenceData?.ready && referenceData.cohort && referenceData.overall
+      && referenceData.comparisonGroup?.basis === 'cohort'
+      ? { cohort: referenceData.cohort, overall: referenceData.overall }
+      : null
+  ), [compareWith, referenceData]);
+  const referenceGroupLabel = describeComparisonGroup(referenceData?.comparisonGroup);
+
   const riskAnalysisResult = useMemo(() => {
     // Rely strictly on backend mock API endpoints to calculate wellness metrics consistently
 
@@ -187,10 +208,12 @@ function RiskDashboardContent() {
       const ytLateNightHours = ytLateNightSeconds / 3600;
 
       const fragmentationIndex = activeHoursCount / 24;
-      const z = -2.1 + (0.35 * ytHours) + (0.80 * fragmentationIndex) + (1.20 * ytLateNightHours);
-
-      const riskProbability = 1 / (1 + Math.exp(-z));
-      const riskScorePercent = parseFloat((riskProbability * 100).toFixed(1));
+      // Measured against the user's cohort when one is known (see riskModel.ts).
+      const riskScorePercent = parseFloat(riskScore(
+        { hours: ytHours, lateNightHours: ytLateNightHours, fragmentation: fragmentationIndex },
+        coefficients,
+        cohortReference,
+      ).toFixed(1));
 
       return {
         date: dateStr,
@@ -255,7 +278,7 @@ function RiskDashboardContent() {
       avgFragmentation,
       isEmptyLive: false
     };
-  }, [detailedUsageData, analysisStart, endDate]);
+  }, [detailedUsageData, analysisStart, endDate, coefficients, cohortReference]);
 
   // Personalized Action Recommendation Logic (self-reflection wording)
   const personalizedRecommendation = useMemo(() => {
@@ -308,6 +331,13 @@ function RiskDashboardContent() {
 
   const content = (
       <div className="space-y-6 text-left">
+        {sessionToken && (
+          <ProfileCard
+            profile={session.profile}
+            onSave={session.saveProfile}
+            comparisonGroup={referenceData?.ready ? referenceData.comparisonGroup : null}
+          />
+        )}
 
         {/* Medical Disclaimer Banner */}
         <div className="bg-amber-50 border border-amber-200 rounded-3xl p-5 text-amber-900 text-xs leading-relaxed flex gap-3 relative overflow-hidden">
@@ -485,7 +515,9 @@ function RiskDashboardContent() {
             </div>
 
             <div className="pt-3 border-t border-brand-navy/5 text-[9px] text-brand-navy/50 text-center">
-              Metrics calculated over current selected range.
+              {cohortReference && referenceGroupLabel
+                ? `Typical for ${referenceGroupLabel}: ${cohortReference.cohort.dailyHours.toFixed(1)}h · ${cohortReference.cohort.lateNightHours.toFixed(1)}h · ${Math.round(cohortReference.cohort.fragmentation * 100)}%`
+                : 'Metrics calculated over current selected range.'}
             </div>
           </div>
 
@@ -803,8 +835,8 @@ function RiskDashboardContent() {
                   <p className="italic text-[11px] leading-relaxed">
                     Associations between time spent using social media and internalizing and externalizing problems among US youth. JAMA Psychiatry, 76(12), 1266–1273.
                   </p>
-                  <a href="https://doi.org/10.1001/jamapsypchiatry.2019.2325" target="_blank" rel="noopener noreferrer" className="text-[10px] text-brand-teal hover:underline block font-semibold">
-                    https://doi.org/10.1001/jamapsypchiatry.2019.2325
+                  <a href="https://doi.org/10.1001/jamapsychiatry.2019.2325" target="_blank" rel="noopener noreferrer" className="text-[10px] text-brand-teal hover:underline block font-semibold">
+                    https://doi.org/10.1001/jamapsychiatry.2019.2325
                   </a>
                 </div>
 

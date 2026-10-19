@@ -97,6 +97,7 @@ export const GET: APIRoute = async ({ request, url }) => {
     exists: true,
     timezone: url.searchParams.get('timezone') || 'UTC',
     datasets,
+    profile: state.profiles?.[ldihkId] ?? { age_range: null, sex: null },
     latest_import: latestImport
       ? { enrichment_status: null, enrichment_started_at: null, enrichment_finished_at: null, ...latestImport }
       : null,

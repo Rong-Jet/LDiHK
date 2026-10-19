@@ -362,6 +362,79 @@ class PostgresIntegrationTests(unittest.TestCase):
         self.assertTrue(all(day["top10"] > 0 for day in payload["deciles"]), payload["deciles"])
         self.assertGreater(payload["userDailyAverageHours"], 0)
 
+    def test_profile_cohort_comparison_and_risk_reference(self):
+        from backend.scripts.seed_synthetic_usage import seed_synthetic_usage
+
+        ldihk_id = self._new_id()
+        auth = {"Authorization": f"Bearer {ldihk_id}"}
+        key = f"uploads/{ldihk_id}/recent.zip"
+        self.payloads[key] = _takeout_zip(_watch_records(20, prefix=ldihk_id[-6:]))
+        created = self.client.post(
+            "/api/imports",
+            headers=auth,
+            json={"s3_bucket": BUCKET, "s3_key": key, "age_range": "20-24", "sex": "female"},
+        )
+        self.assertEqual(created.status_code, 201, created.get_json())
+        from backend.ingestion.worker import PostgresImportRepository, S3ZipImportWorker
+
+        with closing(self._connect()) as connection:
+            S3ZipImportWorker(
+                repository=PostgresImportRepository(connection), s3_client=_BytesS3(self.payloads)
+            ).process_one()
+
+        me = self.client.get("/api/me?timezone=UTC", headers=auth).get_json()
+        self.assertEqual(me["profile"], {"age_range": "20-24", "sex": "female"})
+        self.assertIsNotNone(me["datasets"]["youtube"]["watch_min_date"])
+
+        rejected = self.client.patch("/api/me/profile", headers=auth, json={"age_range": "21-25"})
+        self.assertEqual(rejected.status_code, 400)
+        self.assertEqual(rejected.get_json()["fields"], {"age_range": "invalid_value"})
+        unknown = self.client.patch(
+            "/api/me/profile", headers={"Authorization": f"Bearer {self._new_id()}"}, json={"sex": "male"}
+        )
+        self.assertEqual(unknown.status_code, 404)
+
+        seed_synthetic_usage(
+            total_profiles=400,
+            total_days=7,
+            seed_run_name=f"it-cohort-{uuid.uuid4().hex[:8]}",
+            random_seed=11,
+            run_schema_migrations=False,
+            platforms=["youtube"],
+        )
+        today = datetime.now(timezone.utc).date()
+        request = {
+            "platforms": ["youtube"],
+            "startDate": (today - timedelta(days=6)).isoformat(),
+            "endDate": today.isoformat(),
+            "compareWith": "cohort",
+        }
+        population = self.client.post("/api/population", headers=auth, json=request).get_json()
+        self.assertTrue(population["ready"], population)
+        group = population["comparisonGroup"]
+        self.assertEqual((group["basis"], group["sex"]), ("cohort", "female"))
+        self.assertLessEqual(group["ageRanges"][0], "20-24")
+        self.assertGreaterEqual(group["ageRanges"][1], "20-24")
+        everyone = self.client.post(
+            "/api/population", headers=auth, json={**request, "compareWith": "everyone"}
+        ).get_json()
+        self.assertGreater(everyone["populationSize"], population["populationSize"])
+
+        reference = self.client.post("/api/population/reference", headers=auth, json=request).get_json()
+        self.assertTrue(reference["ready"], reference)
+        self.assertEqual(reference["comparisonGroup"], group)
+        for scope in ("cohort", "overall"):
+            self.assertEqual(set(reference[scope]), {"dailyHours", "lateNightHours", "fragmentation"})
+            self.assertGreater(reference[scope]["dailyHours"], 0)
+
+        # Clearing the profile falls back to everyone.
+        cleared = self.client.patch(
+            "/api/me/profile", headers=auth, json={"age_range": None, "sex": "prefer_not_to_say"}
+        )
+        self.assertEqual(cleared.get_json(), {"profile": {"age_range": None, "sex": None}})
+        fallback = self.client.post("/api/population", headers=auth, json=request).get_json()
+        self.assertEqual(fallback["comparisonGroup"]["basis"], "everyone")
+
     def test_youtube_only_seed_and_remove_all_keep_real_data(self):
         from backend.scripts.seed_synthetic_usage import (
             remove_synthetic_usage,

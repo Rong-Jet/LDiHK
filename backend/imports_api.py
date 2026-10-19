@@ -11,6 +11,13 @@ from typing import Callable, Protocol
 from flask import Blueprint, jsonify, request
 
 from backend import db, db_pool
+from backend.user_profile import (
+    PROFILE_FIELDS,
+    ProfileUpdate,
+    ProfileValidationError,
+    apply_profile,
+    validate_profile_payload,
+)
 from backend.http_boundary import (
     PublicBoundaryError,
     identity_field_error_response,
@@ -54,7 +61,7 @@ _STATUS_SELECT_SQL = """
 """
 _S3_BUCKET_RE = re.compile(r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")
 _ALLOWED_SEX_VALUES = frozenset(
-    {"male", "female", "nonbinary", "prefer_not_to_say", "unknown"}
+    {"male", "female", "diverse", "nonbinary", "prefer_not_to_say", "unknown"}
 )
 
 
@@ -85,6 +92,7 @@ class ImportRepository(Protocol):
         s3_etag: str | None,
         age: int | None = None,
         sex: str | None = None,
+        profile: ProfileUpdate | None = None,
     ) -> ImportJob:
         ...
 
@@ -102,6 +110,7 @@ class PostgresImportRepository:
         s3_etag: str | None,
         age: int | None = None,
         sex: str | None = None,
+        profile: ProfileUpdate | None = None,
     ) -> ImportJob:
         connection = db_pool.pooled_connect()
         try:
@@ -111,6 +120,10 @@ class PostgresImportRepository:
                 age=age,
                 sex=sex,
             )
+            if profile is not None:
+                # Given with the first upload (or again later): the user's own
+                # answer replaces what is stored.
+                apply_profile(connection, user_id=user_id, update=profile)
             import_id = uuid.uuid4()
             row = connection.execute(
                 """
@@ -281,6 +294,7 @@ def create_imports_blueprint(
                 s3_etag=validated.s3_etag,
                 age=validated.age,
                 sex=validated.sex,
+                **({"profile": validated.profile} if validated.profile is not None else {}),
             )
         except db.DatabaseConfigError as error:
             return _database_unavailable_response(error)
@@ -334,6 +348,7 @@ class _CreateImportPayload:
     s3_etag: str | None
     age: int | None
     sex: str | None
+    profile: ProfileUpdate | None = None
 
 
 def _validate_create_payload(
@@ -351,6 +366,15 @@ def _validate_create_payload(
     s3_etag = _optional_string(payload, "s3_etag", errors)
     age = _optional_age(payload, "age", errors)
     sex = _optional_sex(payload, "sex", errors)
+    profile = None
+    if "age_range" in payload:
+        try:
+            profile = validate_profile_payload(
+                {field: payload[field] for field in PROFILE_FIELDS if field in payload},
+                require_field=False,
+            )
+        except ProfileValidationError as error:
+            errors.update(error.errors)
 
     if s3_bucket is not None:
         if not _valid_s3_bucket(s3_bucket):
@@ -371,6 +395,7 @@ def _validate_create_payload(
         s3_etag=s3_etag,
         age=age,
         sex=sex,
+        profile=profile,
     )
 
 

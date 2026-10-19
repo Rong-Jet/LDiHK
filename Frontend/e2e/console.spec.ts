@@ -36,6 +36,9 @@ async function uploadNewWorkspace(page: Page): Promise<string> {
     mimeType: 'application/zip',
     buffer: await takeoutZip(300),
   });
+  // Optional profile, asked once for a new workspace.
+  await page.locator('#upload-profile-age').selectOption('20-24');
+  await page.locator('#upload-profile-sex').selectOption('female');
   await page.getByRole('button', { name: 'Agree & Upload' }).click();
 
   const idModal = page.getByRole('heading', { name: 'Your LDiHK-ID is Ready' });
@@ -58,7 +61,20 @@ test('upload, dashboards, population comparison and deletion', async ({ page }) 
   await page.locator('#tab-population-benchmark').click();
   await expect(page).toHaveURL(/\/population/);
   await expect(page.getByText('Population Comparison Active')).toBeVisible({ timeout: 60_000 });
-  await expect(page.getByText(/Compared with \d+ other people/)).toBeVisible();
+  // The profile from the upload: compared with women of a similar age.
+  await expect(page.locator('#profile-card-age')).toHaveValue('20-24');
+  await expect(page.getByText(/Compared with women/).first()).toBeVisible();
+
+  // Removing the sex compares across sexes.
+  await page.locator('#profile-card-sex').selectOption('');
+  await page.getByRole('button', { name: 'Save' }).click();
+  await expect(page.getByText('Saved')).toBeVisible();
+  await expect(page.getByText(/Compared with (people|everyone)/).first()).toBeVisible({ timeout: 60_000 });
+
+  // Health tab: score inputs are shown against the cohort's typical values.
+  await page.locator('#tab-mental-health-risk').click();
+  await expect(page).toHaveURL(/\/risk/);
+  await expect(page.getByText(/Typical for (people|everyone)/)).toBeVisible({ timeout: 60_000 });
 
   // Signing in again with the ID restores the workspace.
   await page.getByRole('button', { name: /Log Out/ }).click();

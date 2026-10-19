@@ -80,8 +80,10 @@ PER_ID_LIMITS: dict[tuple[str, str], Limit] = {
     ("POST", "/api/imports"): Limit(20, 3600),
     ("POST", "/api/uploads"): Limit(20, 3600),
     ("POST", "/api/population"): Limit(120, 3600),
+    ("POST", "/api/population/reference"): Limit(120, 3600),
     ("POST", "/api/query"): Limit(1500, 3600),
     ("DELETE", "/api/me"): Limit(5, 3600),
+    ("PATCH", "/api/me/profile"): Limit(30, 3600),
 }
 PER_IP_LIMITS: dict[tuple[str, str], Limit] = {
     ("POST", "/api/imports"): Limit(60, 3600),

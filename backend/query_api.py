@@ -446,7 +446,10 @@ def fetch_user_summary(
     user_row = _fetch_one(
         connection,
         CompiledSql(
-            sql="SELECT id FROM users WHERE external_id = %s AND is_synthetic = false",
+            sql=(
+                "SELECT id, age_range, sex FROM users "
+                "WHERE external_id = %s AND is_synthetic = false"
+            ),
             parameters=[ldihk_id],
         ),
     )
@@ -515,6 +518,10 @@ def fetch_user_summary(
         "exists": True,
         "timezone": validate_timezone_name(bucket_timezone),
         "datasets": datasets,
+        "profile": {
+            "age_range": user_row.get("age_range"),
+            "sex": user_row.get("sex"),
+        },
     }
 
 

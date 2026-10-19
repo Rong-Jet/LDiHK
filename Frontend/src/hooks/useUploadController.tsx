@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { apiRoutes, authHeaders, jsonHeaders } from '../lib/api';
+import { apiRoutes, authHeaders, jsonHeaders, type UserProfile } from '../lib/api';
 // zip.js is loaded on demand (only for large archives), not with every page.
 const SLIM_THRESHOLD_BYTES = 20 * 1024 * 1024;
 
@@ -25,12 +25,13 @@ export interface UploadController extends UploadState {
   isBusy: boolean;
   /** `true` when the Astro helper will use the local mock upload route. */
   isMock: boolean | null;
-  start: (file: File, sessionToken: string) => void;
+  /** `profile`: optional age range / sex, stored with the import (first upload). */
+  start: (file: File, sessionToken: string, profile?: UserProfile) => void;
   cancel: () => void;
   reset: () => void;
 }
 
-type UploadCompleteHandler = (s3Key: string, s3Bucket: string, sessionToken: string) => Promise<void> | void;
+type UploadCompleteHandler = (s3Key: string, s3Bucket: string, sessionToken: string, profile?: UserProfile) => Promise<void> | void;
 
 const INITIAL_STATE: UploadState = {
   phase: 'IDLE',
@@ -157,7 +158,7 @@ export function UploadProvider({ onUploadComplete, children }: { onUploadComplet
 
   const patch = useCallback((next: Partial<UploadState>) => setState((current) => ({ ...current, ...next })), []);
 
-  const start = useCallback((file: File, sessionToken: string) => {
+  const start = useCallback((file: File, sessionToken: string, profile?: UserProfile) => {
     if (busyRef.current) return; // prevent double uploads
     busyRef.current = true;
     const controller = new AbortController();
@@ -211,7 +212,7 @@ export function UploadProvider({ onUploadComplete, children }: { onUploadComplet
 
         patch({ phase: 'REGISTERING', progress: 100 });
         try {
-          await onCompleteRef.current(target.s3Key, target.s3Bucket, sessionToken);
+          await onCompleteRef.current(target.s3Key, target.s3Bucket, sessionToken, profile);
         } catch (error) {
           const detail = error instanceof Error && error.message ? error.message : 'unknown error';
           throw new Error(`The archive was uploaded, but registering the import failed: ${detail}`);

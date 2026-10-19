@@ -183,12 +183,20 @@ Response:
       "first_event_at": "2019-01-02T10:00:00+00:00",
       "last_event_at": "2026-10-01T20:00:00+00:00",
       "min_date": "2019-01-02",
-      "max_date": "2026-10-01"
+      "max_date": "2026-10-01",
+      "watch_min_date": "2019-01-02",
+      "watch_max_date": "2026-10-01"
     }
   },
+  "profile": { "age_range": "20-24", "sex": "female" },
   "latest_import": null
 }
 ```
+
+`min_date` / `max_date` cover all event types; `watch_min_date` /
+`watch_max_date` only views, which can be much narrower (Instagram keeps views
+for weeks but likes and messages for years). `profile` is the user's optional
+self-reported age range and sex (`null` when not given).
 
 `latest_import` has the shape of `GET /api/imports/{import_id}` or is `null`.
 A user whose first import is still queued or running has `datasets: {}` and a
@@ -197,6 +205,29 @@ A user whose first import is still queued or running has `datasets: {}` and a
 Errors: `missing_authorization`, `invalid_authorization`,
 `invalid_timezone` (400), `unknown_ldihk_id` (404), `database_unavailable`
 (503), `rate_limited` (429, failed lookups are limited).
+
+### Update Profile
+
+```text
+PATCH /api/me/profile
+```
+
+Sets or clears the optional age range and sex used to compare the user with
+people of similar age and sex. Fields left out stay as they are; `null` (or
+`"prefer_not_to_say"` for `sex`) clears a field.
+
+```json
+{ "age_range": "20-24", "sex": "female" }
+```
+
+- `age_range`: `13-14`, `15-19`, `20-24`, ..., `65-69`, `70+` (5-year steps; no
+  exact age is ever stored).
+- `sex`: `female`, `male`, `diverse`. The studies behind the comparison only
+  report female and male; `diverse` and no answer compare across sexes.
+
+Response: `{"profile": {"age_range": "20-24", "sex": "female"}}`. Errors:
+`invalid_profile` (400, with `fields`), `unknown_ldihk_id` (404),
+`rate_limited` (429, 30 per hour).
 
 ### Delete Current User
 
@@ -355,8 +386,8 @@ Request body:
   "s3_bucket": "existing-bucket",
   "s3_key": "uploads/demo-user-123/youtube_takeout_2026.zip",
   "s3_etag": "optional-etag",
-  "age": 23,
-  "sex": "male"
+  "age_range": "20-24",
+  "sex": "female"
 }
 ```
 
@@ -565,6 +596,11 @@ Who the user is compared with:
 - Comparisons against fewer than 5 other people are refused
   (`reason: "insufficient_population"`), because percentiles of such a small
   group would reveal individual usage.
+- With `compareWith: "cohort"` and a profile, only people of the same sex and
+  age range count. The group widens to neighbouring 5-year ranges until it has
+  30 people, then drops the sex if fewer than 5 remain, and falls back to
+  everyone. `comparisonGroup` in the response says who was compared:
+  `{"basis": "cohort", "ageRanges": ["15-19", "25-29"], "sex": "female", "size": 48}`.
 
 Request body:
 
@@ -574,9 +610,34 @@ Request body:
   "startDate": "2026-05-08",
   "endDate": "2026-06-06",
   "includeSynthetic": true,
-  "customPercentile": 90
+  "customPercentile": 90,
+  "compareWith": "cohort"
 }
 ```
+
+### Risk Reference Values
+
+```text
+POST /api/population/reference
+```
+
+Same body as the population benchmark. Returns the typical (median) risk-score
+inputs of the user's comparison group and of everyone: watch hours per active
+day, late-night hours (23:00-04:59, UTC) and fragmentation (share of the day's
+hours with at least 5 minutes of watching).
+
+```json
+{
+  "ready": true,
+  "comparisonGroup": { "basis": "cohort", "ageRanges": ["20-24", "20-24"], "sex": "female", "size": 52 },
+  "cohort": { "dailyHours": 0.62, "lateNightHours": 0.11, "fragmentation": 0.08 },
+  "overall": { "dailyHours": 0.55, "lateNightHours": 0.08, "fragmentation": 0.07 }
+}
+```
+
+The risk tab measures each input relative to the cohort (see
+`src/lib/riskModel.ts`), so a group that typically uses more is not scored
+higher for that alone.
 
 Fields:
 

@@ -39,6 +39,8 @@ export const apiRoutes = {
   // Called directly on the backend in live mode (no Netlify proxy); in mock mode
   // backendApiBase is empty, so this resolves to the local mock route.
   population: () => backendApiUrl('/api/population'),
+  populationReference: () => backendApiUrl('/api/population/reference'),
+  profile: () => backendApiUrl('/api/me/profile'),
   // Live uploads are signed by the backend, which enforces the storage budget;
   // the Astro route only serves the mock upload flow.
   uploadUrl: () => (usesLocalMockApi ? localApiUrl('/api/upload-url') : backendApiUrl('/api/uploads')),
@@ -148,7 +150,7 @@ async function readErrorBody(response: Response): Promise<{ code: string | null;
 }
 
 export interface ApiRequestOptions {
-  method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   token?: string | null;
   body?: unknown;
   signal?: AbortSignal;
@@ -239,6 +241,8 @@ export interface MeResponse {
   timezone: string;
   datasets: Record<string, DatasetSummary>;
   latest_import: ImportStatus | null;
+  /** Missing from older backends. */
+  profile?: UserProfile;
 }
 
 export type QueryDataset = 'youtube_usage' | 'tiktok_usage' | 'instagram_usage' | 'usage_analytics' | `${string}_usage`;
@@ -327,7 +331,56 @@ export interface CreateImportPayload {
   s3_key: string;
   s3_etag?: string;
   age?: number;
-  sex?: string;
+  /** Optional self-reported profile, stored with the first upload. */
+  age_range?: string | null;
+  sex?: string | null;
+}
+
+/** Self-reported, optional; used only to compare with people of similar age and sex. */
+export interface UserProfile {
+  age_range: string | null;
+  sex: string | null;
+}
+
+/** PATCH /api/me/profile. `null` clears a field; omitted fields stay as they are. */
+export function updateProfile(token: string, profile: Partial<UserProfile>): Promise<{ profile: UserProfile }> {
+  return apiFetchJson(apiRoutes.profile(), { token, method: 'PATCH', body: profile });
+}
+
+/** Who a comparison was made against (`everyone` when no matching cohort exists). */
+export interface ComparisonGroup {
+  basis: 'cohort' | 'everyone';
+  /** First and last 5-year range included, e.g. ["15-19", "25-29"]. */
+  ageRanges: [string, string] | null;
+  sex: string | null;
+  size: number;
+}
+
+export interface RiskReferenceMetrics {
+  /** Watch hours per active day. */
+  dailyHours: number;
+  /** Hours between 23:00 and 04:59 per active day. */
+  lateNightHours: number;
+  /** Share of the day's hours with at least 5 minutes of watching (0-1). */
+  fragmentation: number;
+}
+
+export interface RiskReferenceResponse {
+  ready: boolean;
+  reason?: string;
+  comparisonGroup?: ComparisonGroup;
+  profile?: UserProfile;
+  cohort?: RiskReferenceMetrics;
+  overall?: RiskReferenceMetrics;
+}
+
+/** POST /api/population/reference: typical risk inputs of the user's cohort and of everyone. */
+export function fetchRiskReference(
+  token: string,
+  payload: { startDate: string; endDate: string; compareWith: 'cohort' | 'everyone'; includeSynthetic?: boolean },
+  signal?: AbortSignal,
+): Promise<RiskReferenceResponse> {
+  return apiFetchJson(apiRoutes.populationReference(), { token, body: { platforms: ['youtube'], ...payload }, signal });
 }
 
 export function createImport(token: string, payload: CreateImportPayload): Promise<{ import_id: string; ldihk_id: string; status: ImportState }> {
