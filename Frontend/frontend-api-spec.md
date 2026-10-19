@@ -124,7 +124,13 @@ linkedin
 6. The import worker (a thread inside the backend web process on free
    hosting) picks up the import, downloads the ZIP, parses supported YouTube,
    TikTok and Instagram files, and writes normalized rows. An archive with no
-   supported files fails with `error_message` starting `no_supported_files`.
+   supported files fails with `error_message` starting `no_supported_files`;
+   one without any watch history fails before parsing with
+   `takeout_index_only` (only Google's `archive_browser.html`),
+   `youtube_history_missing` or `instagram_views_missing`. The frontend maps
+   these codes to instructions (`src/lib/importErrors.ts`). Watch events of
+   the same video within one second from a different file of the same user
+   (the HTML and JSON version of one history) are skipped as duplicates.
    When the import ends, the archive is deleted from storage.
 7. Frontend polls `GET /api/imports/{import_id}`.
 8. Frontend calls `POST /api/query` for dashboard data.
@@ -359,6 +365,8 @@ show):
 - `upload_budget_exhausted` (429, `Retry-After` until the next month):
   `UPLOAD_MAX_PER_MONTH` upload URLs were issued this calendar month (UTC)
 - `uploads_disabled` (503): `UPLOADS_ENABLED=false`
+- `database_full` (507): the database is larger than `DATABASE_MAX_BYTES`;
+  no new uploads until data is deleted
 - `upload_not_configured` (503), `database_unavailable` (503),
   `upload_signing_failed` (500)
 

@@ -17,7 +17,9 @@ DEFAULT_PLATFORM_DURATION_SECONDS = {
     ("youtube", "youtube"): 600,
     ("youtube", "youtube_music"): 600,
     ("tiktok", None): 60,
-    ("instagram", None): 15,
+    # A Reel or post viewed last before a break (see watch_seconds_sql).
+    ("instagram", None): 30,
+    ("instagram", "stories"): 5,
     ("spotify", None): 120,
     ("linkedin", None): 120,
 }
@@ -84,6 +86,11 @@ _TIMEZONE_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_+\-]*(/[A-Za-z0-9_+\-]
 # Event types that count as "watching" for watch-time metrics. YouTube and
 # TikTok record watches as 'watch'; Instagram records the kind of view.
 INSTAGRAM_WATCH_EVENT_TYPES = ("video_watch", "story_view", "post_view")
+# Instagram logs when an item was opened, not for how long. Within a session
+# (next item at most two minutes later) the gap is the viewing time; the last
+# item before a break gets the platform default. Stories are logged in batches
+# with identical timestamps, so each counts a flat 5 seconds instead.
+INSTAGRAM_SESSION_GAP_SECONDS = 120
 WATCH_EVENT_SQL = (
     "(({alias}.event_type = 'watch') OR ({alias}.platform = 'instagram' "
     "AND {alias}.event_type IN ("
@@ -697,6 +704,9 @@ def _default_duration_seconds_sql(event_alias: str) -> str:
             WHEN {event_alias}.platform = 'tiktok'
             THEN {DEFAULT_PLATFORM_DURATION_SECONDS[("tiktok", None)]}::numeric
             WHEN {event_alias}.platform = 'instagram'
+             AND {event_alias}.product = 'stories'
+            THEN {DEFAULT_PLATFORM_DURATION_SECONDS[("instagram", "stories")]}::numeric
+            WHEN {event_alias}.platform = 'instagram'
             THEN {DEFAULT_PLATFORM_DURATION_SECONDS[("instagram", None)]}::numeric
             WHEN {event_alias}.platform = 'spotify'
             THEN {DEFAULT_PLATFORM_DURATION_SECONDS[("spotify", None)]}::numeric
@@ -738,6 +748,7 @@ def _event_rows_cte(query: StructuredQuery, where_sql: str) -> str:
                     ELSE ue.event_type
                 END AS metric_event_type,
                 ue.platform AS metric_platform,
+                ue.product AS metric_product,
                 CASE
                     WHEN yv.availability_status = 'available'
                      AND yv.duration_seconds IS NOT NULL
@@ -810,20 +821,37 @@ def _event_rows_cte(query: StructuredQuery, where_sql: str) -> str:
 def _clipped_duration_seconds_sql(duration_column: str) -> str:
     return f"""
         CASE
-            WHEN {duration_column} IS NOT NULL
-             AND metric_event_type = 'watch'
-             AND occurred_at IS NOT NULL
-             AND next_watch_started_at IS NOT NULL
-            THEN LEAST(
-                {duration_column},
-                GREATEST(
-                    0::numeric,
-                    EXTRACT(EPOCH FROM next_watch_started_at - occurred_at)::numeric
-                )
-            )
+            WHEN metric_event_type = 'watch'
+            THEN {watch_seconds_sql(duration_column, platform="metric_platform", product="metric_product", occurred_at="occurred_at", next_started_at="next_watch_started_at")}
             ELSE {duration_column}
         END
     """
+
+
+def watch_seconds_sql(
+    duration_sql: str,
+    *,
+    platform: str,
+    product: str,
+    occurred_at: str,
+    next_started_at: str,
+) -> str:
+    """Watch seconds of one event: its duration, cut off when the next starts.
+
+    Instagram follows the session rule described at
+    INSTAGRAM_SESSION_GAP_SECONDS; ``duration_sql`` is then the default.
+    """
+    gap = f"EXTRACT(EPOCH FROM {next_started_at} - {occurred_at})::numeric"
+    return f"""(
+        CASE
+            WHEN {duration_sql} IS NULL THEN NULL::numeric
+            WHEN {platform} = 'instagram' AND {product} = 'stories' THEN {duration_sql}
+            WHEN {occurred_at} IS NULL OR {next_started_at} IS NULL THEN {duration_sql}
+            WHEN {platform} = 'instagram' AND {gap} <= {INSTAGRAM_SESSION_GAP_SECONDS}
+            THEN GREATEST(0::numeric, {gap})
+            ELSE LEAST({duration_sql}, GREATEST(0::numeric, {gap}))
+        END
+    )"""
 
 
 def _subscription_rows_cte(query: StructuredQuery, where_sql: str) -> str:
@@ -1000,6 +1028,8 @@ def _platform_duration_defaults_payload() -> dict[str, int]:
         "youtube_shorts": DEFAULT_PLATFORM_DURATION_SECONDS[("youtube", "shorts")],
         "tiktok": DEFAULT_PLATFORM_DURATION_SECONDS[("tiktok", None)],
         "instagram": DEFAULT_PLATFORM_DURATION_SECONDS[("instagram", None)],
+        "instagram_stories": DEFAULT_PLATFORM_DURATION_SECONDS[("instagram", "stories")],
+        "instagram_session_gap": INSTAGRAM_SESSION_GAP_SECONDS,
         "spotify": DEFAULT_PLATFORM_DURATION_SECONDS[("spotify", None)],
         "linkedin": DEFAULT_PLATFORM_DURATION_SECONDS[("linkedin", None)],
     }

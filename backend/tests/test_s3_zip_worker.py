@@ -480,6 +480,7 @@ class S3ZipWorkerTests(unittest.TestCase):
                 s3_client=FakeS3Client(source_zip),
                 dispatch_member=fake_instagram_dispatch_member,
                 parser_loader=lambda dispatch: instagram_activity_parser,
+                archive_problem=lambda paths: None,
             )
 
             result = worker.process_one()

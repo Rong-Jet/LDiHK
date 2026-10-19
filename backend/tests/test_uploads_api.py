@@ -7,7 +7,7 @@ from unittest import mock
 from urllib.parse import parse_qs, urlsplit
 
 from backend.app import create_app
-from backend.uploads import Reservation, presign_upload, upload_key_for
+from backend.uploads import Reservation, UploadRefused, UploadSettings, presign_upload, reserve_upload, upload_key_for
 
 
 def auth_headers(ldihk_id: str = "ldihk-upload-test-1") -> dict[str, str]:
@@ -112,6 +112,47 @@ class UploadKeyTests(unittest.TestCase):
             self.assertTrue(key.endswith("-My_Takeout_1.zip"), key)
             self.assertNotIn("..", key)
         self.assertTrue(upload_key_for("ldihk-a", None).endswith("-export.zip"))
+
+
+
+class _BudgetConnection:
+    """Answers the budget query with fixed numbers and records writes."""
+
+    def __init__(self, database_bytes: int):
+        self.database_bytes = database_bytes
+        self.inserted = False
+        self.rolled_back = False
+
+    def execute(self, sql, parameters=None):
+        if "INSERT INTO upload_reservations" in sql:
+            self.inserted = True
+            return mock.Mock(fetchone=lambda: (datetime.now(timezone.utc),))
+        return mock.Mock(fetchone=lambda: (0, 0, 86400, self.database_bytes))
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        self.rolled_back = True
+
+
+class DatabaseSizeGuardTests(unittest.TestCase):
+    settings = UploadSettings(
+        enabled=True, bucket="b", max_stored_bytes=10**9, max_per_month=100,
+        url_ttl_seconds=120, max_zip_bytes=10**8, max_database_bytes=400 * 1024**2,
+    )
+
+    def test_refuses_uploads_when_the_database_is_nearly_full(self):
+        connection = _BudgetConnection(database_bytes=401 * 1024**2)
+        with self.assertRaises(UploadRefused) as caught:
+            reserve_upload(connection, ldihk_id="ldihk-a", filename="a.zip", size_bytes=1000, settings=self.settings)
+        self.assertEqual((caught.exception.status, caught.exception.code), (507, "database_full"))
+        self.assertFalse(connection.inserted)
+
+    def test_accepts_uploads_below_the_limit(self):
+        connection = _BudgetConnection(database_bytes=100 * 1024**2)
+        reserve_upload(connection, ldihk_id="ldihk-a", filename="a.zip", size_bytes=1000, settings=self.settings)
+        self.assertTrue(connection.inserted)
 
 
 if __name__ == "__main__":

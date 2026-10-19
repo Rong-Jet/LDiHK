@@ -46,6 +46,7 @@ declares every variable; secrets are entered in the dashboard.
 | `QUERY_BUCKET_TIMEZONE` | No | Web | Default bucket timezone when a query sends no `options.timezone`. Any IANA name; default `UTC`. |
 | `UPLOADS_ENABLED` | No | Web | Default `true`. `false` stops issuing upload URLs (kill switch). |
 | `UPLOAD_MAX_STORED_BYTES` | No | Web | Default `2147483648` (2 GiB). Archives that may exist in the bucket at once; new upload URLs are refused (`429 upload_storage_full`) beyond it. |
+| `DATABASE_MAX_BYTES` | No | Web | Default `419430400` (400 MiB). New upload URLs are refused (`507 database_full`) while the database is larger, so it stays below Neon's free 0.5 GB with room for running imports. Deleting data keeps working. |
 | `UPLOAD_MAX_PER_MONTH` | No | Web | Default `10000`. Upload URLs per calendar month (UTC); then `429 upload_budget_exhausted` until the 1st. |
 | `UPLOAD_URL_TTL_SECONDS` | No | Web | Default `120`. How long an upload URL can start an upload. |
 | `RUN_MIGRATIONS_ON_START` | No | Web | Default `true`. With `RUN_WORKERS_IN_PROCESS=true`, pending migrations run when the service starts (Render free has no pre-deploy step). |
@@ -239,6 +240,19 @@ spending cap, so the backend enforces one:
 | Upload URL | single use, exact size, 120 s | A URL creates one object of the signed size; repeats fail with `412`. |
 | Deletion | after each import | Archives exist for minutes; deletes are free. |
 | `UPLOADS_ENABLED=false` | | Stops all new uploads at once. |
+| `DATABASE_MAX_BYTES` | 400 MiB | New uploads stop before the database reaches Neon's free 0.5 GB. |
+
+### Keeping the backend awake
+
+Render stops a free web service after 15 minutes without requests; the next
+visitor then waits 30-60 s. The Netlify scheduled function
+`Frontend/netlify/functions/keep-backend-awake.mjs` calls the site's
+`/api/wake` every 10 minutes from 06:00 to 22:59 UTC (about 540 of the 750
+free instance hours a month; the service sleeps at night). Netlify runs
+scheduled functions on the production deploy only, so it starts with the
+release to `main`. To keep the staging backend awake before that, point a free
+external cron (for example cron-job.org) at
+`https://ldihk.onrender.com/api/ready` on the same schedule.
 
 The backend never lists the bucket (a billed operation): deletions use the
 keys recorded in Postgres. Reads are two per import (HeadObject, GetObject).

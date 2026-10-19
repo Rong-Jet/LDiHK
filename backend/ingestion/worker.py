@@ -16,7 +16,7 @@ from uuid import uuid4
 from zipfile import ZipFile
 
 from backend.enrichment.durations import ENRICHMENT_JOB_TYPE_YOUTUBE_DURATIONS
-from backend.ingestion.dispatch import DispatchResult, dispatch_member_path
+from backend.ingestion.dispatch import DispatchResult, dispatch_member_path, missing_history_problem
 from backend.ingestion.fingerprints import event_fingerprints
 from backend.ingestion.models import ParseResult, ParserCallable
 from backend.ingestion.s3 import S3Client
@@ -229,8 +229,10 @@ class S3ZipImportWorker:
         max_member_bytes: int | None = None,
         heartbeat: HeartbeatFn | None = None,
         heartbeat_interval_seconds: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+        archive_problem: Callable[[list[str]], str | None] = missing_history_problem,
     ) -> None:
         self.repository = repository
+        self.archive_problem = archive_problem
         self.s3_client = s3_client
         self.dispatch_member = dispatch_member
         self.parser_loader = parser_loader or _load_parser
@@ -308,6 +310,9 @@ class S3ZipImportWorker:
 
             with ZipFile(zip_path) as zip_file:
                 safe_members = list(iter_safe_zip_members(zip_file))
+                problem = self.archive_problem([member.source_path for member in safe_members])
+                if problem is not None:
+                    raise ValueError(problem)
                 for member in safe_members:
                     dispatch = self.dispatch_member(member.source_path)
                     if dispatch.ignored:
@@ -771,6 +776,7 @@ class PostgresImportRepository:
         return records_inserted
 
     def _insert_usage_event_batch(self, events: list[UsageEventWrite]) -> int:
+        events = self._without_cross_format_duplicates(events)
         if not events:
             return 0
 
@@ -828,6 +834,63 @@ class PostgresImportRepository:
         except Exception:
             self._rollback_unless_in_transaction()
             raise
+
+    def _without_cross_format_duplicates(
+        self, events: list[UsageEventWrite]
+    ) -> list[UsageEventWrite]:
+        """Drop events another file of this user already holds.
+
+        The same history exported as HTML and as JSON matches the fingerprint
+        in about 94% of cases; the rest differ by the channel (missing in one
+        format) or by one second (HTML has no fractions of a second and
+        rounds differently). An event with a video id that already exists
+        within one second from a different source file is that duplicate:
+        nobody starts the same video twice within a second. Rows from the
+        same file are never compared, so repeated entries in one file and
+        re-imports (caught by the fingerprint) behave as before.
+        """
+        candidates = [
+            index
+            for index, event in enumerate(events)
+            if event.video_id is not None and event.occurred_at is not None
+        ]
+        if not candidates:
+            return events
+        try:
+            rows = self.connection.execute(
+                """
+                SELECT incoming.n
+                FROM unnest(
+                    %s::int[], %s::text[], %s::text[], %s::text[], %s::timestamptz[]
+                ) AS incoming(n, platform, event_type, video_id, occurred_at)
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM usage_events existing
+                    WHERE existing.user_id = %s
+                      AND existing.occurred_at
+                          BETWEEN incoming.occurred_at - INTERVAL '1 second'
+                              AND incoming.occurred_at + INTERVAL '1 second'
+                      AND existing.video_id = incoming.video_id
+                      AND existing.platform = incoming.platform
+                      AND existing.event_type = incoming.event_type
+                      AND existing.source_file_id IS DISTINCT FROM %s
+                )
+                """,
+                (
+                    candidates,
+                    [events[index].platform for index in candidates],
+                    [events[index].event_type for index in candidates],
+                    [events[index].video_id for index in candidates],
+                    [events[index].occurred_at for index in candidates],
+                    events[0].user_id,
+                    events[0].source_file_id,
+                ),
+            ).fetchall()
+        except Exception:
+            self._rollback_unless_in_transaction()
+            raise
+        duplicates = {row[0] for row in rows}
+        return [event for index, event in enumerate(events) if index not in duplicates]
 
     def upsert_subscription(self, subscription: SubscriptionWrite) -> bool:
         try:

@@ -16,6 +16,11 @@ operations (reads). The defaults stay far below it:
 - UPLOAD_MAX_PER_MONTH (10,000): upload URLs per calendar month (UTC).
 - UPLOAD_URL_TTL_SECONDS (120): how long a URL can start an upload.
 - UPLOADS_ENABLED=false: issue no upload URLs at all.
+
+The database has a free-tier limit too (Neon: 0.5 GB per project, writes stop
+when it is full). New uploads are refused once the database is larger than
+DATABASE_MAX_BYTES (400 MiB), which leaves room for the imports already
+under way, for enrichment, and for deleting data, which keeps working.
 """
 
 from __future__ import annotations
@@ -48,6 +53,7 @@ DEFAULT_MAX_STORED_BYTES = 2 * 1024**3
 DEFAULT_MAX_PER_MONTH = 10_000
 DEFAULT_URL_TTL_SECONDS = 120
 DEFAULT_MAX_ZIP_BYTES = 200 * 1024 * 1024
+DEFAULT_MAX_DATABASE_BYTES = 400 * 1024 * 1024
 CONTENT_TYPE = "application/zip"
 # An upload may still be in flight after its URL expired (the browser gives up
 # after 30 minutes), so unused URLs are only cleaned up after this.
@@ -66,6 +72,7 @@ class UploadSettings:
     max_per_month: int
     url_ttl_seconds: int
     max_zip_bytes: int
+    max_database_bytes: int = DEFAULT_MAX_DATABASE_BYTES
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] = os.environ) -> UploadSettings:
@@ -82,6 +89,7 @@ class UploadSettings:
             max_per_month=_env_int(environ, "UPLOAD_MAX_PER_MONTH", DEFAULT_MAX_PER_MONTH),
             url_ttl_seconds=_env_int(environ, "UPLOAD_URL_TTL_SECONDS", DEFAULT_URL_TTL_SECONDS),
             max_zip_bytes=_env_int(environ, "MAX_IMPORT_ZIP_BYTES", DEFAULT_MAX_ZIP_BYTES),
+            max_database_bytes=_env_int(environ, "DATABASE_MAX_BYTES", DEFAULT_MAX_DATABASE_BYTES),
         )
 
 
@@ -132,7 +140,7 @@ def reserve_upload(
         raise UploadRefused(503, "upload_not_configured", "Upload storage is not configured.")
     try:
         connection.execute("SELECT pg_advisory_xact_lock(%s)", (UPLOAD_BUDGET_LOCK_ID,))
-        stored_bytes, uploads_this_month, seconds_to_next_month = connection.execute(
+        stored_bytes, uploads_this_month, seconds_to_next_month, database_bytes = connection.execute(
             """
             SELECT
                 (SELECT COALESCE(SUM(size_bytes), 0) FROM upload_reservations
@@ -142,9 +150,17 @@ def reserve_upload(
                 EXTRACT(EPOCH FROM (
                     (date_trunc('month', now() AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'
                     - now()
-                ))::int
+                ))::int,
+                pg_database_size(current_database())
             """
         ).fetchone()
+        if int(database_bytes) > settings.max_database_bytes:
+            LOGGER.warning("Upload refused: the database holds %d MB", int(database_bytes) // 1024**2)
+            raise UploadRefused(
+                507,
+                "database_full",
+                "The analysis database is full, so no new uploads are accepted at the moment.",
+            )
         if uploads_this_month >= settings.max_per_month:
             raise UploadRefused(
                 429,

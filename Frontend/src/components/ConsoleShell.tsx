@@ -406,7 +406,9 @@ function ImportNotices({ session }: { session: ConsoleSession }) {
             <span className="break-words">{notice.message}</span>
             {notice.kind === 'failed' && (
               <span className="block text-brand-navy/60 mt-1">
-                Make sure the ZIP is an unmodified platform export (e.g. Google Takeout with YouTube history), then upload it again.
+                {notice.guide
+                  ? '"How do I get my export?" in the upload panel shows which options to select.'
+                  : 'Make sure the ZIP is an unmodified platform export (e.g. Google Takeout with YouTube history), then upload it again.'}
               </span>
             )}
           </div>
@@ -648,7 +650,7 @@ function ConsoleShellBody({
               Close Panel
             </button>
           </div>
-          <UploadZone sessionToken={sessionToken} />
+          <UploadZone sessionToken={sessionToken} guideFocus={session.notice?.guide ?? null} />
         </div>
       )}
 
@@ -689,7 +691,7 @@ function ConsoleShellBody({
       {/* State 1: Upload Needed (Only if no datasets are ready) */}
       {phase === 'ready' && readyPlatforms.length === 0 && pipelineStatus !== 'PROCESSING' && (
         <div className="space-y-12">
-          <UploadZone sessionToken={sessionToken} />
+          <UploadZone sessionToken={sessionToken} guideFocus={session.notice?.guide ?? null} />
 
           {/* Visual Scaffolding Placeholders */}
           <div className="border border-brand-navy/10 rounded-3xl p-8 bg-brand-beige/20 text-center max-w-xl mx-auto space-y-3">

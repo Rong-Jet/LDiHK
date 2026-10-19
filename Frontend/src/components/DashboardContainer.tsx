@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { QueryClientProvider } from '@tanstack/react-query';
-import { RefreshCw, ShieldAlert } from 'lucide-react';
+import { Info, RefreshCw, ShieldAlert } from 'lucide-react';
 import ConsoleShell from './ConsoleShell';
 import MainTimeline from './MainTimeline';
 import DeepDive from './DeepDive';
@@ -162,6 +162,18 @@ function DashboardContent() {
         </div>
       ) : (
         <div className="space-y-6">
+          {platformsToQuery.includes('instagram') && (
+            <div className="flex gap-3 items-start bg-brand-beige/50 border border-brand-navy/10 rounded-2xl px-4 py-3 text-xs text-brand-navy/80 leading-relaxed text-left" role="note">
+              <Info className="w-4 h-4 text-brand-teal shrink-0 mt-0.5" />
+              <span>
+                <b className="text-brand-navy">Instagram covers only the last few days.</b>{' '}
+                Instagram's export keeps viewed posts and Reels for about a week and stories for about a month, so earlier
+                Instagram use is missing from the export, not from your habits. Watch time is estimated from the gaps
+                between items (up to 2 minutes; 30 seconds before a break, 5 seconds per story).
+              </span>
+            </div>
+          )}
+
           {/* Timeline and Deep Dive Grid */}
           <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
             <div className="xl:col-span-2">

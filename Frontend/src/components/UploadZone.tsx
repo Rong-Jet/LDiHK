@@ -3,15 +3,18 @@ import { UploadCloud, CheckCircle2, AlertTriangle, RefreshCw, Database, Lock, Sh
 import { generateLdihkId } from '../lib/ldihkId';
 import { formatFileSize, MAX_UPLOAD_BYTES, useUploadController } from '../hooks/useUploadController';
 import { ProfileFields } from './ProfileCard';
+import ExportGuide, { type GuidePlatform } from './ExportGuide';
 import { EMPTY_PROFILE } from '../lib/profile';
 import type { UserProfile } from '../lib/api';
 
 interface UploadZoneProps {
   sessionToken: string | null;
   onSessionGenerated?: (newSessionToken: string) => void;
+  /** Opens the export guide on this platform (after a failed import). */
+  guideFocus?: GuidePlatform | null;
 }
 
-export default function UploadZone({ sessionToken, onSessionGenerated }: UploadZoneProps) {
+export default function UploadZone({ sessionToken, onSessionGenerated, guideFocus = null }: UploadZoneProps) {
   const upload = useUploadController();
   const [dragActive, setDragActive] = useState(false);
   const [localError, setLocalError] = useState('');
@@ -182,7 +185,7 @@ export default function UploadZone({ sessionToken, onSessionGenerated }: UploadZ
               Drag & Drop your platform archive here
             </p>
             <p className="text-xs text-brand-navy/60 mb-6">
-              Supports standard dataset ZIP files containing event metrics (max {formatFileSize(MAX_UPLOAD_BYTES)} after removing videos and photos)
+              The ZIP export from YouTube (Google Takeout), Instagram or TikTok, unchanged (max {formatFileSize(MAX_UPLOAD_BYTES)} after removing videos and photos)
             </p>
             <label className="px-5 py-2.5 rounded-xl bg-brand-teal text-white font-bold text-sm cursor-pointer hover:bg-brand-teal/95 shadow-md shadow-brand-teal/15 transition-all hover:-translate-y-0.5 duration-150">
               Browse Files
@@ -292,6 +295,8 @@ export default function UploadZone({ sessionToken, onSessionGenerated }: UploadZ
           </div>
         )}
       </div>
+
+      <ExportGuide focus={guideFocus} />
 
       {/* Privacy & Consent Warning Modal */}
       {showWarningModal && pendingFile && (

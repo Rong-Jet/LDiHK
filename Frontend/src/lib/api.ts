@@ -95,6 +95,7 @@ const ERROR_CODE_MESSAGES: Record<string, string> = {
   upload_storage_full: 'Too many archives are waiting to be processed. Please try again in an hour.',
   upload_budget_exhausted: "This month's upload limit is reached. Uploads open again on the 1st of next month.",
   uploads_disabled: 'Uploads are switched off at the moment. Please try again later.',
+  database_full: 'The analysis database is full, so no new uploads are accepted at the moment. Your existing data is unaffected.',
 };
 
 export function describeApiError(error: unknown, fallback = 'Something went wrong while talking to the server.'): string {

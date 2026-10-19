@@ -302,7 +302,7 @@ class StructuredQueryApiTests(unittest.TestCase):
             ["demo_user", 600, "demo_user", ["youtube", "tiktok"], 500],
         )
 
-    def test_instagram_platform_default_duration_is_15_seconds(self):
+    def test_instagram_defaults_are_30_seconds_and_5_for_stories(self):
         query = validate_query_request(
             {
                 "dataset": "usage_analytics",
@@ -315,7 +315,21 @@ class StructuredQueryApiTests(unittest.TestCase):
 
         compiled = compile_aggregate_query(query)
 
-        self.assertIn("WHEN ue.platform = 'instagram' THEN 15::numeric", compiled.sql)
+        self.assertIn("WHEN ue.platform = 'instagram' AND ue.product = 'stories' THEN 5::numeric", compiled.sql)
+        self.assertIn("WHEN ue.platform = 'instagram' THEN 30::numeric", compiled.sql)
+        # Within a session (next item at most 2 min later) the gap is the time.
+        self.assertIn(
+            "WHEN metric_platform = 'instagram' AND EXTRACT(EPOCH FROM next_watch_started_at "
+            "- occurred_at)::numeric <= 120 THEN GREATEST(0::numeric, EXTRACT(EPOCH FROM "
+            "next_watch_started_at - occurred_at)::numeric)",
+            compiled.sql,
+        )
+        # Stories are logged in batches and keep their flat value.
+        self.assertIn(
+            "WHEN metric_platform = 'instagram' AND metric_product = 'stories' "
+            "THEN base_estimated_duration_seconds",
+            compiled.sql,
+        )
 
     def test_platform_specific_datasets_apply_platform_filters(self):
         cases = [
@@ -642,9 +656,9 @@ class StructuredQueryApiTests(unittest.TestCase):
         self.assertIn("next_ue.event_type = 'watch'", compiled.sql)
         self.assertIn("next_ue.occurred_at > ue.occurred_at", compiled.sql)
         self.assertIn(
-            "THEN LEAST( base_estimated_duration_seconds, "
-            "GREATEST( 0::numeric, EXTRACT(EPOCH FROM next_watch_started_at "
-            "- occurred_at)::numeric ) )",
+            "ELSE LEAST(base_estimated_duration_seconds, "
+            "GREATEST(0::numeric, EXTRACT(EPOCH FROM next_watch_started_at "
+            "- occurred_at)::numeric))",
             compiled.sql,
         )
 
@@ -667,8 +681,8 @@ class StructuredQueryApiTests(unittest.TestCase):
         self.assertIn("next_ue.platform = ue.platform", compiled.sql)
         self.assertIn("next_ue.event_type = 'watch'", compiled.sql)
         self.assertIn("next_ue.occurred_at > ue.occurred_at", compiled.sql)
-        self.assertIn("LEAST( raw_api_duration_seconds", compiled.sql)
-        self.assertIn("LEAST( base_estimated_duration_seconds", compiled.sql)
+        self.assertIn("LEAST(raw_api_duration_seconds", compiled.sql)
+        self.assertIn("LEAST(base_estimated_duration_seconds", compiled.sql)
         self.assertIn(
             "EXTRACT(EPOCH FROM next_watch_started_at - occurred_at)::numeric",
             compiled.sql,

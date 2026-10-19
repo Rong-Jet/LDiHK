@@ -220,6 +220,53 @@ def dispatch_member_path(source_path: str) -> DispatchResult:
     )
 
 
+# Files that hold what someone watched. An archive without any of them gives a
+# workspace with no watch time, which looks like a broken import; the usual
+# cause is an export with the wrong options, so the worker rejects it with a
+# message that says which option was missing (see missing_history_problem).
+_WATCH_PARSERS = frozenset({"watch_history", "youtube_activity_auto", "tiktok_watch_history"})
+_INSTAGRAM_VIEW_FILES = frozenset({"stories_viewed", "posts_viewed", "videos_watched"})
+_INSTAGRAM_TOP_FOLDERS = frozenset(
+    {"your_instagram_activity", "ads_information", "connections", "personal_information", "logged_information"}
+)
+TAKEOUT_INDEX_ONLY_MESSAGE = (
+    "takeout_index_only: the archive holds only Google's table of contents "
+    "(archive_browser.html) and no YouTube data"
+)
+YOUTUBE_HISTORY_MISSING_MESSAGE = (
+    "youtube_history_missing: the archive has YouTube files but no watch history "
+    "(the 'history' option was not selected in Google Takeout)"
+)
+INSTAGRAM_VIEWS_MISSING_MESSAGE = (
+    "instagram_views_missing: the archive has Instagram files but no viewed "
+    "posts, Reels or stories (the 'Ads information' and 'Your Instagram activity' "
+    "categories were not selected)"
+)
+
+
+def missing_history_problem(source_paths: list[str]) -> str | None:
+    """Why an archive cannot give any watch time, or None when it can."""
+    dispatches = [dispatch_member_path(path) for path in source_paths]
+    for dispatch in dispatches:
+        if dispatch.parser_name in _WATCH_PARSERS:
+            return None
+        if dispatch.parser_name == "instagram_activity":
+            stem = posixpath.splitext(posixpath.basename(normalize_member_path(dispatch.source_path)))[0]
+            if stem in _INSTAGRAM_VIEW_FILES:
+                return None
+
+    normalized = [normalize_member_path(path) for path in source_paths]
+    if any(folder.startswith("youtube") for path in normalized for folder in path.split("/")[:-1]):
+        return YOUTUBE_HISTORY_MISSING_MESSAGE
+    if any(path.split("/")[0] in _INSTAGRAM_TOP_FOLDERS for path in normalized):
+        return INSTAGRAM_VIEWS_MISSING_MESSAGE
+    if all(dispatch.ignored for dispatch in dispatches) and any(
+        path.endswith("archive_browser.html") for path in normalized
+    ):
+        return TAKEOUT_INDEX_ONLY_MESSAGE
+    return None
+
+
 def parser_name_for_path(source_path: str) -> str | None:
     return dispatch_member_path(source_path).parser_name
 

@@ -20,7 +20,7 @@ import numpy as np
 
 from backend import procedural_population
 from backend.demographics import AGE_RANGES, comparable_sex, neighbouring_ranges
-from backend.query_api import DEFAULT_PLATFORM_DURATION_SECONDS, WATCH_EVENT_SQL
+from backend.query_api import DEFAULT_PLATFORM_DURATION_SECONDS, WATCH_EVENT_SQL, watch_seconds_sql
 
 
 POPULATION_SCHEMA_VERSION = "youtube_usage.population.v1"
@@ -627,6 +627,7 @@ def _clipped_events_cte(population_scope: str, platforms: tuple[str, ...] = (YOU
                 ue.user_id,
                 ue.occurred_at,
                 ue.platform,
+                ue.product,
                 ue.event_type,
                 COALESCE(
                     ue.duration_seconds::numeric,
@@ -641,6 +642,8 @@ def _clipped_events_cte(population_scope: str, platforms: tuple[str, ...] = (YOU
                         THEN {defaults[("youtube", "shorts")]}::numeric
                         WHEN ue.platform = 'youtube' THEN {defaults[("youtube", "long")]}::numeric
                         WHEN ue.platform = 'tiktok' THEN {defaults[("tiktok", None)]}::numeric
+                        WHEN ue.platform = 'instagram' AND ue.product = 'stories'
+                        THEN {defaults[("instagram", "stories")]}::numeric
                         WHEN ue.platform = 'instagram' THEN {defaults[("instagram", None)]}::numeric
                         ELSE {defaults[("linkedin", None)]}::numeric
                     END
@@ -670,19 +673,8 @@ def _clipped_events_cte(population_scope: str, platforms: tuple[str, ...] = (YOU
                 occurred_at,
                 platform,
                 event_type,
-                CASE
-                    WHEN base_duration IS NOT NULL
-                     AND occurred_at IS NOT NULL
-                     AND next_occurred_at IS NOT NULL
-                    THEN LEAST(
-                        base_duration,
-                        GREATEST(
-                            0::numeric,
-                            EXTRACT(EPOCH FROM next_occurred_at - occurred_at)::numeric
-                        )
-                    )
-                    ELSE base_duration
-                END AS estimated_watch_seconds
+                {watch_seconds_sql("base_duration", platform="platform", product="product", occurred_at="occurred_at", next_started_at="next_occurred_at")}
+                  AS estimated_watch_seconds
             FROM clipped_events
         )
     """

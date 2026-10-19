@@ -340,6 +340,8 @@ class DeploymentSmokeTests(unittest.TestCase):
             worker = S3ZipImportWorker(
                 repository=repository,
                 s3_client=s3_client,
+                # This archive deliberately has no watch history.
+                archive_problem=lambda paths: None,
             )
 
             result = worker.process_one()

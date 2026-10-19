@@ -20,6 +20,8 @@ import {
 import { getBrowserTimeZone, isYmd, maxYmd, minYmd, type DateBounds } from '../lib/dates';
 import { isValidLdihkId } from '../lib/ldihkId';
 import { EMPTY_PROFILE } from '../lib/profile';
+import { describeImportFailure } from '../lib/importErrors';
+import type { GuidePlatform } from '../components/ExportGuide';
 
 const TOKEN_KEY = 'ldihk_session_token';
 const IMPORT_ID_KEY = 'ldihk_current_import_id';
@@ -42,6 +44,8 @@ export interface ImportNotice {
   kind: 'failed' | 'timeout' | 'lost';
   importId: string;
   message: string;
+  /** Export guide tab that explains how to fix a failed import. */
+  guide?: GuidePlatform | null;
 }
 
 interface TrackedImport {
@@ -214,7 +218,7 @@ export function useConsoleSession({ backendReady, timeZone: requestedTimeZone }:
       finishTracking(tracked.id, {
         kind: 'failed',
         importId: tracked.id,
-        message: data.error_message || 'The import failed without an error message.',
+        ...describeImportFailure(data.error_message),
       });
       invalidateDataQueries();
       return;
@@ -316,7 +320,7 @@ export function useConsoleSession({ backendReady, timeZone: requestedTimeZone }:
     ? {
         kind: 'failed',
         importId: latestImport.import_id,
-        message: latestImport.error_message || 'The import failed without an error message.',
+        ...describeImportFailure(latestImport.error_message),
       }
     : null;
   const notice = importNotice ?? derivedFailureNotice;
