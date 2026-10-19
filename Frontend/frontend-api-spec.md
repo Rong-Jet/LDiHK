@@ -590,9 +590,11 @@ Who the user is compared with:
   user is never part of their own comparison group. Each person counts on the
   days inside their own history (a day without watching counts as 0 hours),
   but not before their export starts or after it ends.
-- With `includeSynthetic: true`, the synthetic profiles. They were generated
-  for a fixed window (`syntheticBaseline`); requested days outside that window
-  are compared with the same weekday inside it, so any date range works.
+- With `includeSynthetic: true`, about 1,400 synthetic profiles computed for
+  exactly the requested days (seasons, habit drift, holidays, weekday and
+  day-to-day variation; the same for every user). `syntheticModel` names the
+  model and profile count; `syntheticBaseline` is always `null` now. For very
+  long ranges an evenly spread subset of the profiles is used.
 - Comparisons against fewer than 5 other people are refused
   (`reason: "insufficient_population"`), because percentiles of such a small
   group would reveal individual usage.

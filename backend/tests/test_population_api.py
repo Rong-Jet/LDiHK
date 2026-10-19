@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 import unittest
+from unittest import mock
 
+import numpy as np
+
+from backend import procedural_population
 from backend.app import create_app
-from backend.population_api import MIN_POPULATION_SIZE, _baseline_day
+from backend.population_api import MIN_POPULATION_SIZE
 
 
 def auth_headers(ldihk_id: str = "demo_user") -> dict[str, str]:
@@ -20,7 +24,26 @@ class FakeCursor:
         return self._rows
 
 
-SYNTHETIC_WINDOW = (date(2026, 5, 1), date(2026, 5, 14))
+def _fake_series(start: date, end: date, profiles=None):
+    """Synthetic s1: 1 h every day (hour 0), s2: 0.5 h every day (hour 23)."""
+    days = [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
+    flat = tuple([0.0] * 24)
+    people = tuple(
+        procedural_population.SyntheticProfile(
+            index=index, age_range="20-24", sex="female", model_group="young_adult",
+            youtube_minutes=60.0, youtube_sessions=2.0, weekday_hours=flat, weekend_hours=flat,
+            drift=(), block_offset=0,
+        )
+        for index in (1, 2)
+    )
+    hours = np.array([[1.0] * len(days), [0.5] * len(days)])
+    hourly = np.zeros((2, 24))
+    hourly[0, 0] = 3600 * len(days)
+    hourly[1, 23] = 1800 * len(days)
+    return procedural_population.DaySeries(
+        profiles=people, days=days, hours=hours, late_night_hours=hours * 0,
+        fragmentation=hours * 0, hourly_seconds=hourly,
+    )
 
 
 class PopulationConnection:
@@ -29,7 +52,7 @@ class PopulationConnection:
     requester u-me: 1 h, 2 h
     r1 (covers both days): 1 h, 0 h       r2: 2 h, 2 h
     r3 (history starts 2026-06-02): -, 3 h
-    synthetic s1: 1 h every day of May 1-14, s2: 0.5 h every day
+    synthetic s1: 1 h every day, s2: 0.5 h every day (see _fake_series)
     """
 
     usage_columns = ["user_id", "date", "hour", "seconds"]
@@ -72,18 +95,6 @@ class PopulationConnection:
                     ("r-old", "2020-01-01", "2020-12-31"),
                 ],
             )
-        if "population_synthetic_window" in sql:
-            return FakeCursor(["first_date", "last_date"], [tuple(day.isoformat() for day in SYNTHETIC_WINDOW)])
-        if "population_synthetic_usage" in sql:
-            rows = []
-            day = SYNTHETIC_WINDOW[0]
-            while day <= SYNTHETIC_WINDOW[1]:
-                rows.append(("s1", day.isoformat(), None, 3600))
-                rows.append(("s2", day.isoformat(), None, 1800))
-                day += timedelta(days=1)
-            rows.append(("s1", None, 0, 14 * 3600))
-            rows.append(("s2", None, 23, 7 * 3600))
-            return FakeCursor(self.usage_columns, rows)
         raise AssertionError(f"Unexpected query: {sql[:80]}")
 
     def close(self):
@@ -104,6 +115,7 @@ def _request(client, *, include_synthetic: bool = True, platforms=("youtube",)):
     )
 
 
+@mock.patch.object(procedural_population, "day_series", _fake_series)
 class PopulationApiTests(unittest.TestCase):
     def test_population_query_returns_youtube_benchmark_payload(self):
         connection = PopulationConnection()
@@ -116,7 +128,9 @@ class PopulationApiTests(unittest.TestCase):
         self.assertEqual(payload["platforms"], ["youtube"])
         # Requester excluded; r-old's history does not overlap the range.
         self.assertEqual(payload["populationSize"], 5)
-        self.assertEqual(payload["syntheticBaseline"], {"startDate": "2026-05-01", "endDate": "2026-05-14"})
+        # Synthetic profiles cover the requested days themselves.
+        self.assertIsNone(payload["syntheticBaseline"])
+        self.assertEqual(payload["syntheticModel"]["profiles"], 2)
         self.assertEqual(payload["userDailyAverageHours"], 1.5)
         # Member averages 0.5, 2.0, 3.0, 1.0, 0.5 -> three are <= 1.5.
         self.assertEqual(payload["userPercentile"], 60)
@@ -153,7 +167,7 @@ class PopulationApiTests(unittest.TestCase):
         self.assertEqual(payload["populationSize"], 3)
         self.assertEqual(payload["minPopulationSize"], MIN_POPULATION_SIZE)
         self.assertNotIn("deciles", payload)
-        self.assertFalse(any("population_synthetic" in sql for sql, _ in connection.calls))
+        self.assertIsNone(payload.get("syntheticModel"))
 
     def test_population_query_rejects_non_youtube_platforms(self):
         response = _request(
@@ -196,23 +210,6 @@ class PopulationApiTests(unittest.TestCase):
         self.assertEqual(payload["reason"], "no_user_data")
         self.assertTrue(connection.closed)
         self.assertEqual(len(connection.calls), 1)
-
-
-class SyntheticBaselineTests(unittest.TestCase):
-    def test_dates_inside_the_window_are_unchanged(self):
-        self.assertEqual(_baseline_day(date(2026, 5, 7), SYNTHETIC_WINDOW), date(2026, 5, 7))
-
-    def test_dates_outside_the_window_keep_their_weekday(self):
-        for day in (date(2026, 6, 1), date(2025, 12, 24), date(2027, 3, 9)):
-            with self.subTest(day=day):
-                mapped = _baseline_day(day, SYNTHETIC_WINDOW)
-                self.assertTrue(SYNTHETIC_WINDOW[0] <= mapped <= SYNTHETIC_WINDOW[1])
-                self.assertEqual(mapped.weekday(), day.weekday())
-
-    def test_short_windows_still_map_into_the_window(self):
-        window = (date(2026, 5, 1), date(2026, 5, 3))
-        mapped = _baseline_day(date(2026, 6, 1), window)
-        self.assertTrue(window[0] <= mapped <= window[1])
 
 
 if __name__ == "__main__":

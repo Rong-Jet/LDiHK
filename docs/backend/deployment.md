@@ -103,21 +103,11 @@ database URL. With in-process workers, that is one service.
 python backend/scripts/run_migrations.py
 ```
 
-5. Optionally seed the synthetic comparison population. Keep it small: the free
-   plan has 1 GB, and each event costs roughly 0.7 KB including indexes. The
-   population page only reads YouTube watches, so seed YouTube only. Profiles
-   have an age range and sex (see `backend/synthetic_population.py` for the
-   calibration and its sources); comparisons by age and sex need about 50
-   profiles per range and sex, i.e. 1,500. At about 15 YouTube rows per profile
-   and day, 1,500 profiles over 7 days are roughly 110 MB.
-
-```sh
-uv run python backend/scripts/seed_synthetic_usage.py --profiles 1500 --days 7 --platforms youtube
-```
-
-   Synthetic rows are marked (`is_synthetic`, `imports.seed_run_id`, one
-   `synthetic_seed_runs` row per run) and never mix with real users. Remove all
-   of them at any time with:
+5. Nothing to seed: the synthetic comparison population is computed on demand
+   for any date range (`backend/procedural_population.py`, calibration in
+   `backend/synthetic_population.py`) and takes no database space. Every user
+   sees the same population (fixed seed). Older deployments may still hold
+   stored synthetic events, which are no longer read; remove them with:
 
 ```sh
 uv run python backend/scripts/seed_synthetic_usage.py --remove-all

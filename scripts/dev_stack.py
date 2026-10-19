@@ -181,8 +181,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--mock", action="store_true", help="frontend only, with simulated data")
     parser.add_argument("--fresh", action="store_true", help="drop and recreate the local database first")
     parser.add_argument("--database-url", help="use this Postgres instead of the embedded one")
-    parser.add_argument("--profiles", type=int, default=30, help="synthetic population size to seed (default 30)")
-    parser.add_argument("--days", type=int, default=28, help="days of synthetic history to seed (default 28)")
+    # The population benchmark computes its synthetic people on demand
+    # (backend/procedural_population.py); stored synthetic events are optional.
+    parser.add_argument("--profiles", type=int, default=0, help="synthetic event profiles to store (default 0: not needed)")
+    parser.add_argument("--days", type=int, default=28, help="days of stored synthetic history (with --profiles)")
     parser.add_argument("--frontend-port", type=int, default=4321)
     parser.add_argument("--backend-port", type=int, default=8000)
     parser.add_argument("--storage-port", type=int, default=5055)

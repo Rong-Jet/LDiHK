@@ -319,12 +319,11 @@ class PostgresIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(response.get_json()["rows"][0]["estimated_watch_seconds"], 60)
 
-    def test_population_needs_five_others_and_maps_synthetic_baseline(self):
+    def test_population_needs_five_others_and_computes_synthetic_days(self):
         from backend.population_api import MIN_POPULATION_SIZE
-        from backend.scripts.seed_synthetic_usage import seed_synthetic_usage
 
-        # Real users ~500 days back: nobody from the other tests overlaps, and
-        # the synthetic seed (the last 14 days) lies outside the range.
+        # Real users ~500 days back: nobody from the other tests overlaps. The
+        # synthetic population is computed for exactly these days.
         requester, *others = [self._new_id() for _ in range(3)]
         for ldihk_id in (requester, *others):
             records = _watch_records(5, newest_hours_ago=500 * 24, prefix=ldihk_id[-6:])
@@ -345,26 +344,17 @@ class PostgresIntegrationTests(unittest.TestCase):
             {"ready": False, "reason": "insufficient_population", "populationSize": len(others)},
         )
 
-        seed_synthetic_usage(
-            total_profiles=12,
-            total_days=14,
-            seed_run_name=f"it-{uuid.uuid4().hex[:8]}",
-            random_seed=7,
-            run_schema_migrations=False,
-        )
         response = self.client.post("/api/population", headers=auth, json={**request, "includeSynthetic": True})
         payload = response.get_json()
         self.assertTrue(payload["ready"], payload)
-        self.assertGreaterEqual(payload["populationSize"], MIN_POPULATION_SIZE)
-        baseline_end = datetime.fromisoformat(payload["syntheticBaseline"]["endDate"]).date()
-        self.assertLessEqual(abs((baseline_end - datetime.now(timezone.utc).date()).days), 1)
+        self.assertGreater(payload["populationSize"], 1000)
+        self.assertIsNone(payload["syntheticBaseline"])
+        self.assertEqual(payload["syntheticModel"]["profiles"] + len(others), payload["populationSize"])
         self.assertEqual(len(payload["deciles"]), 7)
         self.assertTrue(all(day["top10"] > 0 for day in payload["deciles"]), payload["deciles"])
         self.assertGreater(payload["userDailyAverageHours"], 0)
 
     def test_profile_cohort_comparison_and_risk_reference(self):
-        from backend.scripts.seed_synthetic_usage import seed_synthetic_usage
-
         ldihk_id = self._new_id()
         auth = {"Authorization": f"Bearer {ldihk_id}"}
         key = f"uploads/{ldihk_id}/recent.zip"
@@ -394,14 +384,6 @@ class PostgresIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(unknown.status_code, 404)
 
-        seed_synthetic_usage(
-            total_profiles=400,
-            total_days=7,
-            seed_run_name=f"it-cohort-{uuid.uuid4().hex[:8]}",
-            random_seed=11,
-            run_schema_migrations=False,
-            platforms=["youtube"],
-        )
         today = datetime.now(timezone.utc).date()
         request = {
             "platforms": ["youtube"],

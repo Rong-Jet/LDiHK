@@ -9,6 +9,7 @@ dependencies = [
     "flask>=3.0.0",
     "gunicorn>=23.0.0",
     "lxml>=5.0.0",
+    "numpy>=2.2",
     "psycopg[binary,pool]>=3.3.0",
     "python-dotenv>=1.2.2",
     "tzdata>=2024.1",

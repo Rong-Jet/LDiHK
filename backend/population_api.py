@@ -1,19 +1,24 @@
 """Population benchmark for POST /api/population.
 
 Compares the requester's YouTube watch time with other people: other real
-users whose history covers the requested days, plus (optionally) synthetic
-profiles used as a weekday-aligned baseline. Days and hours are UTC so
-everyone is measured on the same clock. Comparisons against fewer than
+users whose history covers the requested days, plus (optionally) the
+synthetic population, computed for exactly the requested days by
+backend/procedural_population.py. Days and hours are UTC so everyone is
+measured on the same clock. Comparisons against fewer than
 MIN_POPULATION_SIZE other people are refused, because they would reveal
 individual usage.
 """
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from decimal import Decimal
 
+import numpy as np
+
+from backend import procedural_population
 from backend.demographics import AGE_RANGES, comparable_sex, neighbouring_ranges
 
 
@@ -107,7 +112,6 @@ def _parse_date(value: object) -> date:
 # group, percentiles and distributions would reveal individual usage.
 MIN_POPULATION_SIZE = 5
 REAL_USERS_SCOPE = "ue.is_synthetic = false AND u.is_synthetic = false"
-SYNTHETIC_USERS_SCOPE = "ue.is_synthetic = true"
 
 
 @dataclass
@@ -123,13 +127,15 @@ class _PopulationMember:
     profile: _UsageProfile
     # Days this member counts on (a zero means "no watching that day").
     covered_days: int
-    # Real members: their days inside the range. Synthetic: their window.
+    # Real members: their days inside the range. Synthetic: the whole range.
     first_day: date
     last_day: date
     synthetic: bool
     user_id: str = ""
     age_range: str | None = None
     sex: str | None = None
+    # Synthetic members: their row in the procedural DaySeries.
+    series_row: int = -1
 
 
 @dataclass(frozen=True)
@@ -223,11 +229,10 @@ def query_youtube_population(
         }
 
     members = _real_members(connection, real_profiles, request, exclude_user_id=requester_id)
-    baseline: tuple[date, date] | None = None
+    series = None
     if request.include_synthetic:
-        baseline = _fetch_synthetic_window(connection)
-        if baseline is not None:
-            members.extend(_synthetic_members(connection, baseline))
+        series = procedural_population.day_series(request.start_date, request.end_date)
+        members.extend(_procedural_members(series, request))
 
     group = _group_payload("everyone", None, None, len(members))
     if request.compare_with == "cohort" and requester_row is not None:
@@ -252,7 +257,10 @@ def query_youtube_population(
 
     days = [request.start_date + timedelta(days=offset) for offset in range(request.day_count)]
     user_daily_average = sum(requester.daily_hours.get(day, 0.0) for day in days) / request.day_count
-    member_averages = [_average_daily_hours(member) for member in members]
+    matrix = _hours_matrix(members, days, series)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        member_averages = [float(value) for value in np.nan_to_num(np.nanmean(matrix, axis=1))]
 
     return {
         "schema_version": POPULATION_SCHEMA_VERSION,
@@ -265,14 +273,16 @@ def query_youtube_population(
         "customPercentile": request.custom_percentile,
         "populationSize": len(members),
         "comparisonGroup": group,
-        "syntheticBaseline": (
-            {"startDate": baseline[0].isoformat(), "endDate": baseline[1].isoformat()}
-            if baseline is not None
+        # Synthetic profiles now cover the requested days themselves.
+        "syntheticBaseline": None,
+        "syntheticModel": (
+            {"version": procedural_population.MODEL_VERSION, "profiles": len(series.profiles)}
+            if series is not None
             else None
         ),
         "distribution": _distribution_payload(member_averages),
-        "deciles": _deciles_payload(days, requester, members, baseline, request.custom_percentile),
-        "hourlyAverages": _hourly_payload(requester, members, request.day_count),
+        "deciles": _deciles_payload(days, requester, matrix, request.custom_percentile),
+        "hourlyAverages": _hourly_payload(requester, members, request.day_count, series),
     }
 
 
@@ -313,7 +323,9 @@ def _with_demographics(connection, members: list[_PopulationMember]) -> list[_Po
     )
     by_id = {str(row["user_id"]): row for row in rows}
     return [
-        replace(
+        member
+        if member.synthetic  # procedural profiles carry their own
+        else replace(
             member,
             age_range=(by_id.get(member.user_id) or {}).get("age_range"),
             sex=(by_id.get(member.user_id) or {}).get("sex"),
@@ -419,85 +431,14 @@ def _real_members(
     return members
 
 
-def _fetch_synthetic_window(connection) -> tuple[date, date] | None:
-    rows = _fetch_rows(
-        connection,
-        """
-            /* population_synthetic_window */
-            SELECT
-                to_char(MIN(occurred_at AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS first_date,
-                to_char(MAX(occurred_at AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS last_date
-            FROM usage_events
-            WHERE is_synthetic = true
-              AND platform = 'youtube'
-              AND event_type = 'watch'
-        """,
-        [],
-    )
-    if not rows or rows[0].get("first_date") is None:
-        return None
-    return (
-        date.fromisoformat(str(rows[0]["first_date"])),
-        date.fromisoformat(str(rows[0]["last_date"])),
-    )
 
 
-def _synthetic_members(connection, window: tuple[date, date]) -> list[_PopulationMember]:
-    """Synthetic profiles over their whole seeded window.
-
-    The seed only covers the days around when it ran. Treating it as a
-    weekday-aligned baseline (see _baseline_day) lets it serve any requested
-    date range instead of only that window.
-    """
-    profiles = _fetch_usage_profiles(
-        connection,
-        scope=SYNTHETIC_USERS_SCOPE,
-        start_date=window[0],
-        end_date=window[1],
-        marker="population_synthetic_usage",
-    )
-    covered_days = (window[1] - window[0]).days + 1
-    return [
-        _PopulationMember(
-            profile=profile,
-            covered_days=covered_days,
-            first_day=window[0],
-            last_day=window[1],
-            synthetic=True,
-            user_id=user_id,
-        )
-        for user_id, profile in profiles.items()
-    ]
 
 
-def _baseline_day(day: date, window: tuple[date, date]) -> date:
-    """Map a date onto the synthetic window, keeping the weekday if possible."""
-    start, end = window
-    if start <= day <= end:
-        return day
-    length = (end - start).days + 1
-    cycle = length - length % 7 if length >= 7 else length
-    cycle_start = end - timedelta(days=cycle - 1)
-    return cycle_start + timedelta(days=(day - cycle_start).days % cycle)
 
 
-def _member_hours_on(member: _PopulationMember, day: date, baseline: tuple[date, date] | None) -> float | None:
-    if member.synthetic:
-        if baseline is None:
-            return None
-        return member.profile.daily_hours.get(_baseline_day(day, baseline), 0.0)
-    if member.first_day <= day <= member.last_day:
-        return member.profile.daily_hours.get(day, 0.0)
-    return None
 
 
-def _average_daily_hours(member: _PopulationMember) -> float:
-    total = sum(
-        hours
-        for day, hours in member.profile.daily_hours.items()
-        if member.first_day <= day <= member.last_day
-    )
-    return total / max(1, member.covered_days)
 
 
 def _percentile(sorted_values: list[float], fraction: float) -> float:
@@ -511,45 +452,85 @@ def _percentile(sorted_values: list[float], fraction: float) -> float:
     return sorted_values[lower] + (sorted_values[upper] - sorted_values[lower]) * weight
 
 
+def _procedural_members(series, request: PopulationRequest) -> list[_PopulationMember]:
+    return [
+        _PopulationMember(
+            profile=_UsageProfile(),
+            covered_days=len(series.days),
+            first_day=request.start_date,
+            last_day=request.end_date,
+            synthetic=True,
+            user_id=profile.user_id,
+            age_range=profile.age_range,
+            sex=profile.sex,
+            series_row=row,
+        )
+        for row, profile in enumerate(series.profiles)
+    ]
+
+
+def _hours_matrix(members: list[_PopulationMember], days: list[date], series) -> np.ndarray:
+    """Hours per member (rows) and day (columns); NaN where a member does not count."""
+    matrix = np.full((len(members), len(days)), np.nan)
+    synthetic = [(row, member.series_row) for row, member in enumerate(members) if member.series_row >= 0]
+    if synthetic:
+        rows, series_rows = zip(*synthetic)
+        matrix[list(rows)] = series.hours[list(series_rows)]
+    index = {day: column for column, day in enumerate(days)}
+    for row, member in enumerate(members):
+        if member.series_row >= 0:
+            continue
+        first, last = index[member.first_day], index[member.last_day]
+        matrix[row, first : last + 1] = 0.0
+        for day, hours in member.profile.daily_hours.items():
+            column = index.get(day)
+            if column is not None and first <= column <= last:
+                matrix[row, column] = hours
+    return matrix
+
+
 def _deciles_payload(
     days: list[date],
     requester: _UsageProfile,
-    members: list[_PopulationMember],
-    baseline: tuple[date, date] | None,
+    matrix: np.ndarray,
     custom_percentile: int,
 ) -> list[dict[str, object]]:
-    payload: list[dict[str, object]] = []
-    for day in days:
-        values = sorted(
-            hours
-            for member in members
-            if (hours := _member_hours_on(member, day, baseline)) is not None
+    """Per day, over the members counting that day (linear, like percentile_cont)."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        median, top10, bottom10, custom = np.nan_to_num(
+            np.nanpercentile(matrix, [50, 90, 10, custom_percentile], axis=0)
         )
-        payload.append(
-            {
-                "date": day.isoformat(),
-                "user": round(requester.daily_hours.get(day, 0.0), 2),
-                "median": round(_percentile(values, 0.5), 2),
-                "top10": round(_percentile(values, 0.9), 2),
-                "bottom10": round(_percentile(values, 0.1), 2),
-                "customPercentileHours": round(_percentile(values, custom_percentile / 100), 2),
-            }
-        )
-    return payload
+    return [
+        {
+            "date": day.isoformat(),
+            "user": round(requester.daily_hours.get(day, 0.0), 2),
+            "median": round(float(median[column]), 2),
+            "top10": round(float(top10[column]), 2),
+            "bottom10": round(float(bottom10[column]), 2),
+            "customPercentileHours": round(float(custom[column]), 2),
+        }
+        for column, day in enumerate(days)
+    ]
 
 
 def _hourly_payload(
     requester: _UsageProfile,
     members: list[_PopulationMember],
     day_count: int,
+    series=None,
 ) -> list[dict[str, object]]:
+    """Average hours per day in each hour of the day, per member, then averaged."""
+    rates = np.zeros(24)
+    for member in members:
+        days = max(1, member.covered_days)
+        if member.series_row >= 0:
+            rates += series.hourly_seconds[member.series_row] / days / 3600
+        else:
+            rates += np.array([member.profile.hourly_seconds.get(hour, 0.0) for hour in range(24)]) / days / 3600
     payload: list[dict[str, object]] = []
     for hour in range(24):
-        member_rates = [
-            member.profile.hourly_seconds.get(hour, 0.0) / max(1, member.covered_days) / 3600
-            for member in members
-        ]
-        population_avg = sum(member_rates) / len(member_rates) if member_rates else 0.0
+        population_avg = float(rates[hour]) / len(members) if members else 0.0
         payload.append(
             {
                 "hour": f"{hour:02d}:00",
@@ -668,18 +649,6 @@ def query_risk_reference(
         marker="reference_real_usage",
     )
     per_member.pop(requester.user_id, None)
-    if request.include_synthetic:
-        window = _fetch_synthetic_window(connection)
-        if window is not None:
-            per_member.update(
-                _fetch_member_day_metrics(
-                    connection,
-                    scope=SYNTHETIC_USERS_SCOPE,
-                    start_date=window[0],
-                    end_date=window[1],
-                    marker="reference_synthetic_usage",
-                )
-            )
     members = _with_demographics(
         connection,
         [
@@ -694,6 +663,15 @@ def query_risk_reference(
             for user_id in per_member
         ],
     )
+    if request.include_synthetic:
+        series = procedural_population.day_series(request.start_date, request.end_date)
+        synthetic_metrics = _procedural_day_metrics(series)
+        per_member.update(synthetic_metrics)
+        members.extend(
+            member
+            for member in _procedural_members(series, request)
+            if member.user_id in synthetic_metrics
+        )
     if len(members) < MIN_POPULATION_SIZE:
         return {
             "ready": False,
@@ -755,6 +733,21 @@ def _fetch_member_day_metrics(
             "dailyHours": sum(d[0] for d in by_day.values()) / 3600 / count,
             "lateNightHours": sum(d[1] for d in by_day.values()) / 3600 / count,
             "fragmentation": sum(d[2] for d in by_day.values()) / 24 / count,
+        }
+    return metrics
+
+
+def _procedural_day_metrics(series) -> dict[str, dict[str, float]]:
+    """Same metrics as _fetch_member_day_metrics, per synthetic profile."""
+    metrics: dict[str, dict[str, float]] = {}
+    for row, profile in enumerate(series.profiles):
+        active = series.hours[row] > 0
+        if not active.any():
+            continue
+        metrics[profile.user_id] = {
+            "dailyHours": float(series.hours[row][active].mean()),
+            "lateNightHours": float(series.late_night_hours[row][active].mean()),
+            "fragmentation": float(series.fragmentation[row][active].mean()),
         }
     return metrics
 
