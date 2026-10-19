@@ -8,6 +8,7 @@ import { UploadProvider, useUploadController } from '../hooks/useUploadControlle
 import type { BackendStatus } from '../hooks/useBackendStatus';
 import type { ConsoleSession } from '../hooks/useConsoleSession';
 import { deleteMyData, describeApiError, isPendingEnrichment, usesLocalMockApi, type ImportStatus } from '../lib/api';
+import { daysInclusive, formatCalendarValue, utcMsToYmd } from '../lib/dates';
 
 /** One-time message shown on the login screen after the account was deleted. */
 const DELETION_NOTICE_KEY = 'ldihk_deletion_notice';
@@ -61,6 +62,81 @@ export function MockModeBanner() {
     <div className="mb-6 bg-amber-50 border border-amber-200 rounded-2xl px-4 py-2.5 text-amber-900 text-[11px] font-semibold flex items-center gap-2 text-left">
       <Info className="w-4 h-4 text-amber-600 shrink-0" />
       Mock mode: all numbers on this page are simulated by local mock routes, not real uploaded data.
+    </div>
+  );
+}
+
+/** Data older than this (days since its newest day) gets the stale-data notice. */
+const STALE_DATA_DAYS = 30;
+const STALE_DISMISSED_KEY = 'ldihk_stale_notice_dismissed';
+
+function readStaleDismissed(): string | null {
+  try {
+    return sessionStorage.getItem(STALE_DISMISSED_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The console scales every view to the newest data point, so an old export
+ * looks current. Says how old the data is and offers a newer upload. On the
+ * health tab the notice cannot be dismissed: the risk indicator describes the
+ * time of the export, not today.
+ */
+function StaleDataNotice({ newestDate, activeTab, onUpload }: {
+  newestDate: string;
+  activeTab: ConsoleTab;
+  onUpload: () => void;
+}) {
+  const [dismissedFor, setDismissedFor] = useState(readStaleDismissed);
+  const ageDays = daysInclusive(newestDate, utcMsToYmd(Date.now())) - 1;
+  const isHealth = activeTab === 'risk';
+  if (ageDays <= STALE_DATA_DAYS) return null;
+  if (!isHealth && dismissedFor === newestDate) return null;
+
+  const dismiss = () => {
+    try {
+      sessionStorage.setItem(STALE_DISMISSED_KEY, newestDate);
+    } catch {
+      // Private mode: dismissed until the page is reloaded.
+    }
+    setDismissedFor(newestDate);
+  };
+  const newest = formatCalendarValue(newestDate, { day: 'numeric', month: 'long', year: 'numeric' });
+  const age = ageDays >= 60 ? `${Math.round(ageDays / 30.4)} months` : `${ageDays} days`;
+
+  return (
+    <div className="mb-6 bg-amber-50 border border-amber-200 rounded-2xl p-4 text-brand-navy text-xs leading-relaxed flex flex-col sm:flex-row sm:items-start gap-3 text-left" role="status">
+      <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+      <div className="flex-grow">
+        <span className="font-extrabold uppercase tracking-wider text-[10px] block mb-0.5 text-amber-700">
+          Your data ends on {newest} ({age} ago)
+        </span>
+        {isHealth
+          ? 'This health analysis describes your usage up to that date, not your current habits. '
+          : 'All charts end there, so recent weeks are missing. '}
+        You can update your analysis at any time by uploading a newer export of the same account; data you already
+        uploaded is kept and duplicates are skipped.
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <button
+          onClick={onUpload}
+          className="px-3 py-1.5 rounded-lg bg-brand-teal text-white text-[11px] font-bold cursor-pointer flex items-center gap-1.5"
+        >
+          <UploadCloud className="w-3.5 h-3.5" />
+          Upload newer data
+        </button>
+        {!isHealth && (
+          <button
+            onClick={dismiss}
+            className="p-1.5 rounded-lg border border-brand-navy/15 text-brand-navy/60 hover:text-brand-navy cursor-pointer"
+            title="Dismiss"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -633,6 +709,16 @@ function ConsoleShellBody({
       <MockModeBanner />
       <ServerWakeBanner backend={backend} />
       {phase === 'ready' && <ImportNotices session={session} />}
+      {hasData && session.dateBounds && pipelineStatus !== 'PROCESSING' && !showUploadZone && (
+        <StaleDataNotice
+          newestDate={session.dateBounds.maxDate}
+          activeTab={activeTab}
+          onUpload={() => {
+            if (upload.phase === 'SUCCESS') upload.reset();
+            setShowUploadZone(true);
+          }}
+        />
+      )}
 
       {/* Collapsible Upload Zone Drawer */}
       {showUploadZone && hasData && (
