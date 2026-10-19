@@ -665,8 +665,10 @@ def validate_timezone_name(value: object) -> str:
 
 
 def _user_duration_stats_cte() -> str:
+    # MATERIALIZED: computed once per query. Inlined, Postgres re-ran this
+    # aggregate for every event row (29 s for 1,700 Instagram events).
     return """
-        user_duration_stats AS (
+        user_duration_stats AS MATERIALIZED (
             SELECT AVG(youtube_videos.duration_seconds)::numeric
               AS avg_api_duration_seconds
             FROM users
