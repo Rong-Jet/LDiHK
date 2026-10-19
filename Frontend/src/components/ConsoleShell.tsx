@@ -9,6 +9,7 @@ import type { BackendStatus } from '../hooks/useBackendStatus';
 import type { ConsoleSession } from '../hooks/useConsoleSession';
 import { deleteMyData, describeApiError, isPendingEnrichment, usesLocalMockApi, type ImportStatus } from '../lib/api';
 import { daysInclusive, formatCalendarValue, utcMsToYmd } from '../lib/dates';
+import { platformList } from '../lib/profile';
 
 /** One-time message shown on the login screen after the account was deleted. */
 const DELETION_NOTICE_KEY = 'ldihk_deletion_notice';
@@ -78,46 +79,90 @@ function readStaleDismissed(): string | null {
   }
 }
 
+interface PlatformEnd {
+  platform: string;
+  /** Newest day with data for this platform (YYYY-MM-DD). */
+  date: string;
+}
+
+/** "Instagram", "Instagram and TikTok", "Instagram, TikTok and Spotify". */
+function platformNames(platforms: string[]): string {
+  const names = platforms.map((platform) => {
+    const name = platformList([platform]);
+    return name.charAt(0).toUpperCase() + name.slice(1);
+  });
+  return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names.join('');
+}
+
+function ageDaysOf(date: string): number {
+  return daysInclusive(date, utcMsToYmd(Date.now())) - 1;
+}
+
+function describeEnd(date: string): string {
+  const ageDays = ageDaysOf(date);
+  const age = ageDays >= 60 ? `${Math.round(ageDays / 30.4)} months` : `${ageDays} days`;
+  return `${formatCalendarValue(date, { day: 'numeric', month: 'long', year: 'numeric' })} (${age} ago)`;
+}
+
 /**
  * The console scales every view to the newest data point, so an old export
- * looks current. Says how old the data is and offers a newer upload. On the
- * health tab the notice cannot be dismissed: the risk indicator describes the
- * time of the export, not today.
+ * looks current. Names each platform whose data ended more than
+ * STALE_DATA_DAYS ago and offers a newer upload. On the health tab the notice
+ * cannot be dismissed: the risk indicator then describes the past (or mixes
+ * current and outdated platforms), not today.
  */
-function StaleDataNotice({ newestDate, activeTab, onUpload }: {
-  newestDate: string;
+function StaleDataNotice({ ends, activeTab, onUpload }: {
+  ends: PlatformEnd[];
   activeTab: ConsoleTab;
   onUpload: () => void;
 }) {
   const [dismissedFor, setDismissedFor] = useState(readStaleDismissed);
-  const ageDays = daysInclusive(newestDate, utcMsToYmd(Date.now())) - 1;
+  const stale = ends.filter((end) => ageDaysOf(end.date) > STALE_DATA_DAYS);
   const isHealth = activeTab === 'risk';
-  if (ageDays <= STALE_DATA_DAYS) return null;
-  if (!isHealth && dismissedFor === newestDate) return null;
+  const dismissKey = stale.map((end) => `${end.platform}:${end.date}`).join(',');
+  if (stale.length === 0) return null;
+  if (!isHealth && dismissedFor === dismissKey) return null;
 
   const dismiss = () => {
     try {
-      sessionStorage.setItem(STALE_DISMISSED_KEY, newestDate);
+      sessionStorage.setItem(STALE_DISMISSED_KEY, dismissKey);
     } catch {
       // Private mode: dismissed until the page is reloaded.
     }
-    setDismissedFor(newestDate);
+    setDismissedFor(dismissKey);
   };
-  const newest = formatCalendarValue(newestDate, { day: 'numeric', month: 'long', year: 'numeric' });
-  const age = ageDays >= 60 ? `${Math.round(ageDays / 30.4)} months` : `${ageDays} days`;
+  const allStale = stale.length === ends.length;
+  const names = platformNames(stale.map((end) => end.platform));
+  const title = stale.length === 1
+    ? `${allStale && ends.length === 1 ? 'Your data' : `Your ${names} data`} ends on ${describeEnd(stale[0].date)}`
+    : allStale
+      ? `Your data ends on ${describeEnd([...ends].map((end) => end.date).sort().at(-1)!)}`
+      : `Your ${names} data is out of date`;
+  const explanation = allStale
+    ? isHealth
+      ? 'This health analysis describes your usage up to that date, not your current habits. '
+      : 'All charts end there, so recent weeks are missing. '
+    : isHealth
+      ? `This health analysis combines all platforms, so it mixes your current usage with outdated ${names} data. `
+      : `${names} ${stale.length === 1 ? 'stops' : 'stop'} there, so recent ${names} use is missing from the charts and totals. `;
 
   return (
     <div className="mb-6 bg-amber-50 border border-amber-200 rounded-2xl p-4 text-brand-navy text-xs leading-relaxed flex flex-col sm:flex-row sm:items-start gap-3 text-left" role="status">
       <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
       <div className="flex-grow">
-        <span className="font-extrabold uppercase tracking-wider text-[10px] block mb-0.5 text-amber-700">
-          Your data ends on {newest} ({age} ago)
-        </span>
-        {isHealth
-          ? 'This health analysis describes your usage up to that date, not your current habits. '
-          : 'All charts end there, so recent weeks are missing. '}
-        You can update your analysis at any time by uploading a newer export of the same account; data you already
-        uploaded is kept and duplicates are skipped.
+        <span className="font-extrabold uppercase tracking-wider text-[10px] block mb-0.5 text-amber-700">{title}</span>
+        {stale.length > 1 && (
+          <ul className="mb-1">
+            {stale.map((end) => (
+              <li key={end.platform}>
+                <b>{platformNames([end.platform])}</b>: ends on {describeEnd(end.date)}
+              </li>
+            ))}
+          </ul>
+        )}
+        {explanation}
+        You can update your analysis at any time by uploading a newer {names} export of the same account; data you
+        already uploaded is kept and duplicates are skipped.
       </div>
       <div className="flex items-center gap-2 shrink-0">
         <button
@@ -709,9 +754,12 @@ function ConsoleShellBody({
       <MockModeBanner />
       <ServerWakeBanner backend={backend} />
       {phase === 'ready' && <ImportNotices session={session} />}
-      {hasData && session.dateBounds && pipelineStatus !== 'PROCESSING' && !showUploadZone && (
+      {hasData && pipelineStatus !== 'PROCESSING' && !showUploadZone && (
         <StaleDataNotice
-          newestDate={session.dateBounds.maxDate}
+          ends={readyPlatforms.flatMap((platform) => {
+            const date = session.datasets[platform]?.max_date;
+            return date ? [{ platform, date }] : [];
+          })}
           activeTab={activeTab}
           onUpload={() => {
             if (upload.phase === 'SUCCESS') upload.reset();
