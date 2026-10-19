@@ -179,3 +179,13 @@ export function getBrowserTimeZone(): string {
     return 'UTC';
   }
 }
+
+/** "18 min", "<1 min", "0 min"; `signed` adds + for positive values ("+5 min"). */
+export function formatMinutes(hours: number, { signed = false }: { signed?: boolean } = {}): string {
+  const minutes = hours * 60;
+  const sign = minutes < 0 ? '-' : signed && minutes > 0 ? '+' : '';
+  const magnitude = Math.abs(minutes);
+  if (magnitude === 0) return '0 min';
+  if (magnitude < 1) return `${sign}<1 min`;
+  return `${sign}${Math.round(magnitude)} min`;
+}

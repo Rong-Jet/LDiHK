@@ -1,5 +1,12 @@
 ---
 import '../styles/global.css';
+// Self-hosted font: no visitor IP addresses go to Google Fonts.
+import '@fontsource/outfit/latin-300.css';
+import '@fontsource/outfit/latin-400.css';
+import '@fontsource/outfit/latin-500.css';
+import '@fontsource/outfit/latin-600.css';
+import '@fontsource/outfit/latin-700.css';
+import '@fontsource/outfit/latin-800.css';
 
 interface Props {
   title: string;
@@ -8,7 +15,7 @@ interface Props {
 
 const { 
   title, 
-  description = "LDiHK Social Media Data Analytics Platform - High-performance multi-dimensional analytics dashboard." 
+  description = "LDiHK: anonymous social media analytics as an early signal for mental health." 
 } = Astro.props;
 ---
 
@@ -20,9 +27,6 @@ const {
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     
     <!-- Google Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
     
     <!-- SEO Meta Tags -->
     <title>{title}</title>
@@ -115,8 +119,8 @@ const {
         <div class="mt-12 pt-8 border-t border-brand-navy/10 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-brand-navy/60">
           <span>&copy; {new Date().getFullYear()} LDiHK. All rights reserved.</span>
           <div class="flex gap-6">
-            <a href="#" class="hover:text-brand-teal">Privacy Policy</a>
-            <a href="#" class="hover:text-brand-teal">Terms of Service</a>
+            <a href="/privacy" class="hover:text-brand-teal" id="footer-privacy">Privacy Policy</a>
+            <a href="/terms" class="hover:text-brand-teal" id="footer-terms">Terms of Service</a>
           </div>
         </div>
       </div>

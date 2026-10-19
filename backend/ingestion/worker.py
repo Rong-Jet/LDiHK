@@ -714,7 +714,7 @@ class PostgresImportRepository:
                 (
                     source_file_id,
                     import_id,
-                    path,
+                    stored_source_path(path),
                     sha256,
                     parser_name,
                     status,
@@ -1149,6 +1149,25 @@ def _error_message(error: Exception) -> str:
     if message:
         return message[:1000]
     return error.__class__.__name__
+
+
+# Folders named after other people (Instagram chats are stored as
+# "messages/inbox/<their username>_<id>/message_1.json").
+_PERSON_FOLDER_PARENTS = frozenset({"inbox", "message_requests", "archived_threads", "filtered_threads"})
+
+
+def stored_source_path(path: str) -> str:
+    """The archive path as stored: chat folders become an irreversible fingerprint.
+
+    Keeps paths unique per chat (needed for one row per file) without storing
+    the chat partner's username.
+    """
+    parts = path.split("/")
+    for index in range(1, len(parts) - 1):
+        if parts[index - 1].lower() in _PERSON_FOLDER_PARENTS:
+            digest = hashlib.sha256(parts[index].encode("utf-8")).hexdigest()[:16]
+            parts[index] = f"conversation-{digest}"
+    return "/".join(parts)
 
 
 def heartbeat_import(connection, import_id: str) -> None:

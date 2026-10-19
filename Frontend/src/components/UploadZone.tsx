@@ -340,6 +340,14 @@ export default function UploadZone({ sessionToken, onSessionGenerated }: UploadZ
               </div>
             </div>
 
+            <p className="text-[11px] text-brand-navy/60 leading-relaxed">
+              By selecting "Agree &amp; Upload" you explicitly consent to the analysis of your export, including mental-health-related
+              indicators, as described in our{' '}
+              <a href="/privacy" target="_blank" rel="noopener" className="text-brand-teal underline">Privacy Policy</a>, and accept the{' '}
+              <a href="/terms" target="_blank" rel="noopener" className="text-brand-teal underline">Terms of Service</a>.
+              You can withdraw at any time with "Delete My Data". The results are not medical advice.
+            </p>
+
             {!sessionToken && (
               <div className="space-y-2 p-3.5 rounded-2xl bg-white border border-brand-navy/10">
                 <div className="text-xs text-brand-navy/80 leading-relaxed">

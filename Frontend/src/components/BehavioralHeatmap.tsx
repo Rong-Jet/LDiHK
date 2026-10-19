@@ -1,3 +1,4 @@
+import { formatMinutes } from '../lib/dates';
 import React from 'react';
 import { Clock, Info } from 'lucide-react';
 
@@ -38,10 +39,7 @@ export default function BehavioralHeatmap({
 
   const isAveraged = dayCount > 1;
   // Hour cells hold at most 60 minutes per day: minutes read better than 0.3h.
-  const minutes = (hours: number) => {
-    const value = hours * 60;
-    return value >= 10 ? `${Math.round(value)} min` : `${value.toFixed(1)} min`;
-  };
+  const minutes = (hours: number) => formatMinutes(hours);
 
   return (
     <div className="bg-white border border-brand-navy/10 rounded-3xl p-4 sm:p-6 shadow-sm space-y-6">

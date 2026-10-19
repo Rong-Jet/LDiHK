@@ -12,6 +12,7 @@ import {
 } from 'recharts';
 import ConsoleShell from './ConsoleShell';
 import { ProfileCard } from './ProfileCard';
+import { formatMinutes } from '../lib/dates';
 import { COMPARABLE_PLATFORMS, describeComparisonGroup, hasProfile, platformList } from '../lib/profile';
 import type { PopulationSource } from '../lib/api';
 import { usePopulationData } from '../hooks/usePopulationData';
@@ -916,12 +917,12 @@ function PopulationDashboardContent() {
 
                       {/* Divergence primary value */}
                       <span className={`text-xs font-black tracking-tight mt-1`}>
-                        {diff >= 0 ? '+' : ''}{diff.toFixed(1)}h
+                        {formatMinutes(diff, { signed: true })}
                       </span>
 
                       {/* Secondary absolute user vs population value */}
                       <span className="text-[8px] uppercase tracking-wider opacity-65 font-bold mt-0.5">
-                        U:{(userHrs).toFixed(1)}h | P:{(popHrs).toFixed(1)}h
+                        U:{formatMinutes(userHrs)} | P:{formatMinutes(popHrs)}
                       </span>
 
                       {/* Hover detailed tooltip */}
@@ -933,16 +934,16 @@ function PopulationDashboardContent() {
                         <div className="space-y-0.5 mt-1">
                           <p className="flex justify-between">
                             <span>Your Average:</span>
-                            <span className="font-mono font-bold">{(userHrs * 60).toFixed(0)} mins</span>
+                            <span className="font-mono font-bold">{formatMinutes(userHrs)}</span>
                           </p>
                           <p className="flex justify-between text-white/70">
                             <span>Population Avg:</span>
-                            <span className="font-mono">{(popHrs * 60).toFixed(0)} mins</span>
+                            <span className="font-mono">{formatMinutes(popHrs)}</span>
                           </p>
                           <p className={`flex justify-between border-t border-white/10 pt-1 mt-1 font-bold ${diff >= 0.05 ? 'text-brand-peach' : diff <= -0.05 ? 'text-brand-teal' : 'text-white/60'}`}>
                             <span>Divergence:</span>
                             <span className="font-mono">
-                              {diff >= 0 ? '+' : ''}{(diff * 60).toFixed(0)} mins
+                              {formatMinutes(diff, { signed: true })}
                             </span>
                           </p>
                         </div>
