@@ -4,7 +4,7 @@ import LegalPage from '../components/LegalPage.astro';
 ---
 
 <Layout title="Privacy Policy | LDiHK">
-  <LegalPage heading="Privacy Policy" updated="19 October 2026">
+  <LegalPage heading="Privacy Policy" updated="20 October 2026">
     <p>
       This policy explains which personal data LDiHK processes when you use this website and the analytics console, why,
       on which legal basis, with whom it is shared and which rights you have. It follows the EU General Data Protection
@@ -31,7 +31,7 @@ import LegalPage from '../components/LegalPage.astro';
     </p>
     <p>
       We do not use analytics, advertising or tracking tools, and we set no tracking cookies. Fonts are delivered from
-      our own server.
+      our own server. The only third-party content is the feedback form (section 2.6), which loads only on request.
     </p>
 
     <h3>2.2 Your LDiHK-ID</h3>
@@ -87,6 +87,17 @@ import LegalPage from '../components/LegalPage.astro';
       shown to others.
     </p>
 
+    <h3 id="feedback">2.6 Bug reports and feature requests</h3>
+    <p>
+      Our <a href="/feedback">feedback page</a> uses Google Forms (Google Ireland Limited, Gordon House, Barrow Street,
+      Dublin 4, Ireland). The form is only loaded when you click "Load the form here" or open it in a new tab; before
+      that, no data is sent to Google. Once loaded, Google receives your IP address and browser information and may set
+      cookies or ask you to sign in with a Google account. We receive what you enter in the form (and, if the form asks
+      for it, the email address of your Google account) and use it only to fix bugs and plan features. Legal basis: your
+      consent by loading the form (Art. 6(1)(a) GDPR, § 25(1) TDDDG). We delete reports once they are handled, at the
+      latest after 12 months. Please do not enter your LDiHK-ID or health information in the form.
+    </p>
+
     <h2>3. Recipients and processors</h2>
     <p>We use the following service providers, bound by data processing agreements (Art. 28 GDPR):</p>
     <ul>
@@ -95,6 +106,7 @@ import LegalPage from '../components/LegalPage.astro';
       <li><strong>Neon, Inc.</strong> (USA; database in Frankfurt, Germany, on AWS): storage of the extracted data.</li>
       <li><strong>Cloudflare, Inc.</strong> (USA; storage location EU): temporary storage of uploaded archives until import.</li>
       <li><strong>Google LLC</strong> (USA): YouTube Data API, see section 2.4 (receives video IDs only).</li>
+      <li><strong>Google Ireland Limited</strong> / Google LLC: Google Forms for bug reports, see section 2.6 (only when you load the form).</li>
     </ul>
     <p>
       Where data may be transferred to the USA, the transfer is based on the EU-U.S. Data Privacy Framework

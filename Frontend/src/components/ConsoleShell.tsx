@@ -191,6 +191,9 @@ function ConsoleTitle() {
     <div>
       <h1 className="text-3xl font-extrabold text-brand-navy tracking-tight">Analytics Console</h1>
       <p className="text-sm text-brand-navy/60 mt-1">Manage, process, and query your social media data pipelines.</p>
+      <a href="/feedback" className="inline-block text-xs font-semibold text-brand-teal hover:underline mt-1">
+        Found a bug or missing a feature? Tell us
+      </a>
     </div>
   );
 }
