@@ -12,7 +12,8 @@ import {
 } from 'recharts';
 import ConsoleShell from './ConsoleShell';
 import { ProfileCard } from './ProfileCard';
-import { describeComparisonGroup, hasProfile } from '../lib/profile';
+import { COMPARABLE_PLATFORMS, describeComparisonGroup, hasProfile, platformList } from '../lib/profile';
+import type { PopulationSource } from '../lib/api';
 import { usePopulationData } from '../hooks/usePopulationData';
 import { useBackendStatus } from '../hooks/useBackendStatus';
 import { useConsoleSession } from '../hooks/useConsoleSession';
@@ -40,7 +41,7 @@ const PLATFORM_COLORS: Record<string, string> = {
 };
 
 // The backend population benchmark compares YouTube watch time only.
-const LIVE_POPULATION_PLATFORMS = ['youtube'];
+const LIVE_POPULATION_PLATFORMS = COMPARABLE_PLATFORMS;
 const MOCK_POPULATION_PLATFORMS = ['youtube', 'instagram', 'tiktok', 'spotify'];
 
 function PopulationDashboardContent() {
@@ -52,6 +53,8 @@ function PopulationDashboardContent() {
   // Compare with people of similar age and sex when the user gave either.
   const [compareEveryone, setCompareEveryone] = useState(false);
   const compareWith = hasProfile(session.profile) && !compareEveryone ? 'cohort' : 'everyone';
+  // Selected platforms vs. the population's total social media time (default).
+  const [populationSource, setPopulationSource] = useState<PopulationSource>('total');
 
   // Custom Percentile Line parameters
   const [showCustomPercentile, setShowCustomPercentile] = useState(false);
@@ -114,7 +117,8 @@ function PopulationDashboardContent() {
     backend.isReady && queryPlatforms.length > 0,
     sessionToken,
     startDate,
-    compareWith
+    compareWith,
+    IS_MOCK_MODE ? 'matching' : populationSource
   );
 
   const handleResetView = () => {
@@ -243,11 +247,16 @@ function PopulationDashboardContent() {
     popData?.message ??
     'There is no YouTube watch history in the selected date range. Choose a range with data, or upload a YouTube Takeout export.';
   const groupLabel = describeComparisonGroup(popData?.comparisonGroup);
+  const sourceNote = popData && !IS_MOCK_MODE
+    ? ` Your ${platformList(queryPlatforms)} time is compared with ${
+        popData.populationSource === 'total' ? 'their total social media time' : `their ${platformList(popData.comparisonPlatforms)} time`
+      }.`
+    : '';
   const comparisonNote = popData?.populationSize
     ? (groupLabel ? ` Compared with ${groupLabel}` : ` Compared with ${popData.populationSize.toLocaleString()} other ${popData.populationSize === 1 ? 'person' : 'people'}`) +
       (popData.includeSynthetic && popData.syntheticBaseline
         ? ` (synthetic profiles act as a weekday baseline from ${popData.syntheticBaseline.startDate} to ${popData.syntheticBaseline.endDate}).`
-        : '.')
+        : '.') + sourceNote
     : '';
 
   const content = (
@@ -491,6 +500,24 @@ function PopulationDashboardContent() {
                             {customPercentile}%
                           </span>
                         </div>
+                      </div>
+                    )}
+
+                    {!IS_MOCK_MODE && (
+                      <div className="space-y-2 sm:col-span-2">
+                        <label htmlFor="population-source" className="text-[10px] uppercase tracking-wider font-extrabold text-brand-navy/60 flex items-center gap-1.5">
+                          <Users className="w-3.5 h-3.5 text-brand-teal" />
+                          Compare With The Population's
+                        </label>
+                        <select
+                          id="population-source"
+                          value={populationSource}
+                          onChange={(event) => setPopulationSource(event.target.value as PopulationSource)}
+                          className="w-full sm:w-auto bg-white border border-brand-navy/20 rounded-xl px-3 py-2 text-xs font-semibold text-brand-navy focus:outline-none focus:ring-2 focus:ring-brand-teal/30"
+                        >
+                          <option value="total">Total social media time (YouTube, TikTok, Instagram, LinkedIn)</option>
+                          <option value="matching">Time on the same platforms as mine ({platformList(queryPlatforms)})</option>
+                        </select>
                       </div>
                     )}
                   </div>

@@ -17,7 +17,7 @@ class ProceduralPopulationTests(unittest.TestCase):
         cls.year = pp.day_series(YEAR_START, YEAR_END)
 
     def test_population_covers_every_age_range_and_both_sexes(self):
-        profiles = pp.population()
+        profiles = self.year.profiles
         self.assertGreater(len(profiles), 1200)  # YouTube users among 1,500
         cells = {(p.age_range, p.sex) for p in profiles}
         self.assertEqual(len(cells), len(demographics.AGE_RANGES) * 2)
@@ -69,6 +69,15 @@ class ProceduralPopulationTests(unittest.TestCase):
         self.assertTrue((self.year.late_night_hours <= self.year.hours + 1e-9).all())
         self.assertTrue(((self.year.fragmentation >= 0) & (self.year.fragmentation <= 1)).all())
         np.testing.assert_allclose(self.year.hourly_seconds.sum(1), self.year.hours.sum(1) * 3600, rtol=1e-6)
+
+    def test_total_social_media_exceeds_youtube_and_covers_everyone(self):
+        total = pp.day_series(date(2025, 5, 1), date(2025, 5, 31), platforms=pp.SOCIAL_PLATFORMS)
+        youtube = pp.day_series(date(2025, 5, 1), date(2025, 5, 31))
+        self.assertEqual(len(total.profiles), pp.POPULATION_SIZE)
+        self.assertGreater(np.median(total.hours.mean(1)), 1.3 * np.median(youtube.hours.mean(1)))
+        # Young adults near an hour of social media a day (Lin et al. 2016).
+        rows = [i for i, p in enumerate(total.profiles) if p.model_group == "young_adult"]
+        self.assertTrue(0.6 <= np.median(total.hours[rows].mean(1)) <= 1.6)
 
     def test_long_ranges_use_a_spread_subset(self):
         decade = pp.day_series(date(2016, 1, 1), date(2025, 12, 31))

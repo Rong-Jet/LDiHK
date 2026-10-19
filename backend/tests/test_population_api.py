@@ -24,14 +24,14 @@ class FakeCursor:
         return self._rows
 
 
-def _fake_series(start: date, end: date, profiles=None):
+def _fake_series(start: date, end: date, profiles=None, *, platforms=("youtube",)):
     """Synthetic s1: 1 h every day (hour 0), s2: 0.5 h every day (hour 23)."""
     days = [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
     flat = tuple([0.0] * 24)
     people = tuple(
         procedural_population.SyntheticProfile(
             index=index, age_range="20-24", sex="female", model_group="young_adult",
-            youtube_minutes=60.0, youtube_sessions=2.0, weekday_hours=flat, weekend_hours=flat,
+            platform_minutes=(("youtube", 60.0),), sessions_per_day=2.0, weekday_hours=flat, weekend_hours=flat,
             drift=(), block_offset=0,
         )
         for index in (1, 2)
@@ -57,10 +57,11 @@ class PopulationConnection:
 
     usage_columns = ["user_id", "date", "hour", "seconds"]
 
-    def __init__(self, *, requester_exists: bool = True):
+    def __init__(self, *, requester_exists: bool = True, requester_first_day: str = "2025-01-01"):
         self.calls: list[tuple[str, list[object]]] = []
         self.closed = False
         self.requester_exists = requester_exists
+        self.requester_first_day = requester_first_day
 
     def execute(self, sql: str, parameters: list[object]):
         self.calls.append((sql, parameters))
@@ -88,7 +89,7 @@ class PopulationConnection:
             return FakeCursor(
                 ["user_id", "first_date", "last_date"],
                 [
-                    ("u-me", "2025-01-01", "2026-06-30"),
+                    ("u-me", self.requester_first_day, "2026-06-30"),
                     ("r1", "2026-01-01", "2026-06-30"),
                     ("r2", "2026-05-01", "2026-06-02"),
                     ("r3", "2026-06-02", "2026-07-01"),
@@ -101,16 +102,17 @@ class PopulationConnection:
         self.closed = True
 
 
-def _request(client, *, include_synthetic: bool = True, platforms=("youtube",)):
+def _request(client, *, include_synthetic: bool = True, platforms=("youtube",), start="2026-06-01", end="2026-06-02", **extra):
     return client.post(
         "/api/population",
         headers=auth_headers(),
         json={
             "platforms": list(platforms),
-            "startDate": "2026-06-01",
-            "endDate": "2026-06-02",
+            "startDate": start,
+            "endDate": end,
             "includeSynthetic": include_synthetic,
             "customPercentile": 90,
+            **extra,
         },
     )
 
@@ -169,10 +171,28 @@ class PopulationApiTests(unittest.TestCase):
         self.assertNotIn("deciles", payload)
         self.assertIsNone(payload.get("syntheticModel"))
 
-    def test_population_query_rejects_non_youtube_platforms(self):
+    def test_total_source_compares_with_social_media_and_gaps_the_user_line(self):
+        connection = PopulationConnection(requester_first_day="2026-06-02")
+        response = _request(
+            create_app(query_connection_factory=lambda: connection).test_client(),
+            platforms=("youtube", "instagram"),
+            populationSource="total",
+        )
+        payload = response.get_json()
+        self.assertEqual(payload["platforms"], ["youtube", "instagram"])
+        self.assertEqual(payload["comparisonPlatforms"], ["youtube", "tiktok", "instagram", "linkedin"])
+        # u-me's history starts 2026-06-02: no user value before it, and the
+        # average counts only that day.
+        self.assertEqual([day["user"] for day in payload["deciles"]], [None, 2.0])
+        self.assertEqual(payload["userCoverage"], {"startDate": "2026-06-02", "endDate": "2026-06-02"})
+        self.assertEqual(payload["userDailyAverageHours"], 2.0)
+        comparison_sql = next(sql for sql, _ in connection.calls if "population_real_usage_comparison" in sql)
+        self.assertIn("ue.platform IN ('youtube', 'tiktok', 'instagram', 'linkedin')", comparison_sql)
+
+    def test_population_query_rejects_unsupported_platforms(self):
         response = _request(
             create_app(query_connection_factory=PopulationConnection).test_client(),
-            platforms=("youtube", "tiktok"),
+            platforms=("youtube", "spotify"),
         )
 
         self.assertEqual(response.status_code, 400)

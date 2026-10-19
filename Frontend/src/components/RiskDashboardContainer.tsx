@@ -15,7 +15,8 @@ import { useBackendStatus } from '../hooks/useBackendStatus';
 import { useConsoleSession } from '../hooks/useConsoleSession';
 import { describeApiError, fetchRiskReference, postQuery, QUERY_LIMIT_MAX, usesLocalMockApi } from '../lib/api';
 import { ProfileCard } from './ProfileCard';
-import { describeComparisonGroup, hasProfile } from '../lib/profile';
+import { COMPARABLE_PLATFORMS, describeComparisonGroup, hasProfile, platformList } from '../lib/profile';
+import type { PopulationSource } from '../lib/api';
 import { coefficientsFor, riskScore, type CohortReference } from '../lib/riskModel';
 import {
   addDays,
@@ -45,7 +46,22 @@ const RISK_ANALYSIS_MAX_DAYS = 365;
 function RiskDashboardContent() {
   const backend = useBackendStatus();
   const session = useConsoleSession({ backendReady: backend.isReady });
-  const { readyPlatforms, dateBounds, sessionToken, timeZone } = session;
+  const { dateBounds, sessionToken, timeZone } = session;
+  // The score uses the platforms that can be compared with the population.
+  const readyPlatforms = useMemo(
+    () => session.readyPlatforms.filter((platform) => usesLocalMockApi || COMPARABLE_PLATFORMS.includes(platform)),
+    [session.readyPlatforms]
+  );
+  // Days the user's selected platforms actually cover (no score outside them).
+  const coverage = useMemo(() => {
+    const spans = readyPlatforms
+      .map((platform) => session.datasets[platform])
+      .map((summary) => [summary?.watch_min_date ?? summary?.min_date, summary?.watch_max_date ?? summary?.max_date])
+      .filter((span): span is [string, string] => !!span[0] && !!span[1]);
+    if (spans.length === 0) return null;
+    return { start: spans.map((span) => span[0]).sort()[0], end: spans.map((span) => span[1]).sort().slice(-1)[0] };
+  }, [readyPlatforms, session.datasets]);
+  const [populationSource, setPopulationSource] = useState<PopulationSource>('total');
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
 
   // Empty until /api/me delivered the real date bounds (no hardcoded ranges).
@@ -142,8 +158,12 @@ function RiskDashboardContent() {
   const compareWith = hasProfile(session.profile) ? 'cohort' : 'everyone';
   const coefficients = useMemo(() => coefficientsFor(session.profile), [session.profile]);
   const { data: referenceData } = useQuery({
-    queryKey: ['riskReference', sessionToken, analysisStart, endDate, compareWith],
-    queryFn: ({ signal }) => fetchRiskReference(sessionToken as string, { startDate: analysisStart, endDate, compareWith }, signal),
+    queryKey: ['riskReference', sessionToken, analysisStart, endDate, compareWith, readyPlatforms.join(','), populationSource],
+    queryFn: ({ signal }) => fetchRiskReference(
+      sessionToken as string,
+      { startDate: analysisStart, endDate, compareWith, platforms: readyPlatforms, populationSource },
+      signal,
+    ),
     enabled: backend.isReady && !!sessionToken && !!analysisStart && !!endDate && compareWith === 'cohort',
     // Without reference values the score is simply not cohort-adjusted.
     retry: 1,
@@ -224,7 +244,12 @@ function RiskDashboardContent() {
       };
     });
 
-    const visibleTimelineData = timelineData.filter(d => d.date >= analysisStart && d.date <= endDate);
+    // Only days inside the user's own history: no zeros (and no low "risk")
+    // before their export starts or after it ends.
+    const visibleTimelineData = timelineData.filter(d => (
+      d.date >= analysisStart && d.date <= endDate
+      && (!coverage || (d.date >= coverage.start && d.date <= coverage.end))
+    ));
     const visibleTotalDays = visibleTimelineData.length;
     const currentPeriodData = visibleTimelineData.slice(Math.max(0, visibleTotalDays - 7));
     const previousPeriodData = visibleTimelineData.slice(Math.max(0, visibleTotalDays - 14), Math.max(0, visibleTotalDays - 7));
@@ -278,7 +303,7 @@ function RiskDashboardContent() {
       avgFragmentation,
       isEmptyLive: false
     };
-  }, [detailedUsageData, analysisStart, endDate, coefficients, cohortReference]);
+  }, [detailedUsageData, analysisStart, endDate, coefficients, cohortReference, coverage]);
 
   // Personalized Action Recommendation Logic (self-reflection wording)
   const personalizedRecommendation = useMemo(() => {
@@ -618,6 +643,24 @@ function RiskDashboardContent() {
                   </div>
                   <span className="text-[9px] text-brand-navy/40 block">Queries backend to update chart scope.</span>
                 </div>
+                {!usesLocalMockApi && (
+                  <div className="space-y-2">
+                    <label htmlFor="risk-population-source" className="text-[10px] uppercase tracking-wider font-extrabold text-brand-navy/60 flex items-center gap-1.5">
+                      <Calendar className="w-3.5 h-3.5 text-brand-teal" />
+                      Reference Values From The Population's
+                    </label>
+                    <select
+                      id="risk-population-source"
+                      value={populationSource}
+                      onChange={(event) => setPopulationSource(event.target.value as PopulationSource)}
+                      className="w-full sm:w-auto bg-white border border-brand-navy/20 rounded-xl px-3 py-2 text-xs font-semibold text-brand-navy focus:outline-none focus:ring-2 focus:ring-brand-teal/30"
+                    >
+                      <option value="total">Total social media time (YouTube, TikTok, Instagram, LinkedIn)</option>
+                      <option value="matching">Time on the same platforms as mine ({platformList(readyPlatforms)})</option>
+                    </select>
+                    <span className="text-[9px] text-brand-navy/40 block">Your score uses {platformList(readyPlatforms)}.</span>
+                  </div>
+                )}
               </div>
             )}
 

@@ -12,6 +12,16 @@ export const SEX_OPTIONS: { value: string; label: string }[] = [
   { value: 'diverse', label: 'Diverse' },
 ];
 
+const PLATFORM_NAMES: Record<string, string> = { youtube: 'YouTube', instagram: 'Instagram', tiktok: 'TikTok' };
+
+/** "YouTube", "YouTube + Instagram". */
+export function platformList(platforms: string[]): string {
+  return platforms.map((platform) => PLATFORM_NAMES[platform] ?? platform).join(' + ');
+}
+
+/** Platforms that can be compared with the population (live backend). */
+export const COMPARABLE_PLATFORMS = ['youtube', 'instagram', 'tiktok'];
+
 /** Value used by the selects for "no answer". */
 export const NO_ANSWER = '';
 

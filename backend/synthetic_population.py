@@ -37,6 +37,9 @@ from datetime import datetime, timedelta
 from backend.demographics import AGE_RANGES, age_bounds, model_group
 
 PLATFORMS = ("youtube", "tiktok", "instagram", "spotify", "linkedin")
+# What the studies call social media time (TOTAL_MINUTES_MEDIAN); music
+# streaming comes on top of it.
+SOCIAL_PLATFORMS = ("youtube", "tiktok", "instagram", "linkedin")
 
 # Share of social media users in each age range [assumption].
 AGE_RANGE_WEIGHTS = {
@@ -172,13 +175,22 @@ def generate_persona(rng: random.Random) -> Persona:
         share = PLATFORM_SHARE[group][sex][platform]
         if share > 0 and rng.random() >= NON_USER_SHARE[group][platform]:
             tastes[platform] = share * math.exp(rng.gauss(0.0, 0.35))
-    if not tastes:
+    if not any(platform in SOCIAL_PLATFORMS for platform in tastes):
         tastes["youtube"] = 1.0
-    # The person's total time is spread over the platforms they use, so not
-    # using one shifts time to the others instead of lowering the total.
-    taste_total = sum(tastes.values())
+    # The person's social media time (the calibrated total) is spread over the
+    # social platforms they use, so not using one shifts time to the others
+    # instead of lowering the total. Music listening comes on top, in
+    # proportion to the group's typical share.
+    social_total = sum(taste for platform, taste in tastes.items() if platform in SOCIAL_PLATFORMS)
+    social_share = sum(PLATFORM_SHARE[group][sex][platform] for platform in SOCIAL_PLATFORMS)
     daily_minutes = {
-        platform: total_median * appetite * tastes[platform] / taste_total if platform in tastes else 0.0
+        platform: (
+            0.0
+            if platform not in tastes
+            else total_median * appetite * tastes[platform] / social_total
+            if platform in SOCIAL_PLATFORMS
+            else total_median * appetite * tastes[platform] / social_share
+        )
         for platform in PLATFORMS
     }
     # Heavier users also open the apps more often, but less than proportionally.

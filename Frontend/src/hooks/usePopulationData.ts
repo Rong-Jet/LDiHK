@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { fetchPopulationJson, type ComparisonGroup } from '../lib/api';
+import { fetchPopulationJson, type ComparisonGroup, type PopulationSource } from '../lib/api';
 
 export interface DistributionRow {
   hours: number;
@@ -8,7 +8,8 @@ export interface DistributionRow {
 
 export interface DecileRow {
   date: string;
-  user: number;
+  /** Null on days outside the user's own history (no line there). */
+  user: number | null;
   median: number | null;
   top10: number | null;
   bottom10: number | null;
@@ -30,6 +31,10 @@ export interface PopulationQueryResult {
   message?: string;
   /** Number of other people (real and synthetic) in the comparison. */
   populationSize: number | null;
+  /** `total`: the population's total social media time; `matching`: the same platforms. */
+  populationSource: PopulationSource;
+  /** Platforms counted for the other people. */
+  comparisonPlatforms: string[];
   /** Whom the user was compared with (missing from older backends). */
   comparisonGroup: ComparisonGroup | null;
   /** Days the synthetic profiles were generated for (used as a weekday baseline). */
@@ -59,11 +64,12 @@ const fetchPopulationData = async (
   sessionToken: string,
   visibleStartDate: string,
   compareWith: 'cohort' | 'everyone',
+  populationSource: PopulationSource,
   signal?: AbortSignal
 ): Promise<PopulationQueryResult> => {
   const data = await fetchPopulationJson<PopulationResponse>(
     sessionToken,
-    { platforms, startDate, endDate, includeSynthetic, customPercentile, visibleStartDate, compareWith },
+    { platforms, startDate, endDate, includeSynthetic, customPercentile, visibleStartDate, compareWith, populationSource },
     signal
   );
   const ready = data.ready === true;
@@ -74,6 +80,8 @@ const fetchPopulationData = async (
     message: data.message,
     populationSize: data.populationSize ?? null,
     comparisonGroup: data.comparisonGroup ?? null,
+    populationSource: data.populationSource ?? 'matching',
+    comparisonPlatforms: data.comparisonPlatforms ?? platforms,
     syntheticBaseline: data.syntheticBaseline ?? null,
     userPercentile: data.userPercentile ?? null,
     userDailyAverageHours: data.userDailyAverageHours ?? null,
@@ -95,12 +103,14 @@ export function usePopulationData(
   sessionToken: string | null,
   visibleStartDate: string,
   /** `cohort`: people of similar age range and sex (falls back to everyone). */
-  compareWith: 'cohort' | 'everyone' = 'everyone'
+  compareWith: 'cohort' | 'everyone' = 'everyone',
+  /** Default: compare the selected platforms with the population's total social media time. */
+  populationSource: PopulationSource = 'total'
 ) {
   return useQuery<PopulationQueryResult>({
-    queryKey: ['population', platforms.join(','), startDate, endDate, includeSynthetic, customPercentile, sessionToken, visibleStartDate, compareWith],
+    queryKey: ['population', platforms.join(','), startDate, endDate, includeSynthetic, customPercentile, sessionToken, visibleStartDate, compareWith, populationSource],
     queryFn: ({ signal }) => fetchPopulationData(
-      platforms, startDate, endDate, includeSynthetic, customPercentile, sessionToken || '', visibleStartDate, compareWith, signal
+      platforms, startDate, endDate, includeSynthetic, customPercentile, sessionToken || '', visibleStartDate, compareWith, populationSource, signal
     ),
     enabled: isReady && !!startDate && !!endDate && !!sessionToken && platforms.length > 0,
   });

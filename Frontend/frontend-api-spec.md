@@ -598,6 +598,14 @@ Who the user is compared with:
 - Comparisons against fewer than 5 other people are refused
   (`reason: "insufficient_population"`), because percentiles of such a small
   group would reveal individual usage.
+- `platforms`: the user's own side, any of `youtube`, `instagram`, `tiktok`
+  (summed). `populationSource`: `"total"` compares with the other people's
+  total social media time (YouTube, TikTok, Instagram, LinkedIn), `"matching"`
+  (default for older clients) with their time on the same platforms. The
+  response repeats `platforms`, `populationSource` and `comparisonPlatforms`.
+- `deciles[].user` is `null` on days outside the user's own history on the
+  selected platforms (`userCoverage`), and `userDailyAverageHours` averages
+  only those days, so charts draw no line before an export starts.
 - With `compareWith: "cohort"` and a profile, only people of the same sex and
   age range count. The group widens to neighbouring 5-year ranges until it has
   30 people, then drops the sex if fewer than 5 remain, and falls back to

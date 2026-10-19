@@ -1,4 +1,5 @@
-"""Synthetic comparison population, computed on demand for any date range.
+"""Synthetic comparison population, computed on demand for any date range
+and any set of platforms (one platform, or total social media time).
 
 The profiles (age range, sex, personal volume, sessions per day, chronotype)
 come from backend/synthetic_population.py and its study calibration. Instead
@@ -7,7 +8,7 @@ deterministic function of the profile and the date, so the same day always
 gives the same value, any range (also years back) works, and nothing is stored
 in the database.
 
-Daily hours = personal median x weekday x season x long-term trend x personal
+Daily hours = personal median (summed over the requested platforms) x weekday x season x long-term trend x personal
 drift x life events x day-to-day noise, with some days without use:
 
 - weekday factors, day-to-day noise and days without use: as in
@@ -38,7 +39,8 @@ import numpy as np
 
 from backend import synthetic_population as model
 
-MODEL_VERSION = "procedural_youtube.v1"
+MODEL_VERSION = "procedural_usage.v2"
+SOCIAL_PLATFORMS = model.SOCIAL_PLATFORMS
 POPULATION_SIZE = 1500
 POPULATION_SEED = 20261019
 EPOCH = date(2010, 1, 1)
@@ -66,8 +68,10 @@ class SyntheticProfile:
     age_range: str
     sex: str
     model_group: str
-    youtube_minutes: float
-    youtube_sessions: float
+    # Median minutes per day per platform (0 = does not use it).
+    platform_minutes: tuple[tuple[str, float], ...]
+    # Sessions per day across all platforms.
+    sessions_per_day: float
     # Share of the day's watching per hour (24 values each).
     weekday_hours: tuple[float, ...]
     weekend_hours: tuple[float, ...]
@@ -78,10 +82,13 @@ class SyntheticProfile:
     def user_id(self) -> str:
         return f"synthetic-{self.index:05d}"
 
+    def minutes_on(self, platforms: tuple[str, ...]) -> float:
+        return sum(minutes for platform, minutes in self.platform_minutes if platform in platforms)
+
 
 @lru_cache(maxsize=1)
 def population() -> tuple[SyntheticProfile, ...]:
-    """The YouTube users among POPULATION_SIZE generated profiles (fixed seed)."""
+    """POPULATION_SIZE generated profiles (fixed seed)."""
     rng = random.Random(POPULATION_SEED)
     profiles = []
     for index in range(POPULATION_SIZE):
@@ -95,18 +102,14 @@ def population() -> tuple[SyntheticProfile, ...]:
             for _ in range(3)
         )
         block_offset = rng.randrange(BLOCK_DAYS)
-        minutes = persona.daily_minutes["youtube"]
-        if minutes <= 0:
-            continue  # does not use YouTube: no export to compare with
-        total = sum(persona.daily_minutes.values()) or minutes
         profiles.append(
             SyntheticProfile(
                 index=index,
                 age_range=persona.age_range,
                 sex=persona.sex,
                 model_group=persona.model_group,
-                youtube_minutes=minutes,
-                youtube_sessions=max(0.5, persona.sessions_per_day * minutes / total),
+                platform_minutes=tuple(persona.daily_minutes.items()),
+                sessions_per_day=persona.sessions_per_day,
                 weekday_hours=_hour_shares(persona.model_group, "weekday", persona.chronotype_shift),
                 weekend_hours=_hour_shares(persona.model_group, "weekend", persona.chronotype_shift),
                 drift=drift,
@@ -134,8 +137,13 @@ def day_series(
     start: date,
     end: date,
     profiles: tuple[SyntheticProfile, ...] | None = None,
+    *,
+    platforms: tuple[str, ...] = ("youtube",),
 ) -> DaySeries:
+    """Usage on `platforms` (summed) of the profiles that use any of them."""
+    platforms = tuple(platforms)
     profiles = population() if profiles is None else profiles
+    profiles = tuple(profile for profile in profiles if profile.minutes_on(platforms) > 0)
     days = [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
     if len(profiles) * len(days) > MAX_CELLS:
         step = math.ceil(len(profiles) * len(days) / MAX_CELLS)
@@ -178,7 +186,7 @@ def day_series(
     noise = np.exp(model.DAY_TO_DAY_SIGMA * _normal(idx, day_key, 2))
     zero_day = _uniform(idx, day_key, 4) < np.where(events == AWAY_FACTOR, 0.5, zero_share)
 
-    medians = np.array([profile.youtube_minutes for profile in profiles])[:, None]
+    medians = np.array([profile.minutes_on(platforms) for profile in profiles])[:, None]
     minutes = medians * weekday_factor * season * trend[None, :] * np.exp(drift) * events * noise
     minutes = np.where(zero_day, 0.0, np.minimum(minutes, MAX_DAILY_HOURS * 60))
     hours = minutes / 60
@@ -194,7 +202,11 @@ def day_series(
 
     # Sessions that day (more on heavier days, sublinearly), each at least
     # one active hour if it lasts 5 minutes; long sessions span several hours.
-    rate = np.array([profile.youtube_sessions for profile in profiles])[:, None]
+    # The sessions that fall on these platforms (their share of all the person's time).
+    rate = np.array([
+        max(0.5, profile.sessions_per_day * profile.minutes_on(platforms) / max(profile.minutes_on(model.PLATFORMS), 1e-6))
+        for profile in profiles
+    ])[:, None]
     level = minutes / np.maximum(medians, 1e-6)
     sessions = np.floor(rate * np.power(np.maximum(level, 1e-6), 0.4) + _uniform(idx, day_key, 5))
     sessions = np.where(minutes > 0, np.maximum(sessions, 1), 0)

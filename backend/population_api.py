@@ -20,10 +20,16 @@ import numpy as np
 
 from backend import procedural_population
 from backend.demographics import AGE_RANGES, comparable_sex, neighbouring_ranges
+from backend.query_api import DEFAULT_PLATFORM_DURATION_SECONDS, WATCH_EVENT_SQL
 
 
 POPULATION_SCHEMA_VERSION = "youtube_usage.population.v1"
 YOUTUBE_PLATFORM = "youtube"
+# Platforms a user's own side can consist of (imported by the backend).
+COMPARABLE_PLATFORMS = ("youtube", "instagram", "tiktok")
+# "total": the population's total social media time; "matching": the
+# population's time on the same platforms as the user's selection.
+POPULATION_SOURCES = ("total", "matching")
 
 
 class PopulationValidationError(ValueError):
@@ -41,6 +47,15 @@ class PopulationRequest:
     # "cohort": people of similar age range and sex (if the requester gave
     # them); "everyone": the whole population.
     compare_with: str = "everyone"
+    platforms: tuple[str, ...] = (YOUTUBE_PLATFORM,)
+    population_source: str = "matching"
+
+    @property
+    def comparison_platforms(self) -> tuple[str, ...]:
+        """Platforms counted for the other people."""
+        if self.population_source == "total":
+            return procedural_population.SOCIAL_PLATFORMS
+        return self.platforms
 
     @property
     def day_count(self) -> int:
@@ -61,8 +76,13 @@ def validate_population_request(request_payload: object) -> PopulationRequest:
     ):
         raise PopulationValidationError("invalid_platforms")
     normalized_platforms = {platform.strip().lower() for platform in platforms}
-    if normalized_platforms != {YOUTUBE_PLATFORM}:
+    if not normalized_platforms <= set(COMPARABLE_PLATFORMS):
         raise PopulationValidationError("unsupported_platform")
+    selected = tuple(platform for platform in COMPARABLE_PLATFORMS if platform in normalized_platforms)
+
+    population_source = request_payload.get("populationSource", "matching")
+    if population_source not in POPULATION_SOURCES:
+        raise PopulationValidationError("invalid_population_source")
 
     start_date = _parse_date(request_payload.get("startDate"))
     end_date = _parse_date(request_payload.get("endDate"))
@@ -92,6 +112,8 @@ def validate_population_request(request_payload: object) -> PopulationRequest:
         include_synthetic=include_synthetic,
         custom_percentile=custom_percentile,
         compare_with=compare_with,
+        platforms=selected,
+        population_source=population_source,
     )
 
 
@@ -215,6 +237,7 @@ def query_youtube_population(
             start_date=request.start_date,
             end_date=request.end_date,
             marker="population_real_usage",
+            platforms=request.platforms,
         )
         if requester_id is not None
         else {}
@@ -228,10 +251,27 @@ def query_youtube_population(
             "message": "No YouTube watch history in the selected date range.",
         }
 
-    members = _real_members(connection, real_profiles, request, exclude_user_id=requester_id)
+    comparison_platforms = request.comparison_platforms
+    coverage = _coverage(connection, request.platforms)
+    if comparison_platforms != request.platforms:
+        others = _fetch_usage_profiles(
+            connection,
+            scope=REAL_USERS_SCOPE,
+            start_date=request.start_date,
+            end_date=request.end_date,
+            marker="population_real_usage_comparison",
+            platforms=comparison_platforms,
+        )
+        others.pop(requester_id, None)
+        others_coverage = _coverage(connection, comparison_platforms)
+    else:
+        others, others_coverage = real_profiles, coverage
+    members = _real_members(others, others_coverage, request, exclude_user_id=requester_id)
     series = None
     if request.include_synthetic:
-        series = procedural_population.day_series(request.start_date, request.end_date)
+        series = procedural_population.day_series(
+            request.start_date, request.end_date, platforms=comparison_platforms
+        )
         members.extend(_procedural_members(series, request))
 
     group = _group_payload("everyone", None, None, len(members))
@@ -256,7 +296,11 @@ def query_youtube_population(
         }
 
     days = [request.start_date + timedelta(days=offset) for offset in range(request.day_count)]
-    user_daily_average = sum(requester.daily_hours.get(day, 0.0) for day in days) / request.day_count
+    # The user counts only on days inside their own history for these
+    # platforms (no line and no zeros before their export starts).
+    own_first, own_last = coverage.get(requester_id, (request.start_date, request.end_date))
+    own_days = [day for day in days if own_first <= day <= own_last] or days
+    user_daily_average = sum(requester.daily_hours.get(day, 0.0) for day in own_days) / len(own_days)
     matrix = _hours_matrix(members, days, series)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
@@ -266,7 +310,10 @@ def query_youtube_population(
         "schema_version": POPULATION_SCHEMA_VERSION,
         "ready": True,
         "dataset": "youtube_usage",
-        "platforms": [YOUTUBE_PLATFORM],
+        "platforms": list(request.platforms),
+        "populationSource": request.population_source,
+        "comparisonPlatforms": list(comparison_platforms),
+        "userCoverage": {"startDate": own_days[0].isoformat(), "endDate": own_days[-1].isoformat()},
         "userPercentile": _percentile_rank(user_daily_average, member_averages),
         "userDailyAverageHours": round(user_daily_average, 2),
         "includeSynthetic": request.include_synthetic,
@@ -281,7 +328,7 @@ def query_youtube_population(
             else None
         ),
         "distribution": _distribution_payload(member_averages),
-        "deciles": _deciles_payload(days, requester, matrix, request.custom_percentile),
+        "deciles": _deciles_payload(days, requester, matrix, request.custom_percentile, set(own_days)),
         "hourlyAverages": _hourly_payload(requester, members, request.day_count, series),
     }
 
@@ -341,13 +388,14 @@ def _fetch_usage_profiles(
     start_date: date,
     end_date: date,
     marker: str,
+    platforms: tuple[str, ...] = (YOUTUBE_PLATFORM,),
 ) -> dict[str, _UsageProfile]:
-    """Per-user daily hours and hourly seconds in one scan of the events."""
+    """Per-user daily hours and hourly seconds (summed over `platforms`) in one scan."""
     rows = _fetch_rows(
         connection,
         f"""
             /* {marker} */
-            WITH {_clipped_events_cte(scope)},
+            WITH {_clipped_events_cte(scope, platforms)},
             per_event AS (
                 SELECT
                     user_id,
@@ -377,9 +425,42 @@ def _fetch_usage_profiles(
     return profiles
 
 
+def _coverage(connection, platforms: tuple[str, ...]) -> dict[str, tuple[date, date]]:
+    """First and last day (UTC) of each real user's watch history on `platforms`."""
+    rows = _fetch_rows(
+        connection,
+        f"""
+            /* population_real_coverage */
+            SELECT
+                ue.user_id::text AS user_id,
+                to_char(MIN(ue.occurred_at AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS first_date,
+                to_char(MAX(ue.occurred_at AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS last_date
+            FROM usage_events ue
+            JOIN users u ON u.id = ue.user_id
+            WHERE ue.is_synthetic = false
+              AND u.is_synthetic = false
+              AND {_platform_filter_sql("ue", platforms)}
+              AND {WATCH_EVENT_SQL.format(alias="ue")}
+              AND ue.occurred_at IS NOT NULL
+            GROUP BY ue.user_id
+        """,
+        [],
+    )
+    return {
+        str(row["user_id"]): (date.fromisoformat(str(row["first_date"])), date.fromisoformat(str(row["last_date"])))
+        for row in rows
+    }
+
+
+def _platform_filter_sql(alias: str, platforms: tuple[str, ...]) -> str:
+    # Names come from COMPARABLE_PLATFORMS / SOCIAL_PLATFORMS, never from input.
+    assert all(platform.isalpha() for platform in platforms)
+    return f"{alias}.platform IN ({', '.join(repr(platform) for platform in platforms)})"
+
+
 def _real_members(
-    connection,
     profiles: dict[str, _UsageProfile],
+    coverage: dict[str, tuple[date, date]],
     request: PopulationRequest,
     *,
     exclude_user_id: str,
@@ -390,25 +471,10 @@ def _real_members(
     nothing that day (0 hours), but not on days before their export starts or
     after it ends.
     """
-    rows = _fetch_rows(
-        connection,
-        """
-            /* population_real_coverage */
-            SELECT
-                ue.user_id::text AS user_id,
-                to_char(MIN(ue.occurred_at AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS first_date,
-                to_char(MAX(ue.occurred_at AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS last_date
-            FROM usage_events ue
-            JOIN users u ON u.id = ue.user_id
-            WHERE ue.is_synthetic = false
-              AND u.is_synthetic = false
-              AND ue.platform = 'youtube'
-              AND ue.event_type = 'watch'
-              AND ue.occurred_at IS NOT NULL
-            GROUP BY ue.user_id
-        """,
-        [],
-    )
+    rows = [
+        {"user_id": user_id, "first_date": first.isoformat(), "last_date": last.isoformat()}
+        for user_id, (first, last) in coverage.items()
+    ]
     members: list[_PopulationMember] = []
     for row in rows:
         user_id = str(row["user_id"])
@@ -494,8 +560,13 @@ def _deciles_payload(
     requester: _UsageProfile,
     matrix: np.ndarray,
     custom_percentile: int,
+    own_days: set[date] | None = None,
 ) -> list[dict[str, object]]:
-    """Per day, over the members counting that day (linear, like percentile_cont)."""
+    """Per day, over the members counting that day (linear, like percentile_cont).
+
+    `user` is null on days outside the user's own history, so charts draw no
+    line there.
+    """
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         median, top10, bottom10, custom = np.nan_to_num(
@@ -504,7 +575,7 @@ def _deciles_payload(
     return [
         {
             "date": day.isoformat(),
-            "user": round(requester.daily_hours.get(day, 0.0), 2),
+            "user": round(requester.daily_hours.get(day, 0.0), 2) if own_days is None or day in own_days else None,
             "median": round(float(median[column]), 2),
             "top10": round(float(top10[column]), 2),
             "bottom10": round(float(bottom10[column]), 2),
@@ -548,7 +619,8 @@ def _distribution_payload(member_averages: list[float]) -> list[dict[str, object
     return [{"hours": float(hour), "density": density[hour]} for hour in range(25)]
 
 
-def _clipped_events_cte(population_scope: str) -> str:
+def _clipped_events_cte(population_scope: str, platforms: tuple[str, ...] = (YOUTUBE_PLATFORM,)) -> str:
+    defaults = DEFAULT_PLATFORM_DURATION_SECONDS
     return f"""
         clipped_events AS (
             SELECT
@@ -565,8 +637,12 @@ def _clipped_events_cte(population_scope: str) -> str:
                         ELSE NULL::numeric
                     END,
                     CASE
-                        WHEN ue.product = 'shorts' THEN 60::numeric
-                        ELSE 600::numeric
+                        WHEN ue.platform = 'youtube' AND ue.product = 'shorts'
+                        THEN {defaults[("youtube", "shorts")]}::numeric
+                        WHEN ue.platform = 'youtube' THEN {defaults[("youtube", "long")]}::numeric
+                        WHEN ue.platform = 'tiktok' THEN {defaults[("tiktok", None)]}::numeric
+                        WHEN ue.platform = 'instagram' THEN {defaults[("instagram", None)]}::numeric
+                        ELSE {defaults[("linkedin", None)]}::numeric
                     END
                 ) AS base_duration,
                 (
@@ -574,7 +650,7 @@ def _clipped_events_cte(population_scope: str) -> str:
                     FROM usage_events next_ue
                     WHERE next_ue.user_id = ue.user_id
                       AND next_ue.platform = ue.platform
-                      AND next_ue.event_type = 'watch'
+                      AND {WATCH_EVENT_SQL.format(alias="next_ue")}
                       AND next_ue.occurred_at IS NOT NULL
                       AND ue.occurred_at IS NOT NULL
                       AND next_ue.occurred_at > ue.occurred_at
@@ -583,8 +659,8 @@ def _clipped_events_cte(population_scope: str) -> str:
             JOIN users u ON u.id = ue.user_id
             LEFT JOIN youtube_videos yv ON yv.video_id = ue.video_id
             WHERE {population_scope}
-              AND ue.platform = 'youtube'
-              AND ue.event_type = 'watch'
+              AND {_platform_filter_sql("ue", platforms)}
+              AND {WATCH_EVENT_SQL.format(alias="ue")}
               AND ue.occurred_at >= (%s::date::timestamp AT TIME ZONE 'UTC')
               AND ue.occurred_at < ((%s::date + INTERVAL '1 day')::timestamp AT TIME ZONE 'UTC')
         ),
@@ -596,7 +672,6 @@ def _clipped_events_cte(population_scope: str) -> str:
                 event_type,
                 CASE
                     WHEN base_duration IS NOT NULL
-                     AND event_type = 'watch'
                      AND occurred_at IS NOT NULL
                      AND next_occurred_at IS NOT NULL
                     THEN LEAST(
@@ -641,12 +716,14 @@ def query_risk_reference(
     if requester is None:
         return {"ready": False, "reason": "no_user_data"}
 
+    comparison_platforms = request.comparison_platforms
     per_member = _fetch_member_day_metrics(
         connection,
         scope=REAL_USERS_SCOPE,
         start_date=request.start_date,
         end_date=request.end_date,
         marker="reference_real_usage",
+        platforms=comparison_platforms,
     )
     per_member.pop(requester.user_id, None)
     members = _with_demographics(
@@ -664,7 +741,9 @@ def query_risk_reference(
         ],
     )
     if request.include_synthetic:
-        series = procedural_population.day_series(request.start_date, request.end_date)
+        series = procedural_population.day_series(
+            request.start_date, request.end_date, platforms=comparison_platforms
+        )
         synthetic_metrics = _procedural_day_metrics(series)
         per_member.update(synthetic_metrics)
         members.extend(
@@ -687,6 +766,8 @@ def query_risk_reference(
     return {
         "ready": True,
         "comparisonGroup": group,
+        "populationSource": request.population_source,
+        "comparisonPlatforms": list(comparison_platforms),
         "profile": {"age_range": requester.age_range, "sex": requester.sex},
         "cohort": _median_metrics([per_member[m.user_id] for m in group_members]),
         "overall": _median_metrics([per_member[m.user_id] for m in members]),
@@ -700,13 +781,14 @@ def _fetch_member_day_metrics(
     start_date: date,
     end_date: date,
     marker: str,
+    platforms: tuple[str, ...] = (YOUTUBE_PLATFORM,),
 ) -> dict[str, dict[str, float]]:
     """Per user: average watch hours, late-night hours and fragmentation per active day."""
     rows = _fetch_rows(
         connection,
         f"""
             /* {marker} */
-            WITH {_clipped_events_cte(scope)}
+            WITH {_clipped_events_cte(scope, platforms)}
             SELECT
                 user_id::text AS user_id,
                 to_char((occurred_at AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS date,

@@ -347,6 +347,13 @@ export function updateProfile(token: string, profile: Partial<UserProfile>): Pro
   return apiFetchJson(apiRoutes.profile(), { token, method: 'PATCH', body: profile });
 }
 
+/**
+ * What the other people's side counts: `total` = their total social media time
+ * (YouTube, TikTok, Instagram, LinkedIn), `matching` = the same platforms as
+ * the user's selection.
+ */
+export type PopulationSource = 'total' | 'matching';
+
 /** Who a comparison was made against (`everyone` when no matching cohort exists). */
 export interface ComparisonGroup {
   basis: 'cohort' | 'everyone';
@@ -377,10 +384,17 @@ export interface RiskReferenceResponse {
 /** POST /api/population/reference: typical risk inputs of the user's cohort and of everyone. */
 export function fetchRiskReference(
   token: string,
-  payload: { startDate: string; endDate: string; compareWith: 'cohort' | 'everyone'; includeSynthetic?: boolean },
+  payload: {
+    startDate: string;
+    endDate: string;
+    compareWith: 'cohort' | 'everyone';
+    platforms: string[];
+    populationSource: PopulationSource;
+    includeSynthetic?: boolean;
+  },
   signal?: AbortSignal,
 ): Promise<RiskReferenceResponse> {
-  return apiFetchJson(apiRoutes.populationReference(), { token, body: { platforms: ['youtube'], ...payload }, signal });
+  return apiFetchJson(apiRoutes.populationReference(), { token, body: payload, signal });
 }
 
 export function createImport(token: string, payload: CreateImportPayload): Promise<{ import_id: string; ldihk_id: string; status: ImportState }> {
