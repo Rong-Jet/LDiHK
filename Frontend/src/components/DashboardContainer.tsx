@@ -119,28 +119,28 @@ function DashboardContent() {
   const content = (
     <div className="space-y-6">
       {/* Dynamic Stats Row */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white p-5 rounded-2xl border border-brand-navy/10 shadow-sm">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+        <div className="bg-white p-3 sm:p-5 rounded-2xl border border-brand-navy/10 shadow-sm min-w-0">
           <span className="text-[10px] uppercase tracking-wider font-extrabold text-brand-navy/50 block">Ingested Channels</span>
-          <span className="text-2xl font-black text-brand-navy mt-1 block">
+          <span className="text-base sm:text-2xl font-black text-brand-navy mt-1 block break-words">
             {readyPlatforms.length} {readyPlatforms.length === 1 ? 'Platform' : 'Platforms'}
           </span>
         </div>
-        <div className="bg-white p-5 rounded-2xl border border-brand-navy/10 shadow-sm">
+        <div className="bg-white p-3 sm:p-5 rounded-2xl border border-brand-navy/10 shadow-sm min-w-0">
           <span className="text-[10px] uppercase tracking-wider font-extrabold text-brand-teal mt-1 block">Active Filters</span>
-          <span className="text-2xl font-black text-brand-teal mt-1 block">
+          <span className="text-base sm:text-2xl font-black text-brand-teal mt-1 block break-words">
             {platformsToQuery.length} of {readyPlatforms.length}
           </span>
         </div>
-        <div className="bg-white p-5 rounded-2xl border border-brand-navy/10 shadow-sm">
+        <div className="bg-white p-3 sm:p-5 rounded-2xl border border-brand-navy/10 shadow-sm min-w-0">
           <span className="text-[10px] uppercase tracking-wider font-extrabold text-brand-navy/50 block">Time Span</span>
-          <span className="text-xl font-black text-brand-navy mt-1 block truncate" title={`${startDate} to ${endDate} (${session.timeZone})`}>
+          <span className="text-base sm:text-xl font-black text-brand-navy mt-1 block truncate" title={`${startDate} to ${endDate} (${session.timeZone})`}>
             {formatSpan(startDate, endDate)}
           </span>
         </div>
-        <div className="bg-white p-5 rounded-2xl border border-brand-navy/10 shadow-sm">
+        <div className="bg-white p-3 sm:p-5 rounded-2xl border border-brand-navy/10 shadow-sm min-w-0">
           <span className="text-[10px] uppercase tracking-wider font-extrabold text-brand-navy/50 block">Database Storage</span>
-          <span className="text-2xl font-black text-brand-peach mt-1 block">Anonymous</span>
+          <span className="text-base sm:text-2xl font-black text-brand-peach mt-1 block break-words">Anonymous</span>
         </div>
       </div>
 

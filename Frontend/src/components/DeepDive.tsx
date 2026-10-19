@@ -226,7 +226,7 @@ export default function DeepDive({ selectedDate, dayData }: DeepDiveProps) {
     : formatCalendarValue(selectedDate, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
 
   return (
-    <div className="bg-brand-beige border border-brand-navy/15 rounded-3xl p-6 shadow-sm flex flex-col h-full gap-5 min-h-[500px]">
+    <div className="bg-brand-beige border border-brand-navy/15 rounded-3xl p-4 sm:p-6 shadow-sm flex flex-col h-full gap-5 min-h-[500px]">
       {/* Header */}
       <div className="flex items-center gap-3 pb-3 border-b border-brand-navy/10">
         <div className="w-9 h-9 rounded-xl bg-white border border-brand-navy/10 flex items-center justify-center text-brand-teal shadow-sm">

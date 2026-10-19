@@ -566,7 +566,7 @@ function RiskDashboardContent() {
             <RefreshCw className="w-8 h-8 animate-spin text-brand-teal" />
           </div>
         ) : riskAnalysisResult && !riskAnalysisResult.isEmptyLive ? (
-          <div className="bg-white border border-brand-navy/10 rounded-3xl p-6 shadow-sm space-y-6 animate-scale-up">
+          <div className="bg-white border border-brand-navy/10 rounded-3xl p-4 sm:p-6 shadow-sm space-y-6 animate-scale-up">
 
             {/* Timeline Chart Header */}
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-brand-navy/5">

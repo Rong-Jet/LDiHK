@@ -21,3 +21,12 @@
     to { transform: scale(1); opacity: 1; }
   }
 }
+
+/* Nothing may widen the page beyond the screen (e.g. hover tooltips near the
+   right edge): mobile browsers would zoom the whole page out to fit it, which
+   made the charts look narrower the narrower the phone. `clip` (not hidden)
+   keeps sticky elements working. */
+html,
+body {
+  overflow-x: clip;
+}

@@ -612,14 +612,15 @@ function ConsoleShellBody({
       {showDeleteDialog && <DeleteDataDialog session={session} onClose={() => setShowDeleteDialog(false)} />}
 
       {/* View Switcher Sub-Navigation Tabs */}
-      <div className="mb-8 border-b border-brand-navy/10 flex gap-4 text-left">
+      {/* Scrolls sideways on narrow phones instead of widening the page. */}
+      <div className="mb-8 border-b border-brand-navy/10 flex gap-4 text-left overflow-x-auto whitespace-nowrap">
         {TABS.map((tab) => (
           <a
             key={tab.id}
             href={tab.href}
             className={tab.id === activeTab
-              ? 'px-4 py-3 text-sm font-extrabold border-b-2 border-brand-teal text-brand-teal transition-all'
-              : 'px-4 py-3 text-sm font-bold border-b-2 border-transparent text-brand-navy/50 hover:text-brand-navy transition-all'}
+              ? 'shrink-0 px-4 py-3 text-sm font-extrabold border-b-2 border-brand-teal text-brand-teal transition-all'
+              : 'shrink-0 px-4 py-3 text-sm font-bold border-b-2 border-transparent text-brand-navy/50 hover:text-brand-navy transition-all'}
             id={tab.domId}
           >
             {tab.label}

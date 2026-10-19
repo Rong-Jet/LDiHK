@@ -389,7 +389,7 @@ function PopulationDashboardContent() {
 
             {/* Timeline Chart (2/3 width on xl) */}
             <div className="xl:col-span-2">
-              <div className="bg-white border border-brand-navy/10 rounded-3xl p-6 shadow-sm space-y-6">
+              <div className="bg-white border border-brand-navy/10 rounded-3xl p-4 sm:p-6 shadow-sm space-y-6">
 
                 {/* Timeline Header Row (emulating MainTimeline controls) */}
                 <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4 pb-4 border-b border-brand-navy/5">
@@ -835,7 +835,7 @@ function PopulationDashboardContent() {
 
         {/* 24-Hour Difference Heatmap (Divergence Anomaly Grid) */}
         {hasSelectedPlatforms && !isPopLoading && popData && (
-          <div className="bg-white border border-brand-navy/10 rounded-3xl p-6 shadow-sm space-y-6">
+          <div className="bg-white border border-brand-navy/10 rounded-3xl p-4 sm:p-6 shadow-sm space-y-6">
 
             {/* Heatmap Header (identical to BehavioralHeatmap header) */}
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-brand-navy/5">

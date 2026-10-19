@@ -127,22 +127,13 @@ export default function MainTimeline({
       return dateBounds || { minDate: FALLBACK_REFERENCE_DATE, maxDate: FALLBACK_REFERENCE_DATE };
     }
 
-    const intersectionMin = readyBounds
-      .map((dataset) => dataset.min_date)
-      .sort()
-      .at(-1) || FALLBACK_REFERENCE_DATE;
-    const intersectionMax = readyBounds
-      .map((dataset) => dataset.max_date)
-      .sort()[0] || FALLBACK_REFERENCE_DATE;
-
-    if (intersectionMin <= intersectionMax) {
-      return { minDate: intersectionMin, maxDate: intersectionMax };
-    }
-
-    const unionDates = readyBounds.flatMap((dataset) => [dataset.min_date, dataset.max_date]).sort();
+    // The span of all selected platforms together (not their overlap): a
+    // platform with a short history (Instagram keeps weeks) must not cut the
+    // 5Y and All presets of the others down to its own start.
+    const allDates = readyBounds.flatMap((dataset) => [dataset.min_date, dataset.max_date]).sort();
     return {
-      minDate: unionDates[0] || FALLBACK_REFERENCE_DATE,
-      maxDate: unionDates.at(-1) || FALLBACK_REFERENCE_DATE,
+      minDate: allDates[0] || FALLBACK_REFERENCE_DATE,
+      maxDate: allDates.at(-1) || FALLBACK_REFERENCE_DATE,
     };
   }, [activePlatforms, datasets, dateBounds]);
 
@@ -187,7 +178,7 @@ export default function MainTimeline({
   const hasData = data.length > 0;
 
   return (
-    <div className="bg-white border border-brand-navy/10 rounded-3xl p-6 shadow-sm space-y-6">
+    <div className="bg-white border border-brand-navy/10 rounded-3xl p-4 sm:p-6 shadow-sm space-y-6">
       {/* Controls Bar */}
       <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4 pb-4 border-b border-brand-navy/5">
         <div className="flex items-center gap-3">
