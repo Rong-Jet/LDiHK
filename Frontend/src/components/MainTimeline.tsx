@@ -28,7 +28,7 @@ interface MainTimelineProps {
   endDate: string;
   setDateRange: (start: string, end: string) => void;
 
-  datasets?: Record<string, { status: string; min_date?: string; max_date?: string }>;
+  datasets?: Record<string, { status: string; min_date?: string; max_date?: string; watch_min_date?: string; watch_max_date?: string }>;
   dateBounds?: { minDate: string; maxDate: string } | null;
   /** `month` when the range is long enough to be charted as monthly averages. */
   granularity?: DateGranularity;
@@ -56,6 +56,47 @@ const PLATFORM_LABELS: Record<string, string> = {
 };
 
 const FALLBACK_REFERENCE_DATE = '2026-06-06';
+
+const PLATFORM_HOURS_KEYS: Record<string, keyof FlattenedTimelineRecord> = {
+  youtube: 'youtubeHours',
+  instagram: 'instagramHours',
+  tiktok: 'tiktokHours',
+  spotify: 'spotifyHours',
+  twitter: 'twitterHours',
+  linkedin: 'linkedinHours',
+};
+
+/** Whether a day (`YYYY-MM-DD`) or month (`YYYY-MM`) bucket lies within a platform's data. */
+export function bucketWithinData(bucket: string, minDate: string, maxDate: string): boolean {
+  if (isYearMonth(bucket)) return bucket >= minDate.slice(0, 7) && bucket <= maxDate.slice(0, 7);
+  return bucket >= minDate && bucket <= maxDate;
+}
+
+/**
+ * Chart rows where a platform's hours are `null` outside the days its watch
+ * data covers (inside, a day without use stays 0). A stacked area draws its
+ * outline along the stack even at 0, so a short export (Instagram keeps views
+ * for weeks, but likes and messages for years) looked like Instagram use
+ * across the whole range; null points are not drawn at all.
+ */
+export function chartRowsWithinData(
+  data: FlattenedTimelineRecord[],
+  datasets?: Record<string, { min_date?: string; max_date?: string; watch_min_date?: string; watch_max_date?: string }>,
+): Record<string, string | number | null>[] {
+  return data.map((row) => {
+    const chartRow: Record<string, string | number | null> = { ...row };
+    for (const [platform, hoursKey] of Object.entries(PLATFORM_HOURS_KEYS)) {
+      const info = datasets?.[platform];
+      // Older backends report only min/max_date (all event types).
+      const minDate = info?.watch_min_date ?? info?.min_date;
+      const maxDate = info?.watch_max_date ?? info?.max_date;
+      if (!minDate || !maxDate || !bucketWithinData(row.date, minDate, maxDate)) {
+        chartRow[hoursKey] = null;
+      }
+    }
+    return chartRow;
+  });
+}
 
 /** Spotify is simulated by the mock routes only; the live backend cannot ingest it yet. */
 const COMING_SOON_PLATFORMS: string[] = usesLocalMockApi ? [] : ['spotify'];
@@ -104,6 +145,8 @@ export default function MainTimeline({
       maxDate: unionDates.at(-1) || FALLBACK_REFERENCE_DATE,
     };
   }, [activePlatforms, datasets, dateBounds]);
+
+  const chartRows = useMemo(() => chartRowsWithinData(data, datasets), [data, datasets]);
 
   const referenceDate = activeDateBounds.maxDate || dateBounds?.maxDate || endDate || FALLBACK_REFERENCE_DATE;
 
@@ -375,7 +418,7 @@ export default function MainTimeline({
         ) : (
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart
-              data={data}
+              data={chartRows}
               margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
               onClick={(state) => {
                 if (state && state.activeLabel !== undefined && state.activeLabel !== null) {

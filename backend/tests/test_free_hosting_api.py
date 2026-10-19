@@ -56,6 +56,8 @@ class SummaryConnection:
                 "last_event_at",
                 "min_date",
                 "max_date",
+                "watch_min_date",
+                "watch_max_date",
             ],
             self.platform_rows,
         )
@@ -114,7 +116,11 @@ class CurrentUserSummaryTests(unittest.TestCase):
         last = datetime(2026, 10, 1, 22, tzinfo=timezone.utc)
         connection = SummaryConnection(
             user_exists=True,
-            platform_rows=[("youtube", 120, 100, first, last, "2019-01-02", "2026-10-02")],
+            platform_rows=[
+                ("youtube", 120, 100, first, last, "2019-01-02", "2026-10-02", "2019-01-02", "2026-10-02"),
+                # Instagram: likes go back years, views only weeks.
+                ("instagram", 900, 80, first, last, "2025-06-16", "2026-10-18", "2026-09-19", "2026-10-18"),
+            ],
         )
         app = _app(lambda: connection)
 
@@ -127,6 +133,9 @@ class CurrentUserSummaryTests(unittest.TestCase):
         self.assertEqual(body["timezone"], "Europe/Berlin")
         self.assertEqual(body["datasets"]["youtube"]["max_date"], "2026-10-02")
         self.assertEqual(body["datasets"]["youtube"]["watch_event_count"], 100)
+        instagram = body["datasets"]["instagram"]
+        self.assertEqual((instagram["min_date"], instagram["watch_min_date"]), ("2025-06-16", "2026-09-19"))
+        self.assertEqual(instagram["watch_max_date"], "2026-10-18")
         self.assertIsNone(body["latest_import"])
         bounds_sql = connection.calls[1][0]
         self.assertIn("AT TIME ZONE 'Europe/Berlin'", bounds_sql)

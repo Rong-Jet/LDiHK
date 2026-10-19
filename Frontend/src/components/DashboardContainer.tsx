@@ -75,6 +75,8 @@ function DashboardContent() {
         status: readyPlatforms.includes(platform) ? 'READY' : 'NOT_UPLOADED',
         min_date: summary?.min_date ?? undefined,
         max_date: summary?.max_date ?? undefined,
+        watch_min_date: summary?.watch_min_date ?? undefined,
+        watch_max_date: summary?.watch_max_date ?? undefined,
       }];
     })
   ), [summaries, readyPlatforms]);

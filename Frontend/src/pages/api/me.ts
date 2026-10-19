@@ -32,6 +32,8 @@ function mockSummary(minDate: string, maxDate: string) {
     last_event_at: `${maxDate}T23:59:59+00:00`,
     min_date: minDate,
     max_date: maxDate,
+    watch_min_date: minDate,
+    watch_max_date: maxDate,
   };
 }
 

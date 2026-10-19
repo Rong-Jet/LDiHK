@@ -473,7 +473,19 @@ def fetch_user_summary(
                     to_char(
                         MAX(ue.occurred_at) AT TIME ZONE {timezone_literal},
                         'YYYY-MM-DD'
-                    ) AS max_date
+                    ) AS max_date,
+                    to_char(
+                        (MIN(ue.occurred_at) FILTER (
+                            WHERE {WATCH_EVENT_SQL.format(alias="ue")}
+                        )) AT TIME ZONE {timezone_literal},
+                        'YYYY-MM-DD'
+                    ) AS watch_min_date,
+                    to_char(
+                        (MAX(ue.occurred_at) FILTER (
+                            WHERE {WATCH_EVENT_SQL.format(alias="ue")}
+                        )) AT TIME ZONE {timezone_literal},
+                        'YYYY-MM-DD'
+                    ) AS watch_max_date
                 FROM usage_events ue
                 WHERE ue.user_id = %s
                   AND ue.is_synthetic = false
@@ -493,6 +505,10 @@ def fetch_user_summary(
             "last_event_at": _isoformat(row.get("last_event_at")),
             "min_date": row.get("min_date"),
             "max_date": row.get("max_date"),
+            # Days with watch-time data: Instagram keeps views for weeks but
+            # likes and messages for years, so these can be much narrower.
+            "watch_min_date": row.get("watch_min_date"),
+            "watch_max_date": row.get("watch_max_date"),
         }
     return {
         "ldihk_id": ldihk_id,

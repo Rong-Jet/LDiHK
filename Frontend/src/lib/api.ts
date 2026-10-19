@@ -228,6 +228,9 @@ export interface DatasetSummary {
   /** YYYY-MM-DD in the timezone requested from /api/me. */
   min_date: string | null;
   max_date: string | null;
+  /** Days with watch-time data (views); narrower than min/max_date for Instagram. */
+  watch_min_date?: string | null;
+  watch_max_date?: string | null;
 }
 
 export interface MeResponse {
