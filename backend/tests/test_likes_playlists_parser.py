@@ -184,5 +184,145 @@ class LikesPlaylistsParserTests(unittest.TestCase):
         self.assertEqual(result.warnings, [])
 
 
+class PlaylistCsvParserTests(unittest.TestCase):
+    def test_current_takeout_playlist_csv_emits_playlist_add_events(self):
+        content = (
+            "Video ID,Playlist Video Creation Timestamp\n"
+            "dQw4w9WgXcQ,2023-01-15T12:34:56+00:00\n"
+            "abcdefghijk,2023-01-16T08:00:00+00:00\n"
+        ).encode("utf-8")
+
+        result = parse_likes_playlists(
+            content,
+            source_path="Takeout/YouTube and YouTube Music/playlists/Road trip-videos.csv",
+        )
+
+        self.assertEqual(result.records_seen, 2)
+        self.assertEqual(result.warnings, [])
+        self.assertEqual(
+            [event.event_type for event in result.events],
+            ["playlist_add", "playlist_add"],
+        )
+        self.assertEqual(
+            [event.video_id for event in result.events], ["dQw4w9WgXcQ", "abcdefghijk"]
+        )
+        self.assertEqual(
+            result.events[0].occurred_at,
+            datetime(2023, 1, 15, 12, 34, 56, tzinfo=timezone.utc),
+        )
+        self.assertEqual([event.product for event in result.events], ["youtube"] * 2)
+        self.assertEqual([event.sequence for event in result.events], [1, 2])
+
+    def test_watch_later_and_liked_csv_names_map_to_existing_event_types(self):
+        content = (
+            "Video ID,Playlist Video Creation Timestamp\n"
+            "dQw4w9WgXcQ,2023-01-15T12:34:56+00:00\n"
+        ).encode("utf-8")
+        cases = {
+            "playlists/Watch later-videos.csv": "watch_later_add",
+            "Playlists/Später ansehen-Videos.csv": "watch_later_add",
+            "playlists/Liked videos-videos.csv": "like",
+            "playlists/Favourites-videos.csv": "playlist_add",
+        }
+
+        for suffix, event_type in cases.items():
+            with self.subTest(suffix=suffix):
+                result = parse_likes_playlists(
+                    content, source_path=f"Takeout/YouTube and YouTube Music/{suffix}"
+                )
+                self.assertEqual(
+                    [event.event_type for event in result.events], [event_type]
+                )
+
+    def test_older_two_block_playlist_csv_is_supported(self):
+        content = (
+            "Playlist Id,Channel Id,Time Created,Time Updated,Title,Description,Visibility\n"
+            "PLabcdefghijklmnopqrstuvwxyz012345,UCabcdefghijklmnopqrstuv,"
+            "2020-01-01 10:00:00 UTC,2020-02-01 10:00:00 UTC,Mix,,Private\n"
+            "\n"
+            "Video Id,Time Added\n"
+            "dQw4w9WgXcQ ,2020-01-02 03:04:05 UTC\n"
+        ).encode("utf-8")
+
+        result = parse_likes_playlists(
+            content, source_path="Takeout/YouTube/playlists/Mix.csv"
+        )
+
+        self.assertEqual(result.records_seen, 1)
+        self.assertEqual(result.warnings, [])
+        self.assertEqual(result.events[0].video_id, "dQw4w9WgXcQ")
+        self.assertEqual(
+            result.events[0].occurred_at,
+            datetime(2020, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+        )
+
+    def test_localized_headers_are_detected_by_values(self):
+        content = (
+            "Identyfikator filmu,Sygnatura czasowa\n"
+            "dQw4w9WgXcQ,2023-01-15T12:34:56+00:00\n"
+        ).encode("utf-8")
+
+        result = parse_likes_playlists(
+            content, source_path="Takeout/YouTube i YouTube Music/playlisty/Mix-filmy.csv"
+        )
+
+        self.assertEqual(result.warnings, [])
+        self.assertEqual([event.video_id for event in result.events], ["dQw4w9WgXcQ"])
+        self.assertEqual(
+            result.events[0].occurred_at,
+            datetime(2023, 1, 15, 12, 34, 56, tzinfo=timezone.utc),
+        )
+
+    def test_playlist_metadata_and_upload_csvs_are_ignored(self):
+        metadata = (
+            "Playlist ID,Add new videos to top,Playlist Title (Original),"
+            "Playlist Title (Original) Language,Playlist Create Timestamp,"
+            "Playlist Update Timestamp,Playlist Video Order,Playlist Visibility\n"
+            "PLabcdefghijklmnopqrstuvwxyz012345,False,Mix,,"
+            "2023-01-15T12:34:56+00:00,2023-01-15T12:34:56+00:00,Manual,Private\n"
+        ).encode("utf-8")
+        uploads = (
+            "Video ID,Playlist Video Creation Timestamp\n"
+            "dQw4w9WgXcQ,2023-01-15T12:34:56+00:00\n"
+        ).encode("utf-8")
+
+        metadata_result = parse_likes_playlists(
+            metadata, source_path="Takeout/YouTube and YouTube Music/playlists/playlists.csv"
+        )
+        uploads_result = parse_likes_playlists(
+            uploads,
+            source_path=(
+                "Takeout/YouTube and YouTube Music/playlists/Uploads from Me-videos.csv"
+            ),
+        )
+
+        for result in (metadata_result, uploads_result):
+            self.assertEqual(result.events, [])
+            self.assertEqual(result.warnings, [])
+            self.assertEqual(result.records_seen, 0)
+
+    def test_csv_rows_without_video_id_or_timestamp_warn(self):
+        content = (
+            "Video ID,Playlist Video Creation Timestamp\n"
+            ",2023-01-15T12:34:56+00:00\n"
+            "dQw4w9WgXcQ,\n"
+        ).encode("utf-8")
+
+        result = parse_likes_playlists(
+            content, source_path="Takeout/YouTube and YouTube Music/playlists/Mix-videos.csv"
+        )
+
+        self.assertEqual(result.records_seen, 2)
+        self.assertEqual(
+            result.warnings,
+            [
+                ParseWarning(code="missing_video_id", sample="record 1"),
+                ParseWarning(code="missing_timestamp", sample="record 2"),
+            ],
+        )
+        self.assertEqual(len(result.events), 1)
+        self.assertIsNone(result.events[0].occurred_at)
+
+
 if __name__ == "__main__":
     unittest.main()

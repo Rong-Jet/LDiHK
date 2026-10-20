@@ -168,14 +168,10 @@ class UrllibJsonHttpClient:
 class Boto3S3Uploader:
     def __init__(self, client=None) -> None:
         if client is None:
-            try:
-                import boto3
-            except ModuleNotFoundError as error:  # pragma: no cover - env-dependent
-                raise RuntimeError(
-                    "boto3 is required for --upload-fixture; install dependencies "
-                    "or provide an existing --s3-key"
-                ) from error
-            client = boto3.client("s3")
+            from backend.ingestion.s3 import create_boto3_s3_client
+
+            # Honours S3_ENDPOINT_URL, so the smoke test also works with R2.
+            client = create_boto3_s3_client()
         self._client = client
 
     def upload_zip(self, bucket: str, key: str, body: bytes) -> None:

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import csv
 import json
 import re
+import unicodedata
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from io import StringIO
 from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -60,11 +63,63 @@ CREATOR_PLAYLIST_FILENAMES = {
     "uploadedvideos",
     "myuploads",
 }
+CREATOR_PLAYLIST_PREFIXES = ("uploadsfrom",)
+
+# Accent-folded, alphanumeric-only playlist file stems (after removing the
+# "-videos" suffix of current Takeout CSV names) per event type.
+LIKED_PLAYLIST_SLUGS = {
+    "likes",
+    "likedvideos",
+    "likedmusic",
+    "videosquemegustan",  # es
+    "videosjaime",  # fr
+    "videopiaciuti",  # it
+    "videosmarcadoscomgostei",  # pt
+    "videosquecurti",
+    "videosdieikleukvind",  # nl
+    "positivbewertetevideos",  # de
+    "videosdiemirgefallen",
+    "magichvideos",
+}
+WATCH_LATER_PLAYLIST_SLUGS = {
+    "watchlater",
+    "spateransehen",  # de "Spaeter ansehen"
+    "spaeteransehen",
+    "vermastarde",  # es "Ver mas tarde"
+    "aregarderplustard",  # fr "A regarder plus tard"
+    "guardapiutardi",  # it "Guarda piu tardi"
+    "assistirmaistarde",  # pt "Assistir mais tarde"
+    "verdepois",
+    "laterbekijken",  # nl "Later bekijken"
+}
+PLAYLIST_METADATA_SLUGS = {"playlists", "playlist"}
+CSV_VIDEO_SUFFIX_RE = re.compile(r"[-_]v[i\u00ed]deos?$", re.IGNORECASE)
+CSV_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+CSV_VIDEO_ID_HEADERS = {
+    "videoid",
+    "idvideo",
+    "iddelvideo",  # es / it
+    "iddevideo",
+    "idduvideo",  # fr
+    "iddelavideo",
+    "iddovideo",  # pt
+}
+CSV_TIMESTAMP_HEADERS = {
+    "playlistvideocreationtimestamp",
+    "timeadded",
+    "dateadded",
+    "addedat",
+    "videoaddedtimestamp",
+    "videocreationtimestamp",
+}
 
 
 def parse_likes_playlists(content: bytes, *, source_path: str) -> ParseResult:
     if _is_creator_playlist_source(source_path):
         return _empty_result()
+
+    if source_path.replace("\\", "/").lower().endswith(".csv"):
+        return _parse_playlist_csv(content, source_path=source_path)
 
     text, decode_warnings = _decode_content(content)
     try:
@@ -117,6 +172,150 @@ def parse_likes_playlists(content: bytes, *, source_path: str) -> ParseResult:
     )
 
 
+def _parse_playlist_csv(content: bytes, *, source_path: str) -> ParseResult:
+    """Parse a Takeout playlist CSV.
+
+    Current Takeout writes one "<Playlist>-videos.csv" per playlist with a
+    "Video ID,Playlist Video Creation Timestamp" header; older exports put a
+    playlist metadata block ("Playlist Id,...") and a blank line above a
+    "Video Id,Time Added" block.  Headers are localised, so the video id
+    column is also recognised by its values (11-character YouTube ids).
+    "playlists.csv" only describes the playlists and yields no events.
+    """
+    text, warnings = _decode_content(content)
+    rows = [
+        [cell.strip() for cell in row]
+        for row in csv.reader(StringIO(text))
+        if any(cell.strip() for cell in row)
+    ]
+    del text
+    if not rows:
+        return _empty_result(warnings)
+
+    layout = _csv_layout(rows)
+    if layout is None:
+        if _source_stem_slug(source_path) in PLAYLIST_METADATA_SLUGS or any(
+            "playlist" in _normalize_header(cell) for cell in rows[0]
+        ):
+            return _empty_result(warnings)
+        warnings.append(ParseWarning(code="csv_shape_unsupported", sample=None))
+        return _empty_result(warnings)
+
+    header_index, video_column, timestamp_column, strict = layout
+    event_type = _event_type_for_source(source_path)
+    events: list[ParsedEvent] = []
+    records_seen = 0
+
+    for row in rows[header_index + 1 :]:
+        video_id = row[video_column] if video_column < len(row) else ""
+        if not strict and not CSV_VIDEO_ID_RE.match(video_id):
+            # Value-detected layout: non-id rows are headers / metadata.
+            continue
+
+        records_seen += 1
+        sample = _sample(records_seen)
+        if not video_id:
+            warnings.append(ParseWarning(code="missing_video_id", sample=sample))
+            continue
+
+        raw_timestamp = (
+            row[timestamp_column]
+            if timestamp_column is not None and timestamp_column < len(row)
+            else ""
+        )
+        if raw_timestamp:
+            occurred_at, timestamp_warning = _parse_csv_timestamp(raw_timestamp)
+        else:
+            occurred_at, timestamp_warning = None, "missing_timestamp"
+        if timestamp_warning is not None:
+            warnings.append(ParseWarning(code=timestamp_warning, sample=sample))
+
+        events.append(
+            ParsedEvent(
+                event_type=event_type,
+                product="youtube",
+                occurred_at=occurred_at,
+                video_id=video_id,
+                sequence=records_seen,
+            )
+        )
+
+    return ParseResult(
+        events=events,
+        subscriptions=[],
+        warnings=warnings,
+        records_seen=records_seen,
+    )
+
+
+def _csv_layout(rows: list[list[str]]) -> tuple[int, int, int | None, bool] | None:
+    """Return (header row index, video column, timestamp column, strict)."""
+    for index, row in enumerate(rows):
+        normalized = [_normalize_header(cell) for cell in row]
+        for column, header in enumerate(normalized):
+            if header in CSV_VIDEO_ID_HEADERS:
+                return (
+                    index,
+                    column,
+                    _csv_timestamp_column(normalized, rows[index + 1 :], column),
+                    True,
+                )
+
+    data_rows = rows[1:]
+    if not data_rows:
+        return None
+    width = max(len(row) for row in data_rows)
+    for column in range(width):
+        values = [row[column] for row in data_rows if column < len(row) and row[column]]
+        matches = sum(1 for value in values if CSV_VIDEO_ID_RE.match(value))
+        if matches and matches * 2 > len(data_rows):
+            first_match = next(
+                index
+                for index, row in enumerate(rows)
+                if index > 0 and column < len(row) and CSV_VIDEO_ID_RE.match(row[column])
+            )
+            header = [_normalize_header(cell) for cell in rows[first_match - 1]]
+            return (
+                first_match - 1,
+                column,
+                _csv_timestamp_column(header, rows[first_match:], column),
+                False,
+            )
+    return None
+
+
+def _csv_timestamp_column(
+    normalized_header: list[str], data_rows: list[list[str]], video_column: int
+) -> int | None:
+    for column, header in enumerate(normalized_header):
+        if column != video_column and header in CSV_TIMESTAMP_HEADERS:
+            return column
+
+    sample_row = data_rows[0] if data_rows else []
+    for column, value in enumerate(sample_row):
+        if column == video_column or not value:
+            continue
+        if _parse_csv_timestamp(value)[0] is not None:
+            return column
+    return None
+
+
+def _parse_csv_timestamp(value: str) -> tuple[datetime | None, str | None]:
+    normalized = value.strip()
+    if normalized.upper().endswith(" UTC"):
+        normalized = f"{normalized[:-4].strip()}+00:00"
+    return _parse_iso_timestamp(normalized)
+
+
+def _normalize_header(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", _fold(value))
+
+
+def _fold(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value.casefold())
+    return "".join(char for char in decomposed if not unicodedata.combining(char))
+
+
 def _parse_playlist_entry(
     record: Mapping[str, Any],
     *,
@@ -150,10 +349,10 @@ def _parse_playlist_entry(
 
 def _decode_content(content: bytes) -> tuple[str, list[ParseWarning]]:
     try:
-        return content.decode("utf-8"), []
+        return content.decode("utf-8-sig"), []
     except UnicodeDecodeError:
         return (
-            content.decode("utf-8", errors="replace"),
+            content.decode("utf-8-sig", errors="replace"),
             [ParseWarning(code="invalid_utf8", sample=None)],
         )
 
@@ -229,21 +428,28 @@ def _is_playlist_metadata_records(records: list[Any]) -> bool:
 
 def _event_type_for_source(source_path: str) -> str:
     source_slug = _source_stem_slug(source_path)
-    if source_slug in {"likes", "likedvideos"}:
+    if source_slug in LIKED_PLAYLIST_SLUGS:
         return "like"
-    if source_slug == "watchlater":
+    if source_slug in WATCH_LATER_PLAYLIST_SLUGS:
         return "watch_later_add"
     return "playlist_add"
 
 
 def _is_creator_playlist_source(source_path: str) -> bool:
-    return _source_stem_slug(source_path) in CREATOR_PLAYLIST_FILENAMES
+    source_slug = _source_stem_slug(source_path)
+    return source_slug in CREATOR_PLAYLIST_FILENAMES or source_slug.startswith(
+        CREATOR_PLAYLIST_PREFIXES
+    )
 
 
 def _source_stem_slug(source_path: str) -> str:
     normalized_path = source_path.replace("\\", "/").strip("/")
-    stem = PurePosixPath(normalized_path).stem
-    return re.sub(r"[^a-z0-9]+", "", stem.lower())
+    path = PurePosixPath(normalized_path)
+    stem = path.stem
+    if path.suffix.lower() == ".csv":
+        # Current Takeout names playlist CSVs "<Playlist title>-videos.csv".
+        stem = CSV_VIDEO_SUFFIX_RE.sub("", stem)
+    return re.sub(r"[^a-z0-9]+", "", _fold(stem))
 
 
 def _record_video_id(record: Mapping[str, Any]) -> str | None:
@@ -481,10 +687,10 @@ def _sample(sequence: int) -> str:
     return f"record {sequence}"
 
 
-def _empty_result() -> ParseResult:
+def _empty_result(warnings: list[ParseWarning] | None = None) -> ParseResult:
     return ParseResult(
         events=[],
         subscriptions=[],
-        warnings=[],
+        warnings=list(warnings or []),
         records_seen=0,
     )

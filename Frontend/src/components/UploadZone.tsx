@@ -1,110 +1,47 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { UploadCloud, CheckCircle2, AlertTriangle, RefreshCw, Database, Lock, Shield, Copy } from 'lucide-react';
-import { apiRoutes, authHeaders, jsonHeaders } from '../lib/api';
+import React, { useState, useRef } from 'react';
+import { UploadCloud, CheckCircle2, AlertTriangle, RefreshCw, Database, Lock, Shield, Copy, Scissors } from 'lucide-react';
+import { generateLdihkId } from '../lib/ldihkId';
+import { formatFileSize, MAX_UPLOAD_BYTES, useUploadController } from '../hooks/useUploadController';
+import { ProfileFields } from './ProfileCard';
+import ExportGuide, { type GuidePlatform } from './ExportGuide';
+import { EMPTY_PROFILE } from '../lib/profile';
+import type { UserProfile } from '../lib/api';
 
 interface UploadZoneProps {
-  onUploadComplete: (s3Key: string, s3Bucket: string, sessionToken: string) => Promise<void> | void;
   sessionToken: string | null;
   onSessionGenerated?: (newSessionToken: string) => void;
+  /** Opens the export guide on this platform (after a failed import). */
+  guideFocus?: GuidePlatform | null;
 }
 
-const ADJECTIVES = [
-  'cosmic', 'quantum', 'aurora', 'cyber', 'neon', 'stellar', 'plasma', 'shadow',
-  'solar', 'vortex', 'emerald', 'sapphire', 'obsidian', 'spectral', 'lunar',
-  'hyper', 'alpha', 'omega', 'magnetic', 'crypto'
-];
-const NOUNS = [
-  'pegasus', 'nebula', 'hawk', 'leopard', 'viper', 'phoenix', 'cyclone', 'glider',
-  'pulsar', 'comet', 'horizon', 'phantom', 'beacon', 'titan', 'matrix', 'falcon',
-  'griffin', 'sentinel', 'orion'
-];
-const VERBS = [
-  'gliding', 'soaring', 'beaming', 'echoing', 'surging', 'orbiting', 'hunting',
-  'pulsing', 'flaring', 'shining', 'blazing', 'drifting'
-];
-
-function generateCoolId(): string {
-  const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)];
-  const noun = NOUNS[Math.floor(Math.random() * NOUNS.length)];
-  const verb = VERBS[Math.floor(Math.random() * VERBS.length)];
-  return `ldihk-${adj}-${noun}-${verb}`;
-}
-
-function parseS3BucketAndKey(url: string, headers: any): { bucket: string, key: string } {
-  let key = headers?.['x-amz-s3-key'] || '';
-  let bucket = '';
-
-  try {
-    const urlObj = new URL(url);
-    const hostname = urlObj.hostname;
-    const pathname = urlObj.pathname;
-
-    if (hostname.includes('.s3')) {
-      bucket = hostname.split('.s3')[0];
-      if (!key) {
-        key = decodeURIComponent(pathname.substring(1));
-      }
-    } else {
-      const parts = pathname.substring(1).split('/');
-      bucket = parts[0];
-      if (!key) {
-        key = decodeURIComponent(parts.slice(1).join('/'));
-      }
-    }
-  } catch (e) {
-    console.error("Failed to parse S3 URL:", e);
-  }
-
-  if (key.includes('?')) {
-    key = key.split('?')[0];
-  }
-
-  return { bucket, key };
-}
-
-export default function UploadZone({ onUploadComplete, sessionToken, onSessionGenerated }: UploadZoneProps) {
+export default function UploadZone({ sessionToken, onSessionGenerated, guideFocus = null }: UploadZoneProps) {
+  const upload = useUploadController();
   const [dragActive, setDragActive] = useState(false);
-  const [status, setStatus] = useState<'IDLE' | 'UPLOADING' | 'SUCCESS' | 'ERROR'>('IDLE');
-  const [progress, setProgress] = useState(0);
-  const [errorMessage, setErrorMessage] = useState('');
-  const [fileName, setFileName] = useState('');
-  const [fileSize, setFileSize] = useState('');
+  const [localError, setLocalError] = useState('');
   const [showWarningModal, setShowWarningModal] = useState(false);
   const [showIdPromptModal, setShowIdPromptModal] = useState(false);
   const [generatedId, setGeneratedId] = useState('');
   const [copiedId, setCopiedId] = useState(false);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
+  // Optional age range / sex, asked once when a new workspace is created.
+  const [newProfile, setNewProfile] = useState<UserProfile>(EMPTY_PROFILE);
 
-  const uploadXhr = useRef<XMLHttpRequest | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const registerFormRef = useRef<HTMLFormElement>(null);
   const [generatedIdForForm, setGeneratedIdForForm] = useState('');
-  const [isMock, setIsMock] = useState<boolean | null>(null);
 
-  useEffect(() => {
-    fetch(apiRoutes.uploaderInfo())
-      .then((res) => {
-        if (!res.ok) throw new Error();
-        return res.json();
-      })
-      .then((data) => setIsMock(data.isMock))
-      .catch((err) => {
-        console.error('Failed to retrieve uploader info:', err);
-        setIsMock(null);
-      });
-  }, []);
+  const { phase, progress, fileName, originalSize, uploadSize, slimNote, isBusy, isMock } = upload;
+  const errorMessage = localError || upload.errorMessage;
+  const showError = !!localError || phase === 'ERROR';
 
-  const formatFileSize = (bytes: number) => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  const resetFileInput = () => {
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   const handleDrag = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (isBusy) return;
     if (e.type === 'dragenter' || e.type === 'dragover') {
       setDragActive(true);
     } else if (e.type === 'dragleave') {
@@ -112,91 +49,78 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
     }
   };
 
+  const acceptFile = (file: File) => {
+    if (isBusy) return; // one upload at a time
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      setLocalError('Only ZIP files (.zip) are supported.');
+      resetFileInput();
+      return;
+    }
+    setLocalError('');
+    setPendingFile(file);
+    // Every archive upload requires the privacy & consent agreement first.
+    setShowWarningModal(true);
+  };
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setDragActive(false);
-
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      const file = e.dataTransfer.files[0];
-      if (!file.name.toLowerCase().endsWith('.zip')) {
-        setStatus('ERROR');
-        setErrorMessage('Only ZIP files (.zip) are supported.');
-        return;
-      }
-      setPendingFile(file);
-      
-      // If user is not logged in OR uploading a zip file, show privacy warning modal
-      if (!sessionToken || file.name.toLowerCase().endsWith('.zip') || file.type === 'application/zip') {
-        setShowWarningModal(true);
-      } else {
-        startUploadFlow(file, sessionToken);
-      }
+      acceptFile(e.dataTransfer.files[0]);
     }
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      if (!file.name.toLowerCase().endsWith('.zip')) {
-        setStatus('ERROR');
-        setErrorMessage('Only ZIP files (.zip) are supported.');
-        return;
-      }
-      setPendingFile(file);
-      
-      if (!sessionToken || file.name.toLowerCase().endsWith('.zip') || file.type === 'application/zip') {
-        setShowWarningModal(true);
-      } else {
-        startUploadFlow(file, sessionToken);
-      }
+      acceptFile(e.target.files[0]);
     }
   };
 
   const handleConfirmWarning = () => {
     setShowWarningModal(false);
-    
+
     if (!sessionToken) {
       // Generate ID and show the ID prompt modal to make them note it down
-      const newId = generateCoolId();
+      const newId = generateLdihkId();
       setGeneratedId(newId);
       setGeneratedIdForForm(newId);
       setShowIdPromptModal(true);
     } else {
       if (pendingFile) {
-        startUploadFlow(pendingFile, sessionToken);
+        upload.start(pendingFile, sessionToken);
       }
       setPendingFile(null);
+      resetFileInput();
     }
   };
 
   const handleCancelWarning = () => {
     setShowWarningModal(false);
     setPendingFile(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+    resetFileInput();
   };
 
   const handleConfirmIdPrompt = () => {
     setShowIdPromptModal(false);
-    
+
     // 1. Submit hidden form to prompt browser password manager
     if (registerFormRef.current) {
       const btn = registerFormRef.current.querySelector('button');
       if (btn) btn.click();
     }
-    
-    // 2. Set token in parent component state
+
+    // 2. Start the upload first: it runs in the shared upload controller, so it
+    //    keeps going (and stays visible) when the parent swaps layouts below.
+    if (pendingFile) {
+      upload.start(pendingFile, generatedId, newProfile);
+    }
+    setPendingFile(null);
+
+    // 3. Set token in parent component state (this may unmount this component)
     if (onSessionGenerated) {
       onSessionGenerated(generatedId);
     }
-    
-    // 3. Start file upload
-    if (pendingFile) {
-      startUploadFlow(pendingFile, generatedId);
-    }
-    setPendingFile(null);
   };
 
   const handleCancelIdPrompt = () => {
@@ -204,9 +128,7 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
     setGeneratedId('');
     setGeneratedIdForForm('');
     setPendingFile(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+    resetFileInput();
   };
 
   const copyIdToClipboard = () => {
@@ -217,106 +139,13 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
     }
   };
 
-  const startUploadFlow = async (file: File, activeToken: string) => {
-    setStatus('UPLOADING');
-    setProgress(0);
-    setErrorMessage('');
-    setFileName(file.name);
-    setFileSize(formatFileSize(file.size));
-
-    try {
-      // 1. Fetch pre-signed S3 upload url (mocked locally via authenticated POST)
-      const response = await fetch(apiRoutes.uploadUrl(), {
-        method: 'POST',
-        headers: {
-          ...jsonHeaders,
-          ...authHeaders(activeToken),
-        },
-        body: JSON.stringify({
-          filename: file.name,
-          contentType: file.type || 'application/zip',
-        })
-      });
-      
-      if (!response.ok) {
-        throw new Error('Failed to retrieve upload configuration credentials.');
-      }
-      
-      const { url, method, headers, s3Bucket, s3Key, isMock: respIsMock } = await response.json();
-      if (respIsMock !== undefined) {
-        setIsMock(respIsMock);
-      }
-
-      // 2. Perform direct binary PUT upload bypassing local web server
-      const xhr = new XMLHttpRequest();
-      uploadXhr.current = xhr;
-      
-      xhr.open(method, url, true);
-
-      // Set headers returned by the presigned URL generator
-      if (headers) {
-        Object.entries(headers).forEach(([key, value]) => {
-          xhr.setRequestHeader(key, value as string);
-        });
-      }
-
-      // Track progress
-      xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable) {
-          const percentage = Math.round((event.loaded / event.total) * 100);
-          setProgress(percentage);
-        }
-      };
-
-      // Handle response
-      xhr.onload = async () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          const { bucket, key } = parseS3BucketAndKey(url, headers);
-          const finalBucket = s3Bucket || bucket || 'local-mock-bucket';
-          const finalKey = s3Key || key || headers?.['x-amz-s3-key'] || `uploads/${activeToken}/${file.name}`;
-          try {
-            await onUploadComplete(finalKey, finalBucket, activeToken);
-            setStatus('SUCCESS');
-            setProgress(100);
-          } catch (err: any) {
-            console.error('Error registering import:', err);
-            setStatus('ERROR');
-            setErrorMessage(err.message || 'Upload completed, but import registration failed.');
-          }
-        } else {
-          setStatus('ERROR');
-          setErrorMessage(`Server responded with status code: ${xhr.status}`);
-        }
-      };
-
-      // Handle network errors
-      xhr.onerror = () => {
-        setStatus('ERROR');
-        setErrorMessage('Network connection lost during upload stream.');
-      };
-
-      // Set timeout boundaries (e.g. 5 minutes for massive files)
-      xhr.timeout = 300000;
-      xhr.ontimeout = () => {
-        setStatus('ERROR');
-        setErrorMessage('Upload request timed out (5-minute threshold exceeded).');
-      };
-
-      xhr.send(file);
-    } catch (err: any) {
-      console.error(err);
-      setStatus('ERROR');
-      setErrorMessage(err.message || 'An unexpected error occurred during uploader initiation.');
-    }
+  const resetDropzone = () => {
+    setLocalError('');
+    upload.reset();
+    resetFileInput();
   };
 
-  const cancelUpload = () => {
-    if (uploadXhr.current) {
-      uploadXhr.current.abort();
-      setStatus('IDLE');
-      setProgress(0);
-    }
-  };
+  const showIdle = !showError && (phase === 'IDLE');
 
   return (
     <div className="w-full max-w-2xl mx-auto">
@@ -324,7 +153,7 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
         className={`relative rounded-3xl p-8 border-2 border-dashed transition-all duration-200 ${
           dragActive
             ? 'border-brand-teal bg-brand-teal/5'
-            : status === 'UPLOADING'
+            : isBusy
             ? 'border-brand-navy/20 bg-brand-beige/20'
             : 'border-brand-navy/30 bg-brand-beige/40 hover:bg-brand-beige/60'
         }`}
@@ -336,18 +165,18 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
         {isMock !== null && (
           <div className="absolute top-4 right-4 z-10">
             <span className={`inline-flex items-center gap-1.5 text-[9px] font-black uppercase tracking-wider px-2.5 py-1 rounded-full border shadow-sm ${
-              isMock 
-                ? 'bg-amber-50/80 text-amber-800 border-amber-200' 
+              isMock
+                ? 'bg-amber-50/80 text-amber-800 border-amber-200'
                 : 'bg-emerald-50/80 text-emerald-800 border-emerald-200'
             }`}>
               <span className={`w-1.5 h-1.5 rounded-full ${
                 isMock ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500 animate-pulse'
               }`}></span>
-              {isMock ? 'Mock Ingestion' : 'AWS S3 Live Ingestion'}
+              {isMock ? 'Mock Ingestion' : 'Live Cloud Ingestion'}
             </span>
           </div>
         )}
-        {status === 'IDLE' && (
+        {showIdle && (
           <div className="flex flex-col items-center justify-center py-8 text-center">
             <div className="w-14 h-14 rounded-2xl bg-white border border-brand-navy/10 flex items-center justify-center text-brand-teal mb-4 shadow-sm">
               <UploadCloud className="w-7 h-7" />
@@ -356,7 +185,7 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
               Drag & Drop your platform archive here
             </p>
             <p className="text-xs text-brand-navy/60 mb-6">
-              Supports standard dataset ZIP files containing event metrics
+              The ZIP export from YouTube (Google Takeout), Instagram or TikTok, unchanged (max {formatFileSize(MAX_UPLOAD_BYTES)} after removing videos and photos)
             </p>
             <label className="px-5 py-2.5 rounded-xl bg-brand-teal text-white font-bold text-sm cursor-pointer hover:bg-brand-teal/95 shadow-md shadow-brand-teal/15 transition-all hover:-translate-y-0.5 duration-150">
               Browse Files
@@ -364,84 +193,101 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
                 ref={fileInputRef}
                 type="file"
                 className="hidden"
-                accept=".zip"
+                accept=".zip,application/zip"
                 onChange={handleFileChange}
               />
             </label>
           </div>
         )}
 
-        {status === 'UPLOADING' && (
+        {!showError && (phase === 'SLIMMING' || phase === 'UPLOADING' || phase === 'REGISTERING') && (
           <div className="space-y-6 py-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-xl bg-brand-teal/10 flex items-center justify-center text-brand-teal">
-                  <RefreshCw className="w-5 h-5 animate-spin" />
+                  {phase === 'SLIMMING' ? <Scissors className="w-5 h-5" /> : <RefreshCw className="w-5 h-5 animate-spin" />}
                 </div>
                 <div className="text-left">
                   <span className="font-bold text-brand-navy text-sm block truncate max-w-xs">{fileName}</span>
-                  <span className="text-xs text-brand-navy/60 block">{fileSize}</span>
+                  <span className="text-xs text-brand-navy/60 block">
+                    {uploadSize && uploadSize !== originalSize
+                      ? `${formatFileSize(originalSize)} -> ${formatFileSize(uploadSize)}`
+                      : formatFileSize(originalSize)}
+                  </span>
                 </div>
               </div>
-              <button
-                onClick={cancelUpload}
-                className="text-xs font-semibold text-brand-peach hover:text-brand-peach/85 transition-colors border border-brand-peach/30 px-3 py-1.5 rounded-lg bg-white"
-              >
-                Abort Upload
-              </button>
+              {phase !== 'REGISTERING' && (
+                <button
+                  onClick={upload.cancel}
+                  className="text-xs font-semibold text-brand-peach hover:text-brand-peach/85 transition-colors border border-brand-peach/30 px-3 py-1.5 rounded-lg bg-white cursor-pointer"
+                >
+                  Abort Upload
+                </button>
+              )}
             </div>
 
             {/* Progress Bar Container */}
             <div className="space-y-2">
               <div className="flex justify-between items-center text-xs font-bold text-brand-navy">
-                <span>Direct Binary Upload (Bypassing Ingress)</span>
+                <span>
+                  {phase === 'SLIMMING'
+                    ? 'Removing videos and photos from the archive…'
+                    : phase === 'REGISTERING'
+                    ? 'Registering import with the analytics server…'
+                    : 'Direct Binary Upload (Bypassing Ingress)'}
+                </span>
                 <span>{progress}%</span>
               </div>
               <div className="w-full bg-brand-navy/10 rounded-full h-3 overflow-hidden">
                 <div
-                  className="bg-brand-teal h-full rounded-full transition-all duration-150"
+                  className={`h-full rounded-full transition-all duration-150 ${phase === 'SLIMMING' ? 'bg-brand-peach' : 'bg-brand-teal'}`}
                   style={{ width: `${progress}%` }}
                 ></div>
               </div>
+              {slimNote && phase !== 'SLIMMING' && (
+                <p className="text-[10px] text-brand-navy/60 text-left">{slimNote}</p>
+              )}
             </div>
           </div>
         )}
 
-        {status === 'SUCCESS' && (
+        {!showError && phase === 'SUCCESS' && (
           <div className="flex flex-col items-center justify-center py-6 text-center space-y-4">
             <div className="w-14 h-14 rounded-full bg-brand-teal/10 flex items-center justify-center text-brand-teal shadow-inner">
               <CheckCircle2 className="w-8 h-8" />
             </div>
             <div>
-              <p className="font-bold text-brand-navy text-base">Ingestion Completed Successfully</p>
+              <p className="font-bold text-brand-navy text-base">Upload Complete — Processing Started</p>
               <p className="text-xs text-brand-navy/60 mt-1">
-                File: {fileName} ({fileSize})
+                File: {fileName} ({formatFileSize(uploadSize || originalSize)})
               </p>
+              {slimNote && <p className="text-[10px] text-brand-navy/50 mt-1 max-w-md">{slimNote}</p>}
             </div>
             <button
-              onClick={() => setStatus('IDLE')}
-              className="text-xs font-bold text-brand-teal hover:underline"
+              onClick={resetDropzone}
+              className="text-xs font-bold text-brand-teal hover:underline cursor-pointer"
             >
               Upload another file
             </button>
           </div>
         )}
 
-        {status === 'ERROR' && (
+        {showError && (
           <div className="flex flex-col items-center justify-center py-6 text-center space-y-4">
             <div className="w-14 h-14 rounded-full bg-brand-peach/10 flex items-center justify-center text-brand-peach">
               <AlertTriangle className="w-8 h-8" />
             </div>
             <div>
               <p className="font-bold text-brand-navy text-base">Pipeline Ingestion Failed</p>
-              <p className="text-xs text-brand-peach mt-1 max-w-md font-semibold">
+              <p className="text-xs text-brand-peach mt-1 max-w-md font-semibold break-words">
                 {errorMessage}
               </p>
+              {slimNote && !localError && <p className="text-[10px] text-brand-navy/50 mt-1 max-w-md">{slimNote}</p>}
             </div>
             <div className="flex items-center gap-3">
               <button
-                onClick={() => setStatus('IDLE')}
-                className="px-4 py-2 rounded-xl bg-brand-navy text-white font-bold text-xs hover:bg-brand-navy/90"
+                onClick={resetDropzone}
+                className="px-4 py-2 rounded-xl bg-brand-navy text-white font-bold text-xs hover:bg-brand-navy/90 cursor-pointer"
               >
                 Reset Dropzone
               </button>
@@ -450,10 +296,12 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
         )}
       </div>
 
+      <ExportGuide focus={guideFocus} />
+
       {/* Privacy & Consent Warning Modal */}
       {showWarningModal && pendingFile && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-brand-navy/40 backdrop-blur-sm animate-fade-in">
-          <div className="bg-white border border-brand-navy/10 rounded-3xl p-6 sm:p-8 max-w-lg w-full shadow-2xl space-y-6 relative overflow-hidden animate-scale-up text-left">
+          <div className="bg-white border border-brand-navy/10 rounded-3xl p-6 sm:p-8 max-w-lg w-full max-h-[calc(100vh-2rem)] overflow-y-auto shadow-2xl space-y-6 relative animate-scale-up text-left">
             {/* Visual top accent bar */}
             <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-brand-teal via-brand-peach to-brand-teal"></div>
             
@@ -492,10 +340,28 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
                 <Lock className="w-5 h-5 text-brand-teal shrink-0 mt-0.5" />
                 <div className="text-xs text-brand-navy/80 leading-relaxed">
                   <strong className="block text-brand-teal font-bold mb-0.5">Anonymous Storage:</strong>
-                  No personal names, user handles, or account markers are stored. All database records are fully <span className="font-semibold text-brand-teal">anonymous</span>.
+                  No personal names, user handles, or account markers are stored. All database records are fully <span className="font-semibold text-brand-teal">anonymous</span>, and you can delete everything at any time with "Delete My Data" in the console.
                 </div>
               </div>
             </div>
+
+            <p className="text-[11px] text-brand-navy/60 leading-relaxed">
+              By selecting "Agree &amp; Upload" you explicitly consent to the analysis of your export, including mental-health-related
+              indicators, as described in our{' '}
+              <a href="/privacy" target="_blank" rel="noopener" className="text-brand-teal underline">Privacy Policy</a>, and accept the{' '}
+              <a href="/terms" target="_blank" rel="noopener" className="text-brand-teal underline">Terms of Service</a>.
+              You can withdraw at any time with "Delete My Data". The results are not medical advice.
+            </p>
+
+            {!sessionToken && (
+              <div className="space-y-2 p-3.5 rounded-2xl bg-white border border-brand-navy/10">
+                <div className="text-xs text-brand-navy/80 leading-relaxed">
+                  <strong className="block text-brand-navy font-bold mb-0.5">Optional: age range and sex</strong>
+                  Lets us compare you with people of similar age and sex instead of everyone. You can change or remove it later in the console.
+                </div>
+                <ProfileFields value={newProfile} onChange={setNewProfile} idPrefix="upload-profile" />
+              </div>
+            )}
 
             {/* Call to Actions */}
             <div className="flex flex-col sm:flex-row gap-3 pt-4 border-t border-brand-navy/5">
@@ -592,24 +458,24 @@ export default function UploadZone({ onUploadComplete, sessionToken, onSessionGe
         </div>
       )}
       {/* Hidden registration form to trigger browser credential saving */}
-      <form 
-        ref={registerFormRef} 
-        style={{ display: 'none' }} 
+      <form
+        ref={registerFormRef}
+        style={{ display: 'none' }}
         onSubmit={(e) => e.preventDefault()}
       >
-        <input 
-          type="text" 
-          name="username" 
-          value="LDiHK User" 
-          readOnly 
-          autoComplete="username" 
+        <input
+          type="text"
+          name="username"
+          value="LDiHK User"
+          readOnly
+          autoComplete="username"
         />
-        <input 
-          type="password" 
-          name="password" 
-          value={generatedIdForForm} 
-          readOnly 
-          autoComplete="new-password" 
+        <input
+          type="password"
+          name="password"
+          value={generatedIdForForm}
+          readOnly
+          autoComplete="new-password"
         />
         <button type="submit">Register</button>
       </form>

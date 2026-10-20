@@ -1,3 +1,4 @@
+import { formatMinutes } from '../lib/dates';
 import React from 'react';
 import { Clock, Info } from 'lucide-react';
 
@@ -37,9 +38,11 @@ export default function BehavioralHeatmap({
   };
 
   const isAveraged = dayCount > 1;
+  // Hour cells hold at most 60 minutes per day: minutes read better than 0.3h.
+  const minutes = (hours: number) => formatMinutes(hours);
 
   return (
-    <div className="bg-white border border-brand-navy/10 rounded-3xl p-6 shadow-sm space-y-6">
+    <div className="bg-white border border-brand-navy/10 rounded-3xl p-4 sm:p-6 shadow-sm space-y-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4 border-b border-brand-navy/5">
         <div className="flex items-center gap-3">
@@ -96,7 +99,7 @@ export default function BehavioralHeatmap({
                       {displayHour} {ampm}
                     </span>
                     <span className="text-xs font-black tracking-tight mt-1">
-                      {cell.value > 0 ? `${cell.value.toFixed(1)}h` : '-'}
+                      {cell.value > 0 ? minutes(cell.value) : '-'}
                     </span>
 
                     {/* Tooltip on Hover */}
@@ -107,8 +110,8 @@ export default function BehavioralHeatmap({
                       </div>
                       <p className="text-white/80 font-bold">
                         {isAveraged 
-                          ? `Avg Watchtime: ${cell.value.toFixed(2)} hrs/day`
-                          : `Watchtime: ${cell.value.toFixed(2)} hrs`
+                          ? `Avg Watchtime: ${minutes(cell.value)}/day`
+                          : `Watchtime: ${minutes(cell.value)}`
                         }
                       </p>
                       <p className="text-[10px] text-white/60 mt-1">

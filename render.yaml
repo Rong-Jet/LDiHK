@@ -1,0 +1,48 @@
+# Render Blueprint for the free LDiHK backend: one free Docker web service
+# that also runs the import and enrichment workers as background threads.
+# Secrets marked `sync: false` are entered in the Render dashboard.
+#
+# Release rule: this service deploys the `main` branch, which is the live
+# site. Changes reach `main` only after the project owner has tested them.
+services:
+  - type: web
+    name: ldihk-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    branch: main
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: FRONTEND_ALLOWED_ORIGINS
+        value: https://ldihk.xyz
+      - key: ALLOW_LOCALHOST_ORIGINS
+        value: "false"
+      - key: ENABLE_LOCAL_FILE_ROUTES
+        value: "false"
+      - key: RUN_WORKERS_IN_PROCESS
+        value: "true"
+      - key: ALLOW_IDENTIFIER_DIMENSIONS
+        value: "true"
+      - key: QUERY_BUCKET_TIMEZONE
+        value: UTC
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: AWS_REGION
+        value: auto
+      - key: MAX_IMPORT_ZIP_BYTES
+        value: "209715200"
+      - key: MAX_IMPORT_MEMBER_BYTES
+        value: "157286400"
+      - key: YOUTUBE_API_KEY
+        sync: false
+      - key: LOG_LEVEL
+        value: INFO

@@ -10,22 +10,26 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "astro": "astro"
+    "astro": "astro",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
-    "@astrojs/netlify": "^7.0.12",
-    "@astrojs/react": "^5.0.7",
-    "@aws-sdk/client-s3": "^3.1063.0",
-    "@aws-sdk/s3-request-presigner": "^3.1063.0",
+    "@astrojs/netlify": "^8.2.9",
+    "@astrojs/react": "^7.0.1",
+    "@fontsource/outfit": "^5.3.0",
     "@tailwindcss/vite": "^4.3.0",
     "@tanstack/react-query": "^5.101.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "astro": "^6.4.4",
+    "@zip.js/zip.js": "2.7.73",
+    "astro": "^7.3.8",
     "lucide-react": "^1.17.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "recharts": "^3.8.1",
     "tailwindcss": "^4.3.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
   }
 }

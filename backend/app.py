@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 from pathlib import Path
 from typing import Callable
 
 from flask import Flask, jsonify, request
 
-from backend.db import DatabaseConfigError, connect
+from backend.background import start_in_process_workers
+from backend.compression import configure_compression
+from backend.rate_limit import configure_rate_limits
+from backend.db import (
+    DatabaseConfigError,
+    is_database_unavailable_error,
+    is_invalid_timezone_error,
+)
+from backend.db_pool import pooled_connect
 from backend.http_boundary import (
     PublicBoundaryError,
     configure_cors,
@@ -15,17 +25,33 @@ from backend.http_boundary import (
     public_boundary_error_response,
     require_bearer_identity,
 )
-from backend.imports_api import ImportRepository, create_imports_blueprint
+from backend.imports_api import (
+    ImportRepository,
+    PostgresImportRepository,
+    create_imports_blueprint,
+    status_payload,
+)
 from backend.population_api import (
     PopulationValidationError,
+    query_risk_reference,
     query_youtube_population,
 )
 from backend.query_api import (
     QueryValidationError as StructuredQueryValidationError,
+    fetch_user_summary,
     public_query_response,
     query_request_for_ldihk_id,
     query_youtube_usage as query_structured_youtube_usage,
     validate_query_request,
+    validate_timezone_name,
+)
+from backend.uploads import create_uploads_blueprint, forget_user_reservations, user_upload_objects
+from backend.user_data import delete_user_data, delete_user_uploads
+from backend.user_profile import (
+    ProfileValidationError,
+    apply_profile,
+    fetch_profile,
+    validate_profile_payload,
 )
 from backend.youtube_sql import (
     DEFAULT_SQLITE_PATH,
@@ -35,18 +61,290 @@ from backend.youtube_sql import (
 from backend.youtube_temporal import build_temporal_usage
 from backend.youtube_usage import DEFAULT_OUTPUT_PATH
 
+LOGGER = logging.getLogger(__name__)
+ENABLE_LOCAL_FILE_ROUTES_ENV = "ENABLE_LOCAL_FILE_ROUTES"
+# Requests that should not count as user activity for the worker threads:
+# uptime pings must not keep waking the (free-tier) database.
+_INACTIVE_PATHS = frozenset({"/health", "/api/ready"})
+
 
 def create_app(
     processed_path: Path | str = DEFAULT_OUTPUT_PATH,
     sqlite_path: Path | str = DEFAULT_SQLITE_PATH,
     imports_repository: ImportRepository | None = None,
-    query_connection_factory: Callable[[], object] = connect,
+    query_connection_factory: Callable[[], object] = pooled_connect,
+    *,
+    enable_local_file_routes: bool | None = None,
+    start_workers: bool = True,
 ) -> Flask:
     app = Flask(__name__)
+    _configure_logging()
     configure_cors(app)
+    configure_compression(app)
+    configure_rate_limits(app)
     processed_path = Path(processed_path)
     sqlite_path = Path(sqlite_path)
-    app.register_blueprint(create_imports_blueprint(imports_repository))
+    imports_repository = (
+        PostgresImportRepository() if imports_repository is None else imports_repository
+    )
+    workers = start_in_process_workers() if start_workers else None
+    app.register_blueprint(
+        create_imports_blueprint(
+            imports_repository,
+            on_import_created=workers.signal.notify if workers is not None else None,
+        )
+    )
+    app.register_blueprint(create_uploads_blueprint(query_connection_factory))
+    if enable_local_file_routes is None:
+        enable_local_file_routes = _env_flag(ENABLE_LOCAL_FILE_ROUTES_ENV, default=True)
+
+    if workers is not None:
+
+        @app.after_request
+        def _notify_workers(response):
+            # After the request, so a just-created import is already committed
+            # when the import thread wakes up.
+            if request.method != "OPTIONS" and request.path not in _INACTIVE_PATHS:
+                workers.signal.notify()
+            return response
+
+    def database_unavailable(error: Exception | None = None):
+        payload = {"error": "database_unavailable"}
+        if isinstance(error, DatabaseConfigError):
+            # Our own configuration message; driver errors may include hostnames.
+            payload["message"] = str(error)
+        return jsonify(payload), 503
+
+    @app.get("/health")
+    def health():
+        return jsonify({"status": "ok"})
+
+    # The same check for the browser: ad and privacy blockers block URLs
+    # ending in /health (net::ERR_BLOCKED_BY_CLIENT), which left the site
+    # waiting for a server that was up.
+    @app.get("/api/ready")
+    def ready():
+        return jsonify({"status": "ok"})
+
+    if enable_local_file_routes:
+        _register_local_file_routes(app, processed_path, sqlite_path)
+
+    @app.get("/api/me")
+    def current_user_summary():
+        connection = None
+        try:
+            identity = require_bearer_identity()
+            bucket_timezone = validate_timezone_name(
+                request.args.get("timezone") or "UTC"
+            )
+            connection = query_connection_factory()
+            summary = fetch_user_summary(
+                connection,
+                ldihk_id=identity.ldihk_id,
+                bucket_timezone=bucket_timezone,
+            )
+        except PublicBoundaryError as error:
+            return public_boundary_error_response(error)
+        except StructuredQueryValidationError as error:
+            return jsonify({"error": error.code}), 400
+        except DatabaseConfigError as error:
+            return database_unavailable(error)
+        except Exception as error:
+            if is_database_unavailable_error(error):
+                LOGGER.warning("Database unavailable: %s", error)
+                return database_unavailable()
+            if is_invalid_timezone_error(error):
+                return jsonify({"error": "invalid_timezone"}), 400
+            raise
+        finally:
+            if connection is not None:
+                connection.close()
+
+        latest_import = None
+        get_latest = getattr(imports_repository, "get_latest_import_for_user", None)
+        if get_latest is not None:
+            try:
+                job = get_latest(identity.ldihk_id)
+            except Exception as error:
+                if is_database_unavailable_error(error):
+                    return database_unavailable()
+                raise
+            latest_import = status_payload(job) if job is not None else None
+
+        if summary is None and latest_import is None:
+            return jsonify({"error": "unknown_ldihk_id"}), 404
+        if summary is None:
+            # Uploaded, but nothing imported yet (queued, running or failed).
+            summary = {
+                "ldihk_id": identity.ldihk_id,
+                "exists": True,
+                "timezone": bucket_timezone,
+                "datasets": {},
+                "profile": {"age_range": None, "sex": None},
+            }
+        return jsonify({**summary, "latest_import": latest_import})
+
+    @app.patch("/api/me/profile")
+    def update_current_profile():
+        """Set or clear the caller's age range and sex (both optional)."""
+        connection = None
+        try:
+            identity = require_bearer_identity()
+            update = validate_profile_payload(request.get_json(silent=True))
+            connection = query_connection_factory()
+            found = fetch_profile(connection, ldihk_id=identity.ldihk_id)
+            if found is None:
+                return jsonify({"error": "unknown_ldihk_id"}), 404
+            apply_profile(connection, user_id=found[0], update=update)
+            connection.commit()
+            profile = fetch_profile(connection, ldihk_id=identity.ldihk_id)[1]
+        except PublicBoundaryError as error:
+            return public_boundary_error_response(error)
+        except ProfileValidationError as error:
+            return jsonify({"error": "invalid_profile", "fields": error.errors}), 400
+        except DatabaseConfigError as error:
+            return database_unavailable(error)
+        except Exception as error:
+            if is_database_unavailable_error(error):
+                LOGGER.warning("Database unavailable: %s", error)
+                return database_unavailable()
+            raise
+        finally:
+            if connection is not None:
+                connection.close()
+        return jsonify({"profile": profile})
+
+    @app.delete("/api/me")
+    def delete_current_user():
+        """Erase the caller's data; the body must repeat the ID to confirm."""
+        connection = None
+        try:
+            identity = require_bearer_identity()
+            payload = request.get_json(silent=True)
+            if not isinstance(payload, dict) or payload.get("confirm") != identity.ldihk_id:
+                return jsonify({"error": "confirmation_mismatch"}), 400
+            connection = query_connection_factory()
+            # Keys first: afterwards the imports that name them are gone.
+            upload_objects = user_upload_objects(connection, identity.ldihk_id)
+            summary = delete_user_data(connection, ldihk_id=identity.ldihk_id)
+            forget_user_reservations(connection, identity.ldihk_id)
+            uploads_deleted = delete_user_uploads(connection, upload_objects)
+        except PublicBoundaryError as error:
+            return public_boundary_error_response(error)
+        except DatabaseConfigError as error:
+            return database_unavailable(error)
+        except Exception as error:
+            if is_database_unavailable_error(error):
+                LOGGER.warning("Database unavailable: %s", error)
+                return database_unavailable()
+            raise
+        finally:
+            if connection is not None:
+                connection.close()
+
+        if summary is None:
+            return jsonify({"error": "unknown_ldihk_id"}), 404
+        LOGGER.info(
+            "Deleted a user: %s events, %s imports",
+            summary.events_deleted,
+            summary.imports_deleted,
+        )
+        return jsonify(
+            {
+                "deleted": True,
+                "events_deleted": summary.events_deleted,
+                "imports_deleted": summary.imports_deleted,
+                "subscriptions_deleted": summary.subscriptions_deleted,
+                "uploads_deleted": uploads_deleted,
+            }
+        )
+
+    @app.post("/api/query")
+    def youtube_usage_structured_query():
+        connection = None
+        try:
+            identity = require_bearer_identity()
+            request_payload = request.get_json(silent=True)
+            identity_errors = identity_field_errors(request_payload)
+            if identity_errors:
+                return identity_field_error_response(identity_errors)
+
+            query = validate_query_request(
+                query_request_for_ldihk_id(
+                    request_payload,
+                    ldihk_id=identity.ldihk_id,
+                )
+            )
+            connection = query_connection_factory()
+            payload = public_query_response(
+                query_structured_youtube_usage(connection, query)
+            )
+        except PublicBoundaryError as error:
+            return public_boundary_error_response(error)
+        except StructuredQueryValidationError as error:
+            return jsonify({"error": error.code}), 400
+        except DatabaseConfigError as error:
+            return database_unavailable(error)
+        except Exception as error:
+            if is_database_unavailable_error(error):
+                LOGGER.warning("Database unavailable: %s", error)
+                return database_unavailable()
+            if is_invalid_timezone_error(error):
+                return jsonify({"error": "invalid_timezone"}), 400
+            raise
+        finally:
+            if connection is not None:
+                connection.close()
+        return jsonify(payload)
+
+    @app.post("/api/population")
+    def youtube_population_query():
+        return _population_response(query_youtube_population)
+
+    @app.post("/api/population/reference")
+    def risk_reference_query():
+        return _population_response(query_risk_reference)
+
+    def _population_response(compute):
+        connection = None
+        try:
+            identity = require_bearer_identity()
+            request_payload = request.get_json(silent=True)
+            identity_errors = identity_field_errors(request_payload)
+            if identity_errors:
+                return identity_field_error_response(identity_errors)
+
+            connection = query_connection_factory()
+            payload = compute(
+                connection,
+                request_payload,
+                ldihk_id=identity.ldihk_id,
+            )
+        except PublicBoundaryError as error:
+            return public_boundary_error_response(error)
+        except (PopulationValidationError, StructuredQueryValidationError) as error:
+            return jsonify({"error": error.code}), 400
+        except DatabaseConfigError as error:
+            return database_unavailable(error)
+        except Exception as error:
+            if is_database_unavailable_error(error):
+                LOGGER.warning("Database unavailable: %s", error)
+                return database_unavailable()
+            if is_invalid_timezone_error(error):
+                return jsonify({"error": "invalid_timezone"}), 400
+            raise
+        finally:
+            if connection is not None:
+                connection.close()
+        return jsonify(payload)
+
+    return app
+
+
+def _register_local_file_routes(
+    app: Flask, processed_path: Path, sqlite_path: Path
+) -> None:
+    """Unauthenticated routes over local processed files (development only)."""
 
     def processed_data_missing():
         return (
@@ -75,10 +373,6 @@ def create_app(
             503,
         )
 
-    @app.get("/health")
-    def health():
-        return jsonify({"status": "ok"})
-
     @app.get("/api/users/local_user/youtube-usage")
     def youtube_usage():
         payload = read_processed_payload()
@@ -103,65 +397,22 @@ def create_app(
             return jsonify({"error": error.code}), 400
         return jsonify(payload)
 
-    @app.post("/api/query")
-    def youtube_usage_structured_query():
-        connection = None
-        try:
-            identity = require_bearer_identity()
-            request_payload = request.get_json(silent=True)
-            identity_errors = identity_field_errors(request_payload)
-            if identity_errors:
-                return identity_field_error_response(identity_errors)
 
-            query = validate_query_request(
-                query_request_for_ldihk_id(
-                    request_payload,
-                    ldihk_id=identity.ldihk_id,
-                )
-            )
-            connection = query_connection_factory()
-            payload = public_query_response(
-                query_structured_youtube_usage(connection, query)
-            )
-        except PublicBoundaryError as error:
-            return public_boundary_error_response(error)
-        except StructuredQueryValidationError as error:
-            return jsonify({"error": error.code}), 400
-        except DatabaseConfigError as error:
-            return jsonify({"error": "database_unavailable", "message": str(error)}), 503
-        finally:
-            if connection is not None:
-                connection.close()
-        return jsonify(payload)
+def _configure_logging() -> None:
+    root_logger = logging.getLogger()
+    if root_logger.handlers:
+        return
+    logging.basicConfig(
+        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
-    @app.post("/api/population")
-    def youtube_population_query():
-        connection = None
-        try:
-            identity = require_bearer_identity()
-            request_payload = request.get_json(silent=True)
-            identity_errors = identity_field_errors(request_payload)
-            if identity_errors:
-                return identity_field_error_response(identity_errors)
 
-            connection = query_connection_factory()
-            payload = query_youtube_population(
-                connection,
-                request_payload,
-                ldihk_id=identity.ldihk_id,
-            )
-        except PublicBoundaryError as error:
-            return public_boundary_error_response(error)
-        except PopulationValidationError as error:
-            return jsonify({"error": error.code}), 400
-        except DatabaseConfigError as error:
-            return jsonify({"error": "database_unavailable", "message": str(error)}), 503
-        finally:
-            if connection is not None:
-                connection.close()
-        return jsonify(payload)
-
-    return app
+def _env_flag(name: str, *, default: bool) -> bool:
+    raw_value = os.environ.get(name)
+    if raw_value is None or not raw_value.strip():
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 app = create_app()

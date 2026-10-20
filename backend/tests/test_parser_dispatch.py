@@ -74,6 +74,24 @@ class ParserDispatchTests(unittest.TestCase):
                 source_path = f"Takeout/YouTube and YouTube Music/{suffix}"
                 self.assertEqual(parser_name_for_path(source_path), parser_name)
 
+    def test_routes_german_youtube_takeout_paths(self):
+        # File layout of a real German Takeout (2026).
+        cases = {
+            "Verlauf/Wiedergabeverlauf.html": "watch_history",
+            "Verlauf/Suchverlauf.html": "search_history",
+            "Abos/Abos.csv": "subscriptions",
+            "Playlists/Später ansehen-Videos.csv": "likes_playlists",
+            "Kommentare/Kommentare.csv": "comments_live_chat",
+            "Livechats/Livechat 1.csv": "comments_live_chat",
+            "Kanäle/Kanal.csv": None,
+            "Video-Metadaten/Videos.csv": None,
+        }
+
+        for suffix, parser_name in cases.items():
+            with self.subTest(suffix=suffix):
+                source_path = f"Takeout/YouTube und YouTube Music/{suffix}"
+                self.assertEqual(parser_name_for_path(source_path), parser_name)
+
     def test_routes_youtube_my_activity_json_to_search_parser(self):
         result = dispatch_member_path("Takeout/My Activity/YouTube/MyActivity.json")
 
@@ -147,6 +165,53 @@ class ParserDispatchTests(unittest.TestCase):
 
         self.assertFalse(result.ignored)
         self.assertEqual(result.parser_name, "watch_history")
+
+
+
+class MissingHistoryProblemTests(unittest.TestCase):
+    def test_archives_with_watch_files_pass(self):
+        from backend.ingestion.dispatch import missing_history_problem
+
+        for paths in (
+            ["Takeout/YouTube und YouTube Music/Verlauf/Wiedergabeverlauf.json", "Takeout/archive_browser.html"],
+            ["Takeout/YouTube and YouTube Music/history/watch-history.html"],
+            ["ads_information/ads_and_topics/videos_watched.json", "your_instagram_activity/likes/liked_posts.json"],
+            ["your_instagram_activity/story_interactions/stories_viewed.html"],
+            ["TikTok/user_data_tiktok.json"],
+        ):
+            with self.subTest(paths=paths):
+                self.assertIsNone(missing_history_problem(paths))
+
+    def test_index_only_takeout(self):
+        from backend.ingestion.dispatch import missing_history_problem
+
+        problem = missing_history_problem(["Takeout/archive_browser.html"])
+        self.assertTrue(problem.startswith("takeout_index_only"))
+
+    def test_youtube_without_history(self):
+        from backend.ingestion.dispatch import missing_history_problem
+
+        problem = missing_history_problem(
+            [
+                "Takeout/archive_browser.html",
+                "Takeout/YouTube und YouTube Music/Abos/Abos.csv",
+                "Takeout/YouTube und YouTube Music/Playlists/Playlists.csv",
+            ]
+        )
+        self.assertTrue(problem.startswith("youtube_history_missing"))
+
+    def test_instagram_without_views(self):
+        from backend.ingestion.dispatch import missing_history_problem
+
+        problem = missing_history_problem(
+            ["your_instagram_activity/likes/liked_posts.json", "your_instagram_activity/messages/inbox/a_1/message_1.json"]
+        )
+        self.assertTrue(problem.startswith("instagram_views_missing"))
+
+    def test_unknown_archives_are_left_to_the_worker(self):
+        from backend.ingestion.dispatch import missing_history_problem
+
+        self.assertIsNone(missing_history_problem(["notes.txt"]))
 
 
 if __name__ == "__main__":

@@ -16,20 +16,89 @@ The website is hosted at:
 https://ldihk.xyz/
 ```
 
-The hosted frontend is configured to use the live Render backend API:
+## Free Hosting
 
-```text
-https://ldihk-api.onrender.com
+LDiHK runs entirely on free plans:
+
+| Part | Provider | Config |
+| --- | --- | --- |
+| Frontend (Astro) | Netlify free | `Frontend/netlify.toml` (base directory `Frontend`), `Frontend/.env.example` |
+| Backend API + import and enrichment workers | One Render free web service | `render.yaml`, `Dockerfile` |
+| Postgres | Neon free | `DATABASE_URL` |
+| Upload storage | Cloudflare R2 | `S3_ENDPOINT_URL`, bucket CORS + 1-day lifecycle rule |
+| Video durations | YouTube Data API v3 | `YOUTUBE_API_KEY` |
+
+The import and enrichment workers run as threads inside the web service
+(`RUN_WORKERS_IN_PROCESS=true`), so no paid background workers are needed.
+The Render free instance sleeps after 15 minutes without traffic; the
+frontend shows a "waking the server" state while it starts (about a minute).
+
+Setup steps, environment variables and limits are in
+[docs/backend/deployment.md](docs/backend/deployment.md); frontend settings
+are in [Frontend/README.md](Frontend/README.md).
+
+Moving from the hackathon deployment (Render workers, Supabase, AWS S3): the
+event dedupe key changed, so start with a fresh Neon database and re-upload
+exports rather than copying old `usage_events` rows across.
+
+## Release Workflow
+
+`main` is the live site: Netlify deploys the frontend to ldihk.xyz and Render
+deploys the API from it.
+
+1. Work on a branch. Pushing it or opening a pull request creates a free
+   Netlify branch deploy or deploy preview. Previews run on the mock API
+   (`Frontend/netlify.toml`), so they cannot read or write live data.
+2. Test real flows locally with the one-command local stack (below).
+3. Only the project owner merges to `main`, after testing. That triggers the
+   production deploys. Each Netlify production deploy costs 15 of the 300
+   free monthly credits, so batch changes into releases: about 20 production
+   deploys in a month use up the credits and pause every site on the account.
+4. Migrations run automatically when the backend starts (Render redeploys
+   after the merge). To apply one ahead of a release, run
+   `python backend/scripts/run_migrations.py` against the production database.
+
+## Local Stack (one command)
+
+Runs the whole app on your machine with no hosted services: embedded Postgres
+(data in `.dev-stack/`), a local S3 stand-in instead of R2, the API with its
+import and enrichment workers, and the frontend in live mode. A synthetic
+population is seeded on first start, so the Population page has people to
+compare with.
+
+```sh
+uv run python scripts/dev_stack.py
 ```
 
-Health check:
+Then open http://localhost:4321/ and upload a Takeout ZIP.
+Ctrl+C stops everything.
 
-```text
-https://ldihk-api.onrender.com/health
-```
+- `--fresh` starts from an empty database.
+- `--mock` runs only the frontend with simulated data.
+- `--database-url postgresql://...` uses your own Postgres (for example
+  `docker run -p 5432:5432 -e POSTGRES_PASSWORD=dev postgres:16`) instead of
+  the embedded one.
+- Set `YOUTUBE_API_KEY` in your shell to try duration enrichment.
 
-The hosted demo runs with the frontend mock API disabled and sends browser API
-traffic to the Render service. Local development instructions are below.
+Needs uv and Node.js 22. The first start downloads Python 3.12 and the local
+service packages into uv's cache (the embedded Postgres has no wheels for
+newer Pythons). If uv cannot write its Python directory, point
+`UV_PYTHON_INSTALL_DIR` at a writable folder.
+
+## Tests and CI
+
+- Backend: `uv run python -m unittest discover -s backend/tests`. Set
+  `TEST_DATABASE_URL` to a Postgres the tests may create throwaway databases
+  on (for example the local stack's) to also run the Postgres integration
+  tests.
+- Browser end-to-end: once, `npx playwright install --only-shell chromium` in
+  `Frontend/`; then `npm run test:e2e` starts a fresh local stack, uploads a
+  generated Takeout export and checks the dashboards, the population
+  comparison, signing in again and "Delete My Data". Set
+  `E2E_BASE_URL=http://localhost:4321` to reuse a stack you already started.
+- GitHub Actions (`.github/workflows/ci.yml`) runs all of this on every push,
+  on any branch, against Python 3.12 and Postgres 16. It only tests and never
+  deploys, so check it is green before merging to `main`.
 
 ## Quick Start
 
@@ -92,9 +161,16 @@ GET http://127.0.0.1:8000/api/users/local_user/youtube-usage
 GET http://127.0.0.1:8000/api/v2/users/local_user/youtube-usage/temporal
 POST http://127.0.0.1:8000/api/v3/query
 POST http://127.0.0.1:8000/api/query
+POST http://127.0.0.1:8000/api/population
+GET http://127.0.0.1:8000/api/me
 POST http://127.0.0.1:8000/api/imports
 GET http://127.0.0.1:8000/api/imports/{import_id}
 ```
+
+The `/api/query`, `/api/population`, `/api/me` and `/api/imports` routes need
+`DATABASE_URL` and an `Authorization: Bearer <LDiHK-ID>` header. Set
+`RUN_WORKERS_IN_PROCESS=true` to process uploaded imports inside the API
+process, or run `uv run python backend/scripts/run_worker.py` separately.
 
 If `uv` cannot write to its default cache in a restricted environment, prefix commands with:
 

@@ -2,23 +2,28 @@
 import Layout from '../layouts/Layout.astro';
 ---
 
-<Layout title="LDiHK | Social Media Analytics & Mental Wellness Insurance Platform">
+<Layout title="LDiHK | Social Media Analytics for Preventive Mental Health">
   <!-- Hero Section -->
   <section class="relative overflow-hidden bg-white py-24 lg:py-32">
     <div class="absolute inset-0 bg-[linear-gradient(to_right,#F4F0E4_1px,transparent_1px),linear-gradient(to_bottom,#F4F0E4_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)] opacity-60"></div>
 
     <div class="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center space-y-6">
-      <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-brand-teal/10 border border-brand-teal/20 text-xs font-bold text-brand-teal mb-2 tracking-wide uppercase">
-        <span class="w-2 h-2 rounded-full bg-brand-teal animate-pulse"></span>
-        InsurTech Venture Overview & MVP
+      <div class="flex flex-wrap items-center justify-center gap-2 mb-2">
+        <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-brand-teal/10 border border-brand-teal/20 text-xs font-bold text-brand-teal tracking-wide uppercase">
+          <span class="w-2 h-2 rounded-full bg-brand-teal animate-pulse"></span>
+          InsurTech for Preventive Mental Health
+        </div>
+        <a href="#hackathon" class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-brand-peach/10 border border-brand-peach/30 text-xs font-bold text-brand-navy tracking-wide uppercase hover:bg-brand-peach/20 transition-colors">
+          Hackathon Project &middot; Munich 2026
+        </a>
       </div>
 
       <h1 class="text-4xl sm:text-6xl font-extrabold text-brand-navy tracking-tight max-w-4xl mx-auto leading-[1.15] text-left sm:text-center">
-        Predicting Mental Illness Risk via <span class="text-transparent bg-clip-text bg-gradient-to-r from-brand-teal via-brand-navy to-brand-peach">Social Footprints</span>
+        Your Social Media Footprint as an <span class="text-transparent bg-clip-text bg-gradient-to-r from-brand-teal via-brand-navy to-brand-peach">Early Signal</span> for Mental Health
       </h1>
 
       <p class="text-base sm:text-lg text-brand-navy/70 max-w-3xl mx-auto leading-relaxed text-left sm:text-center">
-        LDiHK is a pioneering InsurTech platform that bridges the gap between daily digital habits and mental wellness. By analyzing voluntary social media exports (YouTube, Instagram, TikTok, Spotify), we empower insurance providers to predict clinical risks, reward healthier habits, and deliver early preventative interventions.
+        LDiHK turns the data exports every user can request under privacy law (YouTube via Google Takeout, Instagram and TikTok) into an anonymous picture of their digital habits: how much, how fragmented and how late at night they use social media. Our concept: together with insurers, build models that recognise depression risk early, so prevention can start before treatment becomes necessary, rewarding healthier habits along the way.
       </p>
 
       <div class="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4">
@@ -27,17 +32,48 @@ import Layout from '../layouts/Layout.astro';
           class="w-full sm:w-auto px-8 py-4 rounded-xl bg-brand-teal text-white font-bold text-base hover:bg-brand-teal/95 transition-all shadow-lg shadow-brand-teal/20 hover:shadow-xl hover:-translate-y-0.5 active:translate-y-0 duration-150 flex items-center justify-center gap-2 cursor-pointer"
           id="hero-cta-dashboard"
         >
-          Launch Live MVP Console
+          Try the Console with Your Data
           <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 7l5 5m0 0l-5 5m5-5H6" />
           </svg>
         </a>
         <a
-          href="#roadmap"
+          href="#science"
           class="w-full sm:w-auto px-8 py-4 rounded-xl bg-brand-beige text-brand-navy font-bold text-base hover:bg-brand-navy/10 transition-all border border-brand-navy/20 duration-150 flex items-center justify-center cursor-pointer"
-          id="hero-cta-pitchdeck"
+          id="hero-cta-how-it-works"
         >
-          View Venture Roadmap
+          How It Works
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Project origin -->
+  <section id="hackathon" class="py-16 bg-white border-t border-brand-navy/5 text-left">
+    <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="rounded-3xl border border-brand-navy/10 bg-brand-beige/30 p-6 sm:p-10 space-y-4">
+        <span class="inline-block px-3 py-1 rounded-md bg-brand-peach/20 text-brand-navy font-bold text-xs uppercase tracking-wider">
+          About this project
+        </span>
+        <h2 class="text-2xl sm:text-3xl font-extrabold text-brand-navy tracking-tight">
+          Built at the EuroTech x Hong Kong Talent Exchange Hackathon 2026 in Munich
+        </h2>
+        <p class="text-brand-navy/70 text-sm sm:text-base leading-relaxed">
+          LDiHK (Life Data Intelligence Hong Kong) was created by a team of four for the EuroTech x HKTE Hackathon 2026.
+          The challenge we chose: Hong Kong's mental health care is overloaded, with long waits for psychiatric referrals,
+          while decades of research link heavy, fragmented and late-night social media use to depression risk.
+        </p>
+        <p class="text-brand-navy/70 text-sm sm:text-base leading-relaxed">
+          This website is the working prototype from the hackathon. You can upload your own data exports and see your usage
+          patterns, a comparison with a synthetic population and a study-based risk indicator. The insurance partnerships,
+          roadmap and business model below are the concept we pitched to the jury. No insurer is involved, and no data is
+          shared with anyone.
+        </p>
+        <a href="https://marlonmueller.eu/en/projects/Eurotech-x-HKTE-Hackathon" target="_blank" rel="noopener" class="inline-flex items-center gap-2 text-sm font-bold text-brand-teal hover:underline">
+          Read the story behind the project
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+          </svg>
         </a>
       </div>
     </div>
@@ -55,7 +91,7 @@ import Layout from '../layouts/Layout.astro';
             Strategic Fit: Hong Kong & Global Expansion
           </h2>
           <p class="text-brand-navy/70 text-sm sm:text-base leading-relaxed">
-            Mental health is a critical concern in high-density markets like Hong Kong. According to Gemini data and the Legislative Council Research Office, <strong>13% of working adults, 24% of youth, and 12.5% of the elderly</strong> are diagnosed with mental disorders, with depression, bipolar disorder, and anxiety being the most prevalent.
+            Mental health is a critical concern in high-density markets like Hong Kong. Figures compiled by the Legislative Council Research Office put the share of people with a mental disorder at <strong>13% of working adults, 24% of youth and 12.5% of the elderly</strong>, with depression, bipolar disorder and anxiety the most common. Most cases are recognised late, when treatment is long and expensive.
           </p>
           <p class="text-brand-navy/70 text-sm sm:text-base leading-relaxed">
             Hong Kong is the ideal launchpad due to two unique advantages:
@@ -74,31 +110,85 @@ import Layout from '../layouts/Layout.astro';
 
         <div class="bg-white p-8 rounded-3xl border border-brand-navy/15 shadow-sm space-y-6 relative overflow-hidden">
           <div class="absolute top-0 right-0 w-24 h-24 bg-brand-teal/5 rounded-full blur-xl pointer-events-none"></div>
-          <h3 class="text-lg font-black text-brand-navy border-b border-brand-navy/5 pb-3">The Ingestion Loop</h3>
+          <h3 class="text-lg font-black text-brand-navy border-b border-brand-navy/5 pb-3">How the Data Flows</h3>
 
           <div class="space-y-4">
             <div class="flex items-start gap-4">
               <div class="w-8 h-8 rounded-lg bg-brand-navy/5 flex items-center justify-center font-bold text-brand-navy text-xs shrink-0 mt-0.5">01</div>
               <div>
-                <h4 class="font-bold text-brand-navy text-sm">GDPR Takeout Request</h4>
-                <p class="text-xs text-brand-navy/60 mt-1">Users request their data packages directly from platforms under standard privacy regulations.</p>
+                <h4 class="font-bold text-brand-navy text-sm">Data Export by the User</h4>
+                <p class="text-xs text-brand-navy/60 mt-1">Users download their own data package from YouTube, Instagram or TikTok, a right every platform grants under privacy law (GDPR and equivalents).</p>
               </div>
             </div>
             <div class="flex items-start gap-4">
               <div class="w-8 h-8 rounded-lg bg-brand-teal/10 text-brand-teal flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">02</div>
               <div>
-                <h4 class="font-bold text-brand-navy text-sm">Ingest & Map Biomarkers</h4>
-                <p class="text-xs text-brand-navy/60 mt-1">Our pipeline extracts usage hours, late-night circadian disruptions, and hourly fragmentation indices.</p>
+                <h4 class="font-bold text-brand-navy text-sm">Anonymous Upload & Digital Biomarkers</h4>
+                <p class="text-xs text-brand-navy/60 mt-1">Videos and photos are removed in the browser before upload. Under an anonymous LDiHK-ID we extract only timing signals: daily volume, fragmentation and late-night use. No names, handles or messages are stored.</p>
               </div>
             </div>
             <div class="flex items-start gap-4">
               <div class="w-8 h-8 rounded-lg bg-brand-peach/10 text-brand-peach flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">03</div>
               <div>
-                <h4 class="font-bold text-brand-navy text-sm">Risk Assessment & Rewards</h4>
-                <p class="text-xs text-brand-navy/60 mt-1">Providers assess mental health wellness scores, providing premium offsets or early therapy recommendations.</p>
+                <h4 class="font-bold text-brand-navy text-sm">Risk Signal & Prevention</h4>
+                <p class="text-xs text-brand-navy/60 mt-1">The user sees their own patterns compared with people of the same age and sex. With consent, insurers use the risk signal for rewards and early, low-threshold support offers.</p>
               </div>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Science: mathematical groundwork -->
+  <section id="science" class="py-20 bg-white text-left border-t border-brand-navy/5">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="text-center mb-14 space-y-3">
+        <h2 class="text-3xl font-extrabold text-brand-navy tracking-tight">
+          The Science Behind the Score
+        </h2>
+        <p class="text-brand-navy/70 max-w-3xl mx-auto text-base leading-relaxed">
+          A neural network that links social media use to medical conditions needs a lot of training data. Partnering insurers provide it in Phase 1. Until then, a mathematical model built from independent, peer-reviewed studies serves as the starting point.
+        </p>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="bg-brand-beige/30 p-6 rounded-2xl border border-brand-navy/10 space-y-3">
+          <h3 class="font-extrabold text-brand-navy text-lg">Built on Published Evidence</h3>
+          <p class="text-xs text-brand-navy/70 leading-relaxed">
+            We combined findings of peer-reviewed studies on social media use and depression (e.g. Kelly et al. 2018, Lin et al. 2016, Primack et al. 2017, Riehm et al. 2019 and a dose-response meta-analysis by Liu et al. 2022), including their adjusted odds ratios, into one database and fit an initial linear model to them. It validates the pipeline and scoring logic and is the basis for a machine-learning model as the dataset grows.
+          </p>
+        </div>
+        <div class="bg-brand-beige/30 p-6 rounded-2xl border border-brand-navy/10 space-y-3">
+          <h3 class="font-extrabold text-brand-navy text-lg">Three Models by Age</h3>
+          <p class="text-xs text-brand-navy/70 leading-relaxed">
+            Digital stressors affect age groups very differently, so one model would not suffice. We use separate models for adolescents, young adults and older adults, with sex as a further baseline. It adds complexity in the backend but delivers more reliable results, a trade-off we consider essential for the standards of HealthTech.
+          </p>
+        </div>
+        <div class="bg-brand-beige/30 p-6 rounded-2xl border border-brand-navy/10 space-y-3">
+          <h3 class="font-extrabold text-brand-navy text-lg">Focused on Depression First</h3>
+          <p class="text-xs text-brand-navy/70 leading-relaxed">
+            We deliberately start with depression: the most prevalent and best-studied mental health disorder. It offers the highest achievable accuracy and the largest potential impact, for public health and for insurers' costs.
+          </p>
+        </div>
+      </div>
+
+      <div class="mt-10 grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+        <div class="space-y-3">
+          <h3 class="font-extrabold text-brand-navy text-lg">Digital Biomarkers Today</h3>
+          <ul class="space-y-2 text-sm text-brand-navy/80">
+            <li class="flex gap-2"><span class="text-brand-teal font-bold">&bull;</span><span><strong>Daily volume:</strong> watch and usage time per day across the uploaded platforms.</span></li>
+            <li class="flex gap-2"><span class="text-brand-teal font-bold">&bull;</span><span><strong>Fragmentation:</strong> how many hours of the day are interrupted by usage.</span></li>
+            <li class="flex gap-2"><span class="text-brand-teal font-bold">&bull;</span><span><strong>Late-night use:</strong> activity between 23:00 and 05:00 that disrupts the circadian rhythm.</span></li>
+            <li class="flex gap-2"><span class="text-brand-teal font-bold">&bull;</span><span><strong>Demographic baselines:</strong> age range and sex, because usage and risk differ strongly between groups.</span></li>
+          </ul>
+          <p class="text-xs text-brand-navy/60 leading-relaxed">All of them are tracked over time, to recognise personal patterns and recent changes rather than single days.</p>
+        </div>
+        <div class="space-y-3">
+          <h3 class="font-extrabold text-brand-navy text-lg">Coming Next</h3>
+          <p class="text-sm text-brand-navy/80 leading-relaxed">
+            The format and content of what is consumed (short-form video or public forums, Instagram hashtags), comments and more markers, plus validation against real outcomes once partner data is available. A first validation of the pipeline and scoring logic was done with a sample group of peers; large-scale validation still needs more data.
+          </p>
         </div>
       </div>
     </div>
@@ -142,7 +232,7 @@ import Layout from '../layouts/Layout.astro';
             </div>
             <h3 class="font-extrabold text-brand-navy text-lg">Policyholders / Users</h3>
             <p class="text-xs text-brand-navy/60 leading-relaxed">
-              Unlock premium offsets or voucher rewards by sharing GDPR data, access early clinical warnings, and receive personalized lifestyle recommendations.
+              See their own digital habits for free, compared with people like them. Optionally share them with their insurer for premium offsets or vouchers and early, low-threshold support. They can delete everything at any time.
             </p>
           </div>
         </div>
@@ -157,7 +247,7 @@ import Layout from '../layouts/Layout.astro';
             </div>
             <h3 class="font-extrabold text-brand-navy text-lg">Healthcare Experts</h3>
             <p class="text-xs text-brand-navy/60 leading-relaxed">
-              Receive high-fidelity clinical risk signals and historical user profiles to conduct optimized, preventative psychological interventions.
+              With the user's consent, receive an early risk signal and the behavioural trend behind it, so preventive conversations can start sooner.
             </p>
           </div>
         </div>
@@ -188,7 +278,7 @@ import Layout from '../layouts/Layout.astro';
           Venture Deployment Roadmap
         </h2>
         <p class="text-brand-navy/70 max-w-2xl mx-auto text-base">
-          Our three-phased roadmap to bring preventative mental wellness underwriting to life.
+          The three-phase roadmap we pitched at the hackathon for bringing preventive mental wellness insurance to life.
         </p>
       </div>
 
@@ -204,7 +294,7 @@ import Layout from '../layouts/Layout.astro';
             </span>
             <h3 class="text-xl font-bold text-brand-navy">Model Integration & Health Record Pairing</h3>
             <p class="text-xs text-brand-navy/60 leading-relaxed">
-              Insurance companies incentivize users to share their basic GDPR-compliant data takeouts. In combination with historical medical claims records, we train custom machine learning models to identify core digital behavior predictors of anxiety, depression, and stress.
+              Partner insurers incentivise policyholders to share their data exports. Paired with anonymised claims records, they form the training data for a machine-learning model that replaces the study-based starting model, beginning with depression and later anxiety and stress.
             </p>
           </div>
           <div class="hidden sm:block w-[45%]"></div>
@@ -252,96 +342,54 @@ import Layout from '../layouts/Layout.astro';
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
         <div class="space-y-6">
           <span class="text-xs font-bold uppercase tracking-wider text-brand-teal bg-brand-teal/10 px-3 py-1 rounded">
-            The Hackathon Showcase
+            What You Can Try Today
           </span>
           <h2 class="text-3xl font-extrabold text-brand-navy tracking-tight">
-            Our Hackathon MVP Goal
+            The Working Prototype
           </h2>
           <p class="text-brand-navy/70 text-sm sm:text-base leading-relaxed">
-            Due to time constraints, this MVP is not a fully-trained clinical model. Instead, it is an interactive platform built to demonstrate the exact data aggregation workflow and business value.
+            The console is a working prototype, not a trained clinical model. It runs the complete data pipeline end to end: upload your own export, get an anonymous LDiHK-ID, and explore your habits within minutes.
           </p>
           <p class="text-brand-navy/70 text-sm sm:text-base leading-relaxed">
-            By allowing judges and attendees to inspect their own social history (YouTube, Instagram, TikTok, and Spotify) against standard medical wellness benchmarks, we showcase the granularity of the dataset we intend to gather.
+            Your history (YouTube, Instagram, TikTok) appears as a timeline, a 24-hour heatmap and a day-by-day breakdown. The population benchmark compares you with people of your age range and sex: about 1,500 synthetic profiles calibrated on the cited studies, plus real users as they join. The health tab shows the study-based risk indicator, for self-reflection, not as a diagnosis.
           </p>
           <div class="grid grid-cols-2 gap-4 border-t border-brand-navy/10 pt-6">
             <div>
-              <span class="text-2xl font-black text-brand-teal block">4+</span>
-              <span class="text-[10px] uppercase font-bold text-brand-navy/60">Platforms Modeled</span>
+              <span class="text-2xl font-black text-brand-teal block">3</span>
+              <span class="text-[10px] uppercase font-bold text-brand-navy/60">Platforms Imported</span>
             </div>
             <div>
-              <span class="text-2xl font-black text-brand-peach block">100%</span>
-              <span class="text-[10px] uppercase font-bold text-brand-navy/60">Data Anonymized</span>
+              <span class="text-2xl font-black text-brand-peach block">0</span>
+              <span class="text-[10px] uppercase font-bold text-brand-navy/60">Names or Handles Stored</span>
             </div>
           </div>
         </div>
 
         <div class="bg-brand-beige/40 p-8 rounded-3xl border border-brand-navy/10 space-y-4">
-          <h3 class="font-extrabold text-brand-navy text-lg">What we are analyzing:</h3>
+          <h3 class="font-extrabold text-brand-navy text-lg">What the console measures:</h3>
           <ul class="space-y-4 text-xs">
             <li class="flex gap-3">
               <span class="w-6 h-6 rounded-full bg-brand-navy/10 flex items-center justify-center shrink-0 font-bold">1</span>
               <div>
                 <strong class="text-brand-navy">Screen Volume Index:</strong>
-                <span class="block text-brand-navy/70 mt-0.5">Aggregated active screen hours across platforms per day. High volumes represent a primary indicator of mental fatigue.</span>
+                <span class="block text-brand-navy/70 mt-0.5">Estimated watch time per day across the uploaded platforms. Each additional hour of social media use is associated with higher depression risk in adolescents (Liu et al. 2022).</span>
               </div>
             </li>
             <li class="flex gap-3">
               <span class="w-6 h-6 rounded-full bg-brand-navy/10 flex items-center justify-center shrink-0 font-bold">2</span>
               <div>
                 <strong class="text-brand-navy">Circadian Disruption Index:</strong>
-                <span class="block text-brand-navy/70 mt-0.5">Focuses on late-night activity bounds (23:00 to 5:00) that delay sleep cycles and correlate directly with anxiety risk.</span>
+                <span class="block text-brand-navy/70 mt-0.5">Usage between 23:00 and 05:00, which delays sleep; poor sleep is one of the pathways between heavy social media use and depressive symptoms (Kelly et al. 2018).</span>
               </div>
             </li>
             <li class="flex gap-3">
               <span class="w-6 h-6 rounded-full bg-brand-navy/10 flex items-center justify-center shrink-0 font-bold">3</span>
               <div>
                 <strong class="text-brand-navy">Task Fragmentation Index:</strong>
-                <span class="block text-brand-navy/70 mt-0.5">Evaluates how frequently the user checks platforms throughout the day, measuring attention division.</span>
+                <span class="block text-brand-navy/70 mt-0.5">How many hours of the day are interrupted by usage: frequent checking throughout the day rather than one block.</span>
               </div>
             </li>
           </ul>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Pitchdeck Section & Download Component -->
-  <section id="pitchdeck" class="py-20 bg-brand-beige/10 border-t border-brand-navy/5">
-    <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div class="bg-brand-beige p-8 sm:p-12 rounded-3xl border border-brand-navy/15 flex flex-col md:flex-row items-center gap-8 shadow-sm">
-        <div class="flex-grow space-y-4 text-left">
-          <span class="inline-block px-3 py-1 rounded-md bg-brand-peach/20 text-brand-navy font-bold text-xs uppercase tracking-wider">
-            Investor Relations
-          </span>
-          <h2 class="text-2xl sm:text-3xl font-black text-brand-navy tracking-tight">
-            Review the Venture Deck
-          </h2>
-          <p class="text-brand-navy/70 text-sm sm:text-base leading-relaxed max-w-lg">
-            Download our pitchdeck to review the deployment roadmap, Netlify Astro static builds, AWS S3 infrastructure costing, and performance benchmarks.
-          </p>
-        </div>
-
-        <!-- Interactive Pitchdeck Download Component -->
-        <div class="w-full md:w-auto shrink-0">
-          <div class="bg-white p-6 rounded-2xl border border-brand-navy/10 shadow-sm text-center flex flex-col items-center max-w-xs mx-auto md:max-w-none">
-            <div class="w-16 h-16 rounded-xl bg-brand-peach/10 text-brand-peach flex items-center justify-center font-black text-2xl mb-4">
-              PDF
-            </div>
-            <span class="font-bold text-brand-navy text-sm block mb-1">LDiHK_Pitchdeck.pdf</span>
-            <span class="text-xs text-brand-navy/50 block mb-6">File Size: 1.5 KB &bull; v1.0.0</span>
-
-            <a
-              href="/LDiHK_Pitchdeck.pdf"
-              download="LDiHK_Pitchdeck_v1.pdf"
-              class="w-full px-6 py-3.5 rounded-xl bg-brand-teal text-white font-bold text-sm hover:bg-brand-teal/95 transition-all shadow-md shadow-brand-teal/10 hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 flex items-center justify-center gap-2 duration-150 cursor-pointer"
-              id="pitchdeck-download-button"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-              </svg>
-              Download PDF
-            </a>
-          </div>
         </div>
       </div>
     </div>
@@ -352,10 +400,10 @@ import Layout from '../layouts/Layout.astro';
     <div class="absolute right-0 bottom-0 w-64 h-64 bg-brand-peach/10 rounded-full blur-3xl pointer-events-none"></div>
     <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 text-center relative z-10 space-y-6">
       <h2 class="text-2xl sm:text-3xl font-extrabold text-brand-navy tracking-tight">
-        Need Technical Support or Enterprise Licensing?
+        Questions or Feedback?
       </h2>
       <p class="text-brand-navy/70 max-w-xl mx-auto text-sm sm:text-base leading-relaxed">
-        Our support agents and solutions architects are available 24/7. Connect directly via our secure production domain.
+        LDiHK is a hackathon prototype. If you have questions about the project or the model, found a bug or have an idea for the console, write to us or use the feedback form.
       </p>
 
       <div class="inline-flex flex-col sm:flex-row items-center gap-4 justify-center">
@@ -368,6 +416,13 @@ import Layout from '../layouts/Layout.astro';
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
           </svg>
           contact@LDiHK.xyz
+        </a>
+        <a
+          href="/feedback"
+          class="inline-flex items-center gap-3 px-6 py-3.5 rounded-xl bg-white text-brand-navy font-bold text-sm border border-brand-navy/15 hover:border-brand-navy/30 transition-all duration-150"
+          id="main-feedback-link"
+        >
+          Report a bug or request a feature
         </a>
       </div>
     </div>

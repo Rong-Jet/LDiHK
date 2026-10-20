@@ -1,0 +1,35 @@
+# Netlify build settings for the Astro frontend (free plan).
+# The Netlify site's "Base directory" must be `Frontend` (this file lives
+# there, and Netlify reads netlify.toml from the base directory).
+# PUBLIC_* variables are read at build time: set them in the Netlify UI with
+# the "Builds" scope and redeploy after changing them.
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  # Astro 7 requires Node >= 22.12.
+  NODE_VERSION = "22"
+
+# Release rule: the production branch (`main`) is the live site, ldihk.xyz.
+# Changes are merged there only after the project owner has tested them; each
+# production deploy costs 15 of the 300 free monthly credits.
+[context.production.environment]
+  PUBLIC_MOCK_API = "false"
+
+# Deploy previews (pull requests) and branch deploys are free on Netlify's
+# credit plans. They run on the local mock API (with a "Mock mode" banner), so
+# a preview can never read or write the live backend, database or upload
+# bucket, even though the site-wide variables are set. Values in this file
+# override the Netlify UI for these contexts.
+[context.deploy-preview.environment]
+  PUBLIC_MOCK_API = "true"
+
+[context.branch-deploy.environment]
+  PUBLIC_MOCK_API = "true"
+
+# Staging: the `free-hosting` branch deploy talks to the staging backend on
+# Render (PUBLIC_API_URL is set for this branch in the Netlify UI). Upload URLs
+# come from that backend, so this site needs no storage keys.
+[context.free-hosting.environment]
+  PUBLIC_MOCK_API = "false"

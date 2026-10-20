@@ -28,3 +28,6 @@ pnpm-debug.log*
 .netlify
 
 .vscode
+# Playwright (npm run test:e2e)
+test-results/
+playwright-report/

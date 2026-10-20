@@ -55,7 +55,10 @@ class DeploymentSmokeTests(unittest.TestCase):
             "PORT",
             "DATABASE_URL",
             "FRONTEND_ALLOWED_ORIGINS",
-            "REQUIRE_LDIHK_BEARER",
+            "ALLOW_LOCALHOST_ORIGINS",
+            "ENABLE_LOCAL_FILE_ROUTES",
+            "RUN_WORKERS_IN_PROCESS",
+            "WORKER_ACTIVE_WINDOW_SECONDS",
             "ALLOW_IDENTIFIER_DIMENSIONS",
             "QUERY_BUCKET_TIMEZONE",
             "AWS_ACCESS_KEY_ID",
@@ -63,7 +66,10 @@ class DeploymentSmokeTests(unittest.TestCase):
             "AWS_SESSION_TOKEN",
             "AWS_REGION",
             "S3_BUCKET",
+            "S3_ENDPOINT_URL",
             "MAX_IMPORT_ZIP_BYTES",
+            "MAX_IMPORT_MEMBER_BYTES",
+            "IMPORT_STALE_AFTER_SECONDS",
             "IMPORT_WORKER_POLL_INTERVAL_SECONDS",
             "YOUTUBE_API_KEY",
             "YOUTUBE_MAX_DURATION_SECONDS",
@@ -162,23 +168,27 @@ class DeploymentSmokeTests(unittest.TestCase):
                 },
             )
 
-    def test_provider_setup_docs_cover_render_supabase_s3_and_youtube(self):
+    def test_provider_setup_docs_cover_render_neon_r2_and_youtube(self):
         deployment_doc = (ROOT / "docs/backend/deployment.md").read_text(
             encoding="utf-8"
         )
         env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
 
         for section in (
-            "## Supabase Setup",
+            "## Neon Setup",
             "## Render Setup",
-            "## AWS S3 Setup",
+            "## Cloudflare R2 Setup",
             "## YouTube Data API Setup",
         ):
             self.assertIn(section, deployment_doc)
 
         for expected in (
+            "pooled",
             "Session Pooler",
             "health check path: /health",
+            "RUN_WORKERS_IN_PROCESS=true",
+            "AllowedMethods",
+            "lifecycle rule",
             "python backend/scripts/run_migrations.py",
             "python backend/scripts/run_worker.py",
             "python backend/scripts/run_enrichment_worker.py",
@@ -194,6 +204,21 @@ class DeploymentSmokeTests(unittest.TestCase):
             self.assertIn(expected, deployment_doc)
 
         self.assertIn("long-lived IAM access keys", env_example)
+
+    def test_render_blueprint_runs_one_free_service_with_in_process_workers(self):
+        blueprint = (ROOT / "render.yaml").read_text(encoding="utf-8")
+
+        self.assertIn("plan: free", blueprint)
+        self.assertIn("healthCheckPath: /health", blueprint)
+        self.assertEqual(blueprint.count("- type:"), 1)
+        for pattern in (
+            r'key: RUN_WORKERS_IN_PROCESS\s+value: "true"',
+            r'key: ENABLE_LOCAL_FILE_ROUTES\s+value: "false"',
+            r'key: ALLOW_LOCALHOST_ORIGINS\s+value: "false"',
+            r"key: DATABASE_URL\s+sync: false",
+            r"key: S3_ENDPOINT_URL\s+sync: false",
+        ):
+            self.assertRegex(blueprint, pattern)
 
     def test_migration_runner_smoke_applies_pending_migration(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -315,6 +340,8 @@ class DeploymentSmokeTests(unittest.TestCase):
             worker = S3ZipImportWorker(
                 repository=repository,
                 s3_client=s3_client,
+                # This archive deliberately has no watch history.
+                archive_problem=lambda paths: None,
             )
 
             result = worker.process_one()

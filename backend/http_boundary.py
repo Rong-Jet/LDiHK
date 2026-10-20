@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -8,6 +9,9 @@ from flask import Flask, Response, jsonify, request
 
 
 IDENTITY_FIELDS = frozenset({"ldihk_id", "user_id", "person_id"})
+# LDiHK-IDs end up in S3 keys and logs, so keep them to a safe alphabet.
+LDIHK_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$")
+ALLOW_LOCALHOST_ORIGINS_ENV = "ALLOW_LOCALHOST_ORIGINS"
 DEV_CORS_ORIGINS = frozenset(
     {
         "http://localhost:3000",
@@ -39,6 +43,8 @@ def require_bearer_identity() -> PublicIdentity:
 
     parts = authorization.split()
     if len(parts) != 2 or parts[0] != "Bearer" or not parts[1]:
+        raise PublicBoundaryError("invalid_authorization", 401)
+    if not LDIHK_ID_PATTERN.fullmatch(parts[1]):
         raise PublicBoundaryError("invalid_authorization", 401)
 
     return PublicIdentity(ldihk_id=parts[1])
@@ -83,22 +89,31 @@ def configure_cors(
         origin = request.headers.get("Origin")
         if origin in allowed_origins:
             _set_cors_headers(response, origin)
+        # Answers are live and per user. A browser must never reuse a stored
+        # one, least of all one fetched without (or with another) Origin: it
+        # lacks the CORS header, so the site's request would fail without
+        # ever reaching the server.
+        response.vary.add("Origin")
+        response.headers.setdefault("Cache-Control", "no-store")
         return response
 
 
 def _allowed_cors_origins(environ: Mapping[str, str]) -> set[str]:
     configured = {
-        origin.strip()
+        origin.strip().rstrip("/")
         for origin in environ.get("FRONTEND_ALLOWED_ORIGINS", "").split(",")
         if origin.strip()
     }
+    allow_localhost = environ.get(ALLOW_LOCALHOST_ORIGINS_ENV, "true").strip().lower()
+    if allow_localhost in {"0", "false", "no", "off"}:
+        return configured
     return configured | set(DEV_CORS_ORIGINS)
 
 
 def _set_cors_headers(response: Response, origin: str) -> None:
     response.headers["Access-Control-Allow-Origin"] = origin
     response.vary.add("Origin")
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PATCH, DELETE, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
     response.headers["Access-Control-Max-Age"] = "600"
 

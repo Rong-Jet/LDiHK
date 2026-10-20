@@ -1,0 +1,165 @@
+---
+import Layout from '../layouts/Layout.astro';
+import LegalPage from '../components/LegalPage.astro';
+---
+
+<Layout title="Privacy Policy | LDiHK">
+  <LegalPage heading="Privacy Policy" updated="20 October 2026">
+    <p>
+      This policy explains which personal data LDiHK processes when you use this website and the analytics console, why,
+      on which legal basis, with whom it is shared and which rights you have. It follows the EU General Data Protection
+      Regulation (GDPR). LDiHK is a prototype created for the EuroTech x Hong Kong Talent Exchange Hackathon 2026 in Munich; it does not provide medical or insurance services and does not share data with insurers.
+    </p>
+
+    <h2>1. Who is responsible</h2>
+    <p>
+      Controller within the meaning of Art. 4(7) GDPR:<br />
+      LDiHK<br />
+      Munich, Germany<br />
+      Email: <a href="mailto:contact@ldihk.xyz">contact@ldihk.xyz</a>
+    </p>
+    <p>For all privacy questions and requests, write to the email address above.</p>
+
+    <h2>2. What we process and why</h2>
+
+    <h3>2.1 Visiting the website</h3>
+    <p>
+      When you open the website, our hosting providers process technical data your browser sends: IP address, date and
+      time, the page requested, browser and operating system. This is needed to deliver the website and keep it secure
+      (Art. 6(1)(f) GDPR, our legitimate interest in a secure and working service). These server logs are kept by the
+      hosting providers for a short period (typically up to 30 days) and are not combined with other data.
+    </p>
+    <p>
+      We do not use analytics, advertising or tracking tools, and we set no tracking cookies. Fonts are delivered from
+      our own server. The only third-party content is the feedback form (section 2.6), which loads only on request.
+    </p>
+
+    <h3>2.2 Your LDiHK-ID</h3>
+    <p>
+      The console works without name, email or password. On your first upload your browser generates a random,
+      anonymous LDiHK-ID. It is the only key to your data: whoever has it can open your console. We store it on our
+      server to assign your data and in your browser's local storage so you stay signed in (technically necessary,
+      § 25(2) TDDDG). We cannot recover a lost ID.
+    </p>
+
+    <h3>2.3 Your data export and the analysis</h3>
+    <p>
+      You can upload a data export that you requested yourself from YouTube (Google Takeout), Instagram or TikTok.
+      Before upload, your browser removes videos, photos and other media. On our server we extract only:
+    </p>
+    <ul>
+      <li>when you watched, searched, liked, commented or viewed something (timestamps), the platform and the type of activity;</li>
+      <li>identifiers of videos and channels (e.g. YouTube video IDs), and your subscriptions (channel IDs and links);</li>
+      <li>titles, search terms, channel names and comment or message texts only as one-way hashes (irreversible fingerprints, used to detect duplicates), never as readable text.</li>
+    </ul>
+    <p>
+      The uploaded archive itself is deleted from storage as soon as the import has finished. From the extracted data we
+      compute usage statistics (daily volume, hour of day, fragmentation, late-night use), comparisons with other people
+      and an indicator of how your usage relates to published research on social media use and depression.
+    </p>
+    <p>
+      Optionally you can state your <strong>age range</strong> (5-year steps, never your exact age) and your <strong>sex</strong>,
+      so you are compared with people like you. You can change or remove both at any time in the console.
+    </p>
+    <p>
+      <strong>Legal basis:</strong> your consent (Art. 6(1)(a) GDPR). Because the analysis relates to mental health, we also
+      rely on your explicit consent under Art. 9(2)(a) GDPR, which you give in the consent dialog before uploading. You can
+      withdraw it at any time with effect for the future by deleting your data (see section 5).
+    </p>
+    <p>
+      The indicator is for self-reflection only. It is not a diagnosis and is not shared with anyone, including insurers.
+    </p>
+
+    <h3>2.4 Video lengths from the YouTube Data API</h3>
+    <p>
+      To estimate watch time, our server sends the IDs of videos from your history (without your LDiHK-ID or any other
+      information about you) to the YouTube Data API and stores the public length of each video. LDiHK uses YouTube API
+      Services. See the <a href="https://www.youtube.com/t/terms" rel="noopener" target="_blank">YouTube Terms of Service</a>
+      and the <a href="https://policies.google.com/privacy" rel="noopener" target="_blank">Google Privacy Policy</a>.
+      You can revoke access by deleting your data (section 5); Google's security settings page is at
+      <a href="https://myaccount.google.com/permissions" rel="noopener" target="_blank">myaccount.google.com/permissions</a>.
+    </p>
+
+    <h3>2.5 Comparison population</h3>
+    <p>
+      Comparisons use synthetic (computer-generated) profiles and, where available, other users' data, always as
+      aggregates over at least five people. No other person's individual data is ever shown to you, and yours is never
+      shown to others.
+    </p>
+
+    <h3 id="feedback">2.6 Bug reports and feature requests</h3>
+    <p>
+      Our <a href="/feedback">feedback page</a> uses Google Forms (Google Ireland Limited, Gordon House, Barrow Street,
+      Dublin 4, Ireland). The form is only loaded when you click "Load the form here" or open it in a new tab; before
+      that, no data is sent to Google. Once loaded, Google receives your IP address and browser information and may set
+      cookies or ask you to sign in with a Google account. We receive what you enter in the form (and, if the form asks
+      for it, the email address of your Google account) and use it only to fix bugs and plan features. Legal basis: your
+      consent by loading the form (Art. 6(1)(a) GDPR, § 25(1) TDDDG). We delete reports once they are handled, at the
+      latest after 12 months. Please do not enter your LDiHK-ID or health information in the form.
+    </p>
+
+    <h2>3. Recipients and processors</h2>
+    <p>We use the following service providers, bound by data processing agreements (Art. 28 GDPR):</p>
+    <ul>
+      <li><strong>Netlify, Inc.</strong> (USA): hosting of the website.</li>
+      <li><strong>Render Services, Inc.</strong> (USA; servers in Frankfurt, Germany): hosting of the analytics server.</li>
+      <li><strong>Neon, Inc.</strong> (USA; database in Frankfurt, Germany, on AWS): storage of the extracted data.</li>
+      <li><strong>Cloudflare, Inc.</strong> (USA; storage location EU): temporary storage of uploaded archives until import.</li>
+      <li><strong>Google LLC</strong> (USA): YouTube Data API, see section 2.4 (receives video IDs only).</li>
+      <li><strong>Google Ireland Limited</strong> / Google LLC: Google Forms for bug reports, see section 2.6 (only when you load the form).</li>
+    </ul>
+    <p>
+      Where data may be transferred to the USA, the transfer is based on the EU-U.S. Data Privacy Framework
+      (Art. 45 GDPR) where the provider is certified, otherwise on the EU Standard Contractual Clauses (Art. 46(2)(c) GDPR).
+      We do not sell your data and do not share it with insurers or other third parties.
+    </p>
+
+    <h2>4. How long we keep data</h2>
+    <ul>
+      <li>Uploaded archives: deleted right after the import (unused uploads after about 40 minutes).</li>
+      <li>Extracted data, LDiHK-ID, age range and sex: until you delete them with "Delete My Data", which takes effect immediately and permanently.</li>
+      <li>A record of each upload's size and time, without any link to your LDiHK-ID, is kept for up to 100 days to keep storage within its limits.</li>
+      <li>Server logs: see section 2.1.</li>
+    </ul>
+
+    <h2>5. Your rights</h2>
+    <p>You have the right to:</p>
+    <ul>
+      <li>access your data (Art. 15 GDPR): everything we hold is visible in your console;</li>
+      <li>rectification (Art. 16) and erasure (Art. 17): "Delete My Data" in the console deletes everything at once;</li>
+      <li>restriction of processing (Art. 18) and data portability (Art. 20);</li>
+      <li>object to processing based on legitimate interests (Art. 21);</li>
+      <li>withdraw your consent at any time, without affecting the lawfulness of processing before the withdrawal (Art. 7(3));</li>
+      <li>lodge a complaint with a data protection supervisory authority, in particular in your country of residence (Art. 77).</li>
+    </ul>
+    <p>
+      Because we do not know who you are, requests by email need your LDiHK-ID so we can find your data. Never send the ID
+      to anyone else.
+    </p>
+
+    <h2>6. Children</h2>
+    <p>
+      The service is intended for people aged 16 and over. Younger users may only use it with the consent of a parent or
+      legal guardian (Art. 8 GDPR).
+    </p>
+
+    <h2>7. Security</h2>
+    <p>
+      All connections are encrypted (HTTPS). Uploads go directly into our storage through single-use, time-limited links.
+      Data is stored pseudonymously under the LDiHK-ID, without names, email addresses or account handles. Keep your
+      LDiHK-ID secret like a password.
+    </p>
+
+    <h2>8. Automated decisions</h2>
+    <p>
+      We make no decisions with legal or similarly significant effects based solely on automated processing (Art. 22 GDPR).
+      The risk indicator is information for you only.
+    </p>
+
+    <h2>9. Changes</h2>
+    <p>
+      We update this policy when the service or the law changes. The date at the top shows the current version.
+      Significant changes are announced in the console.
+    </p>
+  </LegalPage>
+</Layout>

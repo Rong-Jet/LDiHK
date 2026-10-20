@@ -15,11 +15,13 @@ Frontend runtime convention:
 
 - Browser calls to backend-owned endpoints should use `PUBLIC_API_URL` as the
   backend origin when configured.
-- Astro-only helper routes such as upload URL generation stay same-origin.
-- When a backend origin is configured, the frontend upload helper must have S3
-  credentials through `CUSTOM_AWS_ACCESS_KEY_ID`,
-  `CUSTOM_AWS_SECRET_ACCESS_KEY`, `CUSTOM_AWS_REGION`, and the same `S3_BUCKET`
-  value as the backend.
+- Upload URLs come from the backend (`POST /api/uploads`), which enforces the
+  storage budget. The frontend site holds no storage credentials; the Astro
+  upload route only serves mock mode.
+- The free-tier backend sleeps when idle. The frontend pings `GET /api/ready` on
+  load, shows a "waking the server" state, and gates data requests until it
+  answers. Browser requests use a 90-second timeout and retry 5xx/network
+  errors.
 - `PUBLIC_MOCK_API=true`, `1`, `yes`, or `on` forces local mock API mode and
   ignores backend URLs.
 - `PUBLIC_MOCK_API=false` disables silent fallback to local mock routes. Local
@@ -32,13 +34,15 @@ Frontend runtime convention:
 
 Endpoint ownership:
 
-- Backend-owned: `GET /health`, `POST /api/imports`,
-  `GET /api/imports/{import_id}`, `POST /api/query`, `POST /api/population`.
-- Frontend/Astro helper-owned: `GET /api/uploader-info`,
-  `POST /api/upload-url`.
+- Backend-owned: `GET /health`, `GET /api/ready`, `GET /api/me`, `DELETE /api/me`,
+  `POST /api/uploads`, `POST /api/imports`, `GET /api/imports/{import_id}`,
+  `POST /api/query`, `POST /api/population`. The browser calls all of them
+  directly on `PUBLIC_API_URL`.
+- Frontend/Astro helper-owned: `GET /api/uploader-info`, `GET /api/wake`; in
+  mock mode also `POST /api/upload-url`.
 - Mock-only frontend routes such as `PUT /api/mock-s3-upload`, local
-  `POST /api/query`, and local `POST /api/imports` are development shims, not
-  production backend contract.
+  `GET /api/me`, `POST /api/query`, `POST /api/population` and
+  `POST /api/imports` are development shims, not production backend contract.
 
 ## Identity
 
@@ -54,15 +58,24 @@ backend derives identity from this header and maps it internally to the Postgres
 
 Do not send `ldihk_id`, `user_id`, or `person_id` in request bodies.
 
+Format: `^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$`; anything else is rejected with
+`401 invalid_authorization`. The frontend generates IDs with
+`crypto.getRandomValues`: a friendly prefix plus a 12-character base32 suffix
+(60 random bits), e.g. `ldihk-cosmic-pegasus-k3j9x2m4q7ab`. The ID is the only
+credential, so it must not be guessable.
+
 Example:
 
 ```text
-Authorization: Bearer demo-user-123
+Authorization: Bearer ldihk-cosmic-pegasus-k3j9x2m4q7ab
 ```
 
 Backend behavior:
 
-- Finds or creates an internal user for `external_id = demo-user-123`.
+- `POST /api/imports` finds or creates an internal user for that
+  `external_id`. Logging in does not create users: the frontend validates an
+  entered ID with `GET /api/me`, which answers `404 unknown_ldihk_id` for IDs
+  that never uploaded anything.
 - On `POST /api/imports`, optional `age` and `sex` request fields are accepted
   as profile attributes for that user creation path.
 - Stores the internal UUID as `user_id` in Postgres.
@@ -72,15 +85,18 @@ This is demo identity, not production authentication.
 
 ## Platform Scope
 
-Supported user-uploaded export ZIPs in v5 are YouTube Takeout and TikTok data
-export ZIPs. The query API also supports seeded synthetic population rows for
-these normalized platforms:
+Supported user-uploaded export ZIPs are YouTube Takeout (in English, German,
+Spanish, French, Italian, Portuguese and Dutch), TikTok and Instagram data
+exports (HTML or JSON). The query API also supports seeded synthetic
+population rows for these normalized platforms:
 
 Supported datasets:
 
 ```text
 usage_analytics
 youtube_usage
+tiktok_usage
+instagram_usage
 ```
 
 Seeded synthetic platforms:
@@ -97,13 +113,27 @@ linkedin
 
 1. User selects a supported export ZIP in the frontend: YouTube Takeout or
    TikTok data export.
-2. Frontend uploads the ZIP to S3 under `uploads/<LDiHKID>/<filename>.zip`.
-3. Frontend calls `POST /api/imports` with S3 object metadata.
-4. Backend creates a queued import in Postgres.
-5. Worker polls Postgres, downloads the ZIP from S3, parses supported YouTube
-   and TikTok files, and writes normalized rows.
-6. Frontend polls `GET /api/imports/{import_id}`.
-7. Frontend calls `POST /api/query` for dashboard data.
+2. Archives over 20 MB are first trimmed in the browser: videos, photos and
+   other media are removed so only history files are uploaded (at most
+   200 MB).
+3. Frontend asks the backend for an upload URL (`POST /api/uploads`) and
+   uploads the ZIP straight to object storage (Cloudflare R2 or S3) under
+   `uploads/<LDiHKID>/<random>-<filename>.zip`.
+4. Frontend calls `POST /api/imports` with that bucket and key.
+5. Backend creates a queued import in Postgres.
+6. The import worker (a thread inside the backend web process on free
+   hosting) picks up the import, downloads the ZIP, parses supported YouTube,
+   TikTok and Instagram files, and writes normalized rows. An archive with no
+   supported files fails with `error_message` starting `no_supported_files`;
+   one without any watch history fails before parsing with
+   `takeout_index_only` (only Google's `archive_browser.html`),
+   `youtube_history_missing` or `instagram_views_missing`. The frontend maps
+   these codes to instructions (`src/lib/importErrors.ts`). Watch events of
+   the same video within one second from a different file of the same user
+   (the HTML and JSON version of one history) are skipped as duplicates.
+   When the import ends, the archive is deleted from storage.
+7. Frontend polls `GET /api/imports/{import_id}`.
+8. Frontend calls `POST /api/query` for dashboard data.
 
 There is no S3 event/Lambda trigger in the v5 backend flow.
 The backend rejects import requests where `s3_key` is not under the bearer
@@ -115,9 +145,12 @@ identity prefix: `uploads/<LDiHKID>/`.
 
 ```text
 GET /health
+GET /api/ready
 ```
 
-Auth is not required.
+Auth is not required. Both answer the same. The browser uses `/api/ready`:
+ad and privacy blockers block URLs ending in `/health`
+(`net::ERR_BLOCKED_BY_CLIENT`). Uptime checks use `/health`.
 
 Response:
 
@@ -127,42 +160,161 @@ Response:
 }
 ```
 
+### Get Current User
+
+```text
+GET /api/me?timezone=<IANA name>
+```
+
+Headers:
+
+```text
+Authorization: Bearer <LDiHKID>
+```
+
+Used for login validation, per-platform date bounds and resuming an import.
+`timezone` (default `UTC`) sets the calendar for `min_date` / `max_date`.
+
+Response:
+
+```json
+{
+  "ldihk_id": "ldihk-cosmic-pegasus-k3j9x2m4q7ab",
+  "exists": true,
+  "timezone": "Europe/Berlin",
+  "datasets": {
+    "youtube": {
+      "event_count": 52310,
+      "watch_event_count": 48800,
+      "first_event_at": "2019-01-02T10:00:00+00:00",
+      "last_event_at": "2026-10-01T20:00:00+00:00",
+      "min_date": "2019-01-02",
+      "max_date": "2026-10-01",
+      "watch_min_date": "2019-01-02",
+      "watch_max_date": "2026-10-01"
+    }
+  },
+  "profile": { "age_range": "20-24", "sex": "female" },
+  "latest_import": null
+}
+```
+
+`min_date` / `max_date` cover all event types; `watch_min_date` /
+`watch_max_date` only views, which can be much narrower (Instagram keeps views
+for weeks but likes and messages for years). `profile` is the user's optional
+self-reported age range and sex (`null` when not given).
+
+`latest_import` has the shape of `GET /api/imports/{import_id}` or is `null`.
+A user whose first import is still queued or running has `datasets: {}` and a
+`latest_import`.
+
+Errors: `missing_authorization`, `invalid_authorization`,
+`invalid_timezone` (400), `unknown_ldihk_id` (404), `database_unavailable`
+(503), `rate_limited` (429, failed lookups are limited).
+
+### Update Profile
+
+```text
+PATCH /api/me/profile
+```
+
+Sets or clears the optional age range and sex used to compare the user with
+people of similar age and sex. Fields left out stay as they are; `null` (or
+`"prefer_not_to_say"` for `sex`) clears a field.
+
+```json
+{ "age_range": "20-24", "sex": "female" }
+```
+
+- `age_range`: `13-14`, `15-19`, `20-24`, ..., `65-69`, `70+` (5-year steps; no
+  exact age is ever stored).
+- `sex`: `female`, `male`, `diverse`. The studies behind the comparison only
+  report female and male; `diverse` and no answer compare across sexes.
+
+Response: `{"profile": {"age_range": "20-24", "sex": "female"}}`. Errors:
+`invalid_profile` (400, with `fields`), `unknown_ldihk_id` (404),
+`rate_limited` (429, 30 per hour).
+
+### Delete Current User
+
+```text
+DELETE /api/me
+```
+
+Headers: `Authorization: Bearer <LDiHKID>`, `Content-Type: application/json`.
+
+Request body (must repeat the ID):
+
+```json
+{ "confirm": "ldihk-cosmic-pegasus-k3j9x2m4q7ab" }
+```
+
+Permanently deletes the user's usage events, subscriptions, imports, import
+warnings, enrichment jobs and the user row, then removes objects under
+`uploads/<LDiHKID>/` from storage (best effort; `uploads_deleted` is `null`
+when that was not possible). The shared YouTube video cache is kept.
+
+Response:
+
+```json
+{ "deleted": true, "events_deleted": 52310, "imports_deleted": 2, "subscriptions_deleted": 140, "uploads_deleted": 1 }
+```
+
+Errors: `confirmation_mismatch` (400), `unknown_ldihk_id` (404),
+`rate_limited` (429), `database_unavailable` (503).
+
 ### Get Uploader Info
 
 ```text
 GET /api/uploader-info
 ```
 
-Owned by the frontend Astro server. Auth is not required. The browser uses this
-to display upload capability state before a ZIP is selected.
+Owned by the frontend Astro server. Auth is not required. The upload UI uses
+it to show whether uploads are live or simulated.
 
 Response:
 
 ```json
 {
   "isMock": false,
-  "uploadConfigured": true
+  "uploadConfigured": true,
+  "provider": "backend"
 }
 ```
 
-Fields:
+`isMock` is `true` only in mock mode, where uploads go to the local mock
+route (`provider: "mock"`). In live mode the backend signs uploads.
 
-- `isMock`: `true` only when upload will use the local mock upload route.
-- `uploadConfigured`: `true` when upload can proceed. In live mode this means
-  the frontend server has S3 credentials and bucket configuration. In explicit
-  mock mode this means mock upload is intentionally enabled.
+### Wake the Backend
 
-When `PUBLIC_MOCK_API=false`, missing S3 upload config must not be reported as
-mock-ready.
+```text
+GET /api/wake
+```
+
+Owned by the frontend Astro server. Auth is not required and it takes no
+parameters. While the browser's own `GET /api/ready` gets no answer, console
+pages call it at most every 30 seconds. It requests the backend's `/health`
+from the server side, which also starts a sleeping free-tier backend, waits up
+to 8 seconds, and answers `200 {"status": "ok"}` when the backend is up,
+otherwise `202 {"status": "waking"}`. Pages treat `ok` as ready, so a browser
+whose direct request is blocked (an extension, a stale cache entry) is not left
+waiting forever.
 
 ### Create Upload URL
 
 ```text
-POST /api/upload-url
+POST /api/uploads
 ```
 
-Owned by the frontend Astro server. This route creates the browser-to-S3 upload
-configuration. It must use the same S3 bucket as the backend import API.
+Owned by the backend. Returns a presigned PUT URL for one archive, within the
+storage budget that keeps the bucket inside Cloudflare R2's free tier (R2 has
+no spending cap). The URL:
+
+- is bound to the exact `size` (signed `Content-Length`) and `application/zip`,
+- must start uploading within `UPLOAD_URL_TTL_SECONDS` (default 120),
+- carries a signed `If-None-Match: *`, so it can create its object only once
+  (a repeated upload fails with `412`); the bucket CORS rule must allow the
+  `if-none-match` header.
 
 Headers:
 
@@ -176,53 +328,51 @@ Request body:
 ```json
 {
   "filename": "takeout.zip",
-  "contentType": "application/zip"
+  "contentType": "application/zip",
+  "size": 6264
 }
 ```
 
-Live response:
+`size` is in bytes, at most `MAX_IMPORT_ZIP_BYTES` (200 MB). The file name
+must end in `.zip` (any case).
+
+Response (`201`):
 
 ```json
 {
-  "url": "https://bucket.s3.region.amazonaws.com/uploads/demo-user-123/takeout.zip?...",
+  "url": "https://<account>.r2.cloudflarestorage.com/ldihk-uploads/uploads/demo-user-123/3f9c2a1b7d4e5f60-takeout.zip?X-Amz-...",
   "method": "PUT",
   "headers": {
-    "Content-Type": "application/zip"
+    "Content-Type": "application/zip",
+    "If-None-Match": "*"
   },
-  "s3Bucket": "existing-bucket",
-  "s3Key": "uploads/demo-user-123/takeout.zip",
+  "s3Bucket": "ldihk-uploads",
+  "s3Key": "uploads/demo-user-123/3f9c2a1b7d4e5f60-takeout.zip",
+  "expiresAt": "2026-10-18T10:02:00+00:00",
   "isMock": false
 }
 ```
 
-Mock response, only when mock mode is enabled or implicit mock fallback is
-allowed:
+Send the PUT with exactly these headers. Errors (each with a `message` to
+show):
 
-```json
-{
-  "url": "http://localhost:4321/api/mock-s3-upload",
-  "method": "PUT",
-  "headers": {
-    "Content-Type": "application/zip",
-    "x-amz-meta-filename": "takeout.zip",
-    "x-amz-meta-ldihkid": "demo-user-123",
-    "x-amz-s3-key": "uploads/demo-user-123/takeout.zip"
-  },
-  "s3Bucket": "local-mock-bucket",
-  "s3Key": "uploads/demo-user-123/takeout.zip",
-  "isMock": true
-}
-```
+- `missing_authorization`, `invalid_authorization` (401)
+- `invalid_payload`, `invalid_filename`, `invalid_size`,
+  `invalid_content_type` (400); `file_too_large` (413)
+- `rate_limited` (429, `Retry-After`): 20 per hour per ID, 300 per hour overall
+- `upload_storage_full` (429, `Retry-After: 3600`): archives waiting to be
+  processed already fill `UPLOAD_MAX_STORED_BYTES`
+- `upload_budget_exhausted` (429, `Retry-After` until the next month):
+  `UPLOAD_MAX_PER_MONTH` upload URLs were issued this calendar month (UTC)
+- `uploads_disabled` (503): `UPLOADS_ENABLED=false`
+- `database_full` (507): the database is larger than `DATABASE_MAX_BYTES`;
+  no new uploads until data is deleted
+- `upload_not_configured` (503), `database_unavailable` (503),
+  `upload_signing_failed` (500)
 
-Errors:
-
-- `missing_authorization`
-- `invalid_authorization`
-- `upload_not_configured`
-- `s3_signature_failure`
-
-When `PUBLIC_MOCK_API=false`, this endpoint must return `503` with
-`upload_not_configured` instead of falling back to `/api/mock-s3-upload`.
+In mock mode the frontend's `POST /api/upload-url` returns the same shape
+pointing at `/api/mock-s3-upload` (`"isMock": true`); in live mode that route
+answers `410 upload_moved`.
 
 ### Create Import
 
@@ -244,8 +394,8 @@ Request body:
   "s3_bucket": "existing-bucket",
   "s3_key": "uploads/demo-user-123/youtube_takeout_2026.zip",
   "s3_etag": "optional-etag",
-  "age": 23,
-  "sex": "male"
+  "age_range": "20-24",
+  "sex": "female"
 }
 ```
 
@@ -436,9 +586,39 @@ Authorization: Bearer <LDiHKID>
 Content-Type: application/json
 ```
 
-Live user-upload scope supports YouTube and TikTok for the MVP. Other
-multi-product population benchmarks are mock-only until those ingestion paths
-are stable.
+The browser calls this endpoint directly on the backend. The live population
+benchmark compares YouTube watch time only (`platforms: ["youtube"]`; anything
+else is `400 unsupported_platform`), and its days and hours are UTC so every
+user is measured on the same clock. Other multi-product population benchmarks
+are mock-only.
+
+Who the user is compared with:
+
+- Other real users whose YouTube history overlaps the range. The requesting
+  user is never part of their own comparison group. Each person counts on the
+  days inside their own history (a day without watching counts as 0 hours),
+  but not before their export starts or after it ends.
+- With `includeSynthetic: true`, about 1,400 synthetic profiles computed for
+  exactly the requested days (seasons, habit drift, holidays, weekday and
+  day-to-day variation; the same for every user). `syntheticModel` names the
+  model and profile count; `syntheticBaseline` is always `null` now. For very
+  long ranges an evenly spread subset of the profiles is used.
+- Comparisons against fewer than 5 other people are refused
+  (`reason: "insufficient_population"`), because percentiles of such a small
+  group would reveal individual usage.
+- `platforms`: the user's own side, any of `youtube`, `instagram`, `tiktok`
+  (summed). `populationSource`: `"total"` compares with the other people's
+  total social media time (YouTube, TikTok, Instagram, LinkedIn), `"matching"`
+  (default for older clients) with their time on the same platforms. The
+  response repeats `platforms`, `populationSource` and `comparisonPlatforms`.
+- `deciles[].user` is `null` on days outside the user's own history on the
+  selected platforms (`userCoverage`), and `userDailyAverageHours` averages
+  only those days, so charts draw no line before an export starts.
+- With `compareWith: "cohort"` and a profile, only people of the same sex and
+  age range count. The group widens to neighbouring 5-year ranges until it has
+  30 people, then drops the sex if fewer than 5 remain, and falls back to
+  everyone. `comparisonGroup` in the response says who was compared:
+  `{"basis": "cohort", "ageRanges": ["15-19", "25-29"], "sex": "female", "size": 48}`.
 
 Request body:
 
@@ -448,9 +628,34 @@ Request body:
   "startDate": "2026-05-08",
   "endDate": "2026-06-06",
   "includeSynthetic": true,
-  "customPercentile": 90
+  "customPercentile": 90,
+  "compareWith": "cohort"
 }
 ```
+
+### Risk Reference Values
+
+```text
+POST /api/population/reference
+```
+
+Same body as the population benchmark. Returns the typical (median) risk-score
+inputs of the user's comparison group and of everyone: watch hours per active
+day, late-night hours (23:00-04:59, UTC) and fragmentation (share of the day's
+hours with at least 5 minutes of watching).
+
+```json
+{
+  "ready": true,
+  "comparisonGroup": { "basis": "cohort", "ageRanges": ["20-24", "20-24"], "sex": "female", "size": 52 },
+  "cohort": { "dailyHours": 0.62, "lateNightHours": 0.11, "fragmentation": 0.08 },
+  "overall": { "dailyHours": 0.55, "lateNightHours": 0.08, "fragmentation": 0.07 }
+}
+```
+
+The risk tab measures each input relative to the cohort (see
+`src/lib/riskModel.ts`), so a group that typically uses more is not scored
+higher for that alone.
 
 Fields:
 
@@ -473,6 +678,8 @@ Ready response:
   "userDailyAverageHours": 3.12,
   "includeSynthetic": true,
   "customPercentile": 90,
+  "populationSize": 412,
+  "syntheticBaseline": { "startDate": "2026-05-01", "endDate": "2026-05-14" },
   "distribution": [
     { "hours": 0, "density": 15 },
     { "hours": 1, "density": 85 },
@@ -498,13 +705,32 @@ Ready response:
 }
 ```
 
-Not-ready response:
+- `populationSize`: number of other people (real and synthetic) in the
+  comparison.
+- `syntheticBaseline`: the synthetic profiles' window, or `null` when synthetic
+  data is off or not seeded.
+- `distribution`: number of people per 1-hour bucket of average daily watch
+  time (24 means 24 h or more).
+
+Not-ready responses (HTTP 200; show `message` to the user):
 
 ```json
 {
   "schema_version": "youtube_usage.population.v1",
   "ready": false,
-  "message": "Dataset not ready. Please ingest YouTube data first."
+  "reason": "no_user_data",
+  "message": "No YouTube watch history in the selected date range."
+}
+```
+
+```json
+{
+  "schema_version": "youtube_usage.population.v1",
+  "ready": false,
+  "reason": "insufficient_population",
+  "populationSize": 3,
+  "minPopulationSize": 5,
+  "message": "Fewer than 5 other people have YouTube data for this range, ..."
 }
 ```
 
@@ -634,11 +860,16 @@ Allowed fields:
 - `include_zero_buckets`: boolean. Currently applies to hourly heatmaps when
   dimensions are exactly `["date", "hour"]` and both `start_date` and `end_date`
   are present.
-- `limit`: positive integer result limit. The backend caps this at its maximum.
+- `limit`: positive integer result limit (default 500). The backend caps it at
+  10000. Rows are ordered ascending by dimensions, so always request enough
+  rows for the range, or use coarser dimensions (`month`, `weekday`, `hour`)
+  for long ranges.
 - `sort_by`: requested metric name, such as `event_count`.
 - `sort_direction`: `asc` or `desc`.
-
-Date and hour buckets use UTC in v5.
+- `timezone`: IANA timezone name, e.g. `Europe/Berlin`, applied to `date`,
+  `hour`, `weekday` and `month` buckets and to `start_date` / `end_date`.
+  Defaults to the backend's `QUERY_BUCKET_TIMEZONE` (`UTC`). The frontend sends
+  the browser timezone.
 
 ## Example Queries
 
@@ -796,6 +1027,14 @@ Expected codes:
 - `invalid_date_range`
 - `invalid_limit`
 - `invalid_sort`
+- `invalid_timezone`
+- `invalid_filename`
+- `invalid_size`
+- `file_too_large`
+- `rate_limited` (429, `Retry-After` header and `retry_after` seconds)
+- `confirmation_mismatch`
+- `unknown_ldihk_id`
+- `unsupported_platform`
 - `unauthorized_import`
 
 ## Compatibility Notes

@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import { BarChart3, HelpCircle, ArrowRight, Bed, AlertCircle, Lightbulb, TrendingUp } from 'lucide-react';
 import type { FlattenedTimelineRecord } from '../hooks/useAnalyticsData';
+import { formatCalendarValue, isYearMonth } from '../lib/dates';
 
 interface DeepDiveProps {
   selectedDate: string | null;
@@ -11,6 +12,7 @@ const PLATFORM_LABELS: Record<string, string> = {
   youtube: 'YouTube',
   instagram: 'Instagram',
   tiktok: 'TikTok',
+  spotify: 'Spotify',
   twitter: 'Twitter/X',
   linkedin: 'LinkedIn',
 };
@@ -19,6 +21,7 @@ const PLATFORM_COLORS: Record<string, string> = {
   youtube: '#537D96',   // brand-navy
   instagram: '#EC8F8D', // brand-peach
   tiktok: '#44A194',    // brand-teal
+  spotify: '#5EAF81',   // brand-green
   twitter: '#8ba6b8',   // light navy
   linkedin: '#66b8ad',  // light teal
 };
@@ -27,58 +30,59 @@ const PLATFORM_BG_CLASSES: Record<string, string> = {
   youtube: 'bg-brand-navy',
   instagram: 'bg-brand-peach',
   tiktok: 'bg-brand-teal',
+  spotify: 'bg-[#5EAF81]',
   twitter: 'bg-blue-400',
   linkedin: 'bg-teal-600',
 };
 
+interface PillarSlice {
+  key: string;
+  label: string;
+  count: number;
+  color: string;
+  bgClass: string;
+  percentage: number;
+  isOffline: boolean;
+}
+
 const PILLAR_HEIGHT_PX = 360;
 
 export default function DeepDive({ selectedDate, dayData }: DeepDiveProps) {
-  if (!selectedDate || !dayData) {
-    return (
-      <div className="bg-brand-beige border border-brand-navy/15 rounded-3xl p-8 h-full flex flex-col items-center justify-center text-center space-y-4 shadow-sm min-h-[500px]">
-        <div className="w-12 h-12 rounded-2xl bg-white border border-brand-navy/10 flex items-center justify-center text-brand-navy/40 shadow-sm">
-          <HelpCircle className="w-6 h-6" />
-        </div>
-        <div>
-          <h4 className="font-bold text-brand-navy text-base">Select a Date for Deep-Dive</h4>
-          <p className="text-xs text-brand-navy/60 max-w-[240px] mt-1.5 leading-relaxed mx-auto">
-            Click on any event node in the timeline chart above to inspect platform distribution breakdowns for that day.
-          </p>
-        </div>
-        <div className="flex items-center gap-1.5 text-[10px] text-brand-teal font-extrabold uppercase tracking-wider">
-          Interactive Node Mapping active
-          <ArrowRight className="w-3.5 h-3.5" />
-        </div>
-      </div>
-    );
-  }
-
-  // Calculate platform totals
-  const totalActiveHours = dayData.youtubeHours + dayData.instagramHours + dayData.tiktokHours + dayData.twitterHours + dayData.linkedinHours;
+  // All hooks run unconditionally (before the empty-state early return below).
+  const totalActiveHours = dayData
+    ? dayData.youtubeHours + dayData.instagramHours + dayData.tiktokHours + dayData.spotifyHours + dayData.twitterHours + dayData.linkedinHours
+    : 0;
   const offlineHours = Math.max(0, 24 - totalActiveHours);
-  
-  // 1. Stack active segments inside the flex-col-reverse pillar
-  // Order: tiktok (bottom), youtube, instagram, twitter, linkedin
-  const activePlatformsStack = [
-    { key: 'tiktok', count: dayData.tiktokHours },
-    { key: 'youtube', count: dayData.youtubeHours },
-    { key: 'instagram', count: dayData.instagramHours },
-    { key: 'twitter', count: dayData.twitterHours },
-    { key: 'linkedin', count: dayData.linkedinHours },
-  ].map(p => ({
-    ...p,
-    label: PLATFORM_LABELS[p.key],
-    color: PLATFORM_COLORS[p.key],
-    bgClass: PLATFORM_BG_CLASSES[p.key],
-    percentage: Math.round((p.count / 24) * 100),
-  }));
 
-  const activePlatformsWithUsage = activePlatformsStack.filter(p => p.count > 0);
+  // 1. Stack active segments inside the flex-col-reverse pillar
+  // Order: tiktok (bottom), youtube, instagram, spotify, twitter, linkedin
+  const activePlatformsStack = useMemo<PillarSlice[]>(() => {
+    if (!dayData) return [];
+    return [
+      { key: 'tiktok', count: dayData.tiktokHours },
+      { key: 'youtube', count: dayData.youtubeHours },
+      { key: 'instagram', count: dayData.instagramHours },
+      { key: 'spotify', count: dayData.spotifyHours },
+      { key: 'twitter', count: dayData.twitterHours },
+      { key: 'linkedin', count: dayData.linkedinHours },
+    ].map((p) => ({
+      ...p,
+      label: PLATFORM_LABELS[p.key],
+      color: PLATFORM_COLORS[p.key],
+      bgClass: PLATFORM_BG_CLASSES[p.key],
+      percentage: Math.round((p.count / 24) * 100),
+      isOffline: false,
+    }));
+  }, [dayData]);
+
+  const activePlatformsWithUsage = useMemo(
+    () => activePlatformsStack.filter((p) => p.count > 0),
+    [activePlatformsStack]
+  );
 
   // 2. Map slices sequence from top to bottom (matches visual column slices top-to-bottom)
   const topToBottomSlices = useMemo(() => {
-    const list = [
+    const list: PillarSlice[] = [
       {
         key: 'offline',
         label: 'Offline / Sleep',
@@ -140,7 +144,7 @@ export default function DeepDive({ selectedDate, dayData }: DeepDiveProps) {
     }
 
     return slicesWithPositions;
-  }, [dayData, offlineHours, activePlatformsWithUsage]);
+  }, [offlineHours, activePlatformsWithUsage]);
 
   // Top platform for stats card
   const topPlatform = [...activePlatformsWithUsage].sort((a, b) => b.count - a.count)[0];
@@ -163,7 +167,7 @@ export default function DeepDive({ selectedDate, dayData }: DeepDiveProps) {
         text: 'No social media streams logged for this specific day window.',
       };
     }
-    
+
     if (topPlatform.key === 'tiktok') {
       return {
         type: 'warning',
@@ -196,8 +200,33 @@ export default function DeepDive({ selectedDate, dayData }: DeepDiveProps) {
     };
   }, [topPlatform, offlineHours, totalActiveHours]);
 
+  if (!selectedDate || !dayData) {
+    return (
+      <div className="bg-brand-beige border border-brand-navy/15 rounded-3xl p-8 h-full flex flex-col items-center justify-center text-center space-y-4 shadow-sm min-h-[500px]">
+        <div className="w-12 h-12 rounded-2xl bg-white border border-brand-navy/10 flex items-center justify-center text-brand-navy/40 shadow-sm">
+          <HelpCircle className="w-6 h-6" />
+        </div>
+        <div>
+          <h4 className="font-bold text-brand-navy text-base">Select a Date for Deep-Dive</h4>
+          <p className="text-xs text-brand-navy/60 max-w-[240px] mt-1.5 leading-relaxed mx-auto">
+            Click on any event node in the timeline chart above to inspect platform distribution breakdowns for that day.
+          </p>
+        </div>
+        <div className="flex items-center gap-1.5 text-[10px] text-brand-teal font-extrabold uppercase tracking-wider">
+          Interactive Node Mapping active
+          <ArrowRight className="w-3.5 h-3.5" />
+        </div>
+      </div>
+    );
+  }
+
+  const isMonthBucket = isYearMonth(selectedDate);
+  const selectedLabel = isMonthBucket
+    ? `Average day in ${formatCalendarValue(selectedDate, { month: 'long', year: 'numeric' })}`
+    : formatCalendarValue(selectedDate, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+
   return (
-    <div className="bg-brand-beige border border-brand-navy/15 rounded-3xl p-6 shadow-sm flex flex-col h-full gap-5 min-h-[500px]">
+    <div className="bg-brand-beige border border-brand-navy/15 rounded-3xl p-4 sm:p-6 shadow-sm flex flex-col h-full gap-5 min-h-[500px]">
       {/* Header */}
       <div className="flex items-center gap-3 pb-3 border-b border-brand-navy/10">
         <div className="w-9 h-9 rounded-xl bg-white border border-brand-navy/10 flex items-center justify-center text-brand-teal shadow-sm">
@@ -205,7 +234,7 @@ export default function DeepDive({ selectedDate, dayData }: DeepDiveProps) {
         </div>
         <div>
           <h3 className="font-bold text-brand-navy text-sm">24-Hour Day Allocation</h3>
-          <span className="text-xs font-semibold text-brand-navy/60">{selectedDate}</span>
+          <span className="text-xs font-semibold text-brand-navy/60">{selectedLabel}</span>
         </div>
       </div>
 
@@ -224,7 +253,7 @@ export default function DeepDive({ selectedDate, dayData }: DeepDiveProps) {
       </div>
 
       {/* Visual Pillar & Label Sync Columns (shifted right with pl-8) */}
-      <div 
+      <div
         className="flex items-stretch gap-0 py-2 relative pl-8"
         style={{ height: `${PILLAR_HEIGHT_PX}px` }}
       >
@@ -239,7 +268,7 @@ export default function DeepDive({ selectedDate, dayData }: DeepDiveProps) {
                 style={{ height: `${(p.count / 24) * 100}%` }}
               />
             ))}
-            
+
             {/* Offline space on top */}
             <div
               className="bg-brand-navy/10 border-b border-brand-navy/10 transition-all duration-300 relative group/offline flex items-center justify-center"
@@ -248,7 +277,7 @@ export default function DeepDive({ selectedDate, dayData }: DeepDiveProps) {
               <Bed className="w-4 h-4 text-brand-navy/25" />
             </div>
           </div>
-          
+
           {/* Y-Axis Labels */}
           <div className="absolute -left-6 top-0 bottom-0 flex flex-col justify-between text-[9px] font-bold text-brand-navy/55 select-none py-1">
             <span>24h</span>
@@ -261,8 +290,8 @@ export default function DeepDive({ selectedDate, dayData }: DeepDiveProps) {
 
         {/* Column 2: SVG Bezier Connectors Overlay */}
         <div className="w-8 relative h-full flex-shrink-0">
-          <svg 
-            className="absolute inset-0 w-full h-full pointer-events-none" 
+          <svg
+            className="absolute inset-0 w-full h-full pointer-events-none"
             viewBox={`0 0 32 ${PILLAR_HEIGHT_PX}`}
             preserveAspectRatio="none"
           >
@@ -291,7 +320,7 @@ export default function DeepDive({ selectedDate, dayData }: DeepDiveProps) {
               <div
                 key={slice.key}
                 className="absolute left-0 right-0 -translate-y-1/2 flex flex-col justify-center text-left py-1 transition-all duration-300 pointer-events-none"
-                style={{ 
+                style={{
                   top: `${slice.actualY}%`,
                 }}
               >

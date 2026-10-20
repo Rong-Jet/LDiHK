@@ -1,5 +1,12 @@
 ---
 import '../styles/global.css';
+// Self-hosted font: no visitor IP addresses go to Google Fonts.
+import '@fontsource/outfit/latin-300.css';
+import '@fontsource/outfit/latin-400.css';
+import '@fontsource/outfit/latin-500.css';
+import '@fontsource/outfit/latin-600.css';
+import '@fontsource/outfit/latin-700.css';
+import '@fontsource/outfit/latin-800.css';
 
 interface Props {
   title: string;
@@ -8,7 +15,7 @@ interface Props {
 
 const { 
   title, 
-  description = "LDiHK Social Media Data Analytics Platform - High-performance multi-dimensional analytics dashboard." 
+  description = "LDiHK: anonymous social media analytics as an early signal for mental health." 
 } = Astro.props;
 ---
 
@@ -17,13 +24,11 @@ const {
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/favicon.ico" sizes="48x48" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    
-    <!-- Google Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
-    
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#44A194" />
+
     <!-- SEO Meta Tags -->
     <title>{title}</title>
     <meta name="description" content={description} />
@@ -48,9 +53,7 @@ const {
         
         <nav class="hidden md:flex items-center gap-8 font-medium">
           <a href="/" class="text-brand-navy hover:text-brand-teal transition-colors text-sm" id="nav-overview">Overview</a>
-          <a href="/dashboard" class="text-brand-navy hover:text-brand-teal transition-colors text-sm" id="nav-dashboard">Personal Dashboard</a>
-          <a href="/population" class="text-brand-navy hover:text-brand-teal transition-colors text-sm" id="nav-population">Population Benchmark</a>
-          <a href="/risk" class="text-brand-navy hover:text-brand-teal transition-colors text-sm" id="nav-risk">Mental Health Risk</a>
+          <a href="/feedback" class="text-brand-navy hover:text-brand-teal transition-colors text-sm" id="nav-feedback">Feedback</a>
           <a href="mailto:contact@LDiHK.xyz" class="text-brand-navy hover:text-brand-teal transition-colors text-sm" id="nav-support">Contact Support</a>
         </nav>
         
@@ -83,7 +86,7 @@ const {
               <span class="font-bold text-lg tracking-tight text-brand-navy">LDiHK</span>
             </div>
             <p class="text-sm max-w-xs text-brand-navy/70 leading-relaxed">
-              High-performance, programmatic Social Media Data Analytics Platform. Built for developers, operations, and growth marketing teams.
+              Anonymous social media analytics as an early signal for mental health, a prototype from the EuroTech x HKTE Hackathon 2026 in Munich.
             </p>
           </div>
           
@@ -98,7 +101,7 @@ const {
               </li>
               <li class="text-brand-navy/60 flex items-center gap-2">
                 <span class="w-1.5 h-1.5 rounded-full bg-brand-navy/40"></span>
-                Support Hours: 24/7 Global DevOps
+                Partnerships, research and feedback
               </li>
             </ul>
           </div>
@@ -110,7 +113,7 @@ const {
               <a href="/dashboard" class="hover:text-brand-teal transition-colors" id="footer-link-dashboard">Personal Dashboard</a>
               <a href="/population" class="hover:text-brand-teal transition-colors" id="footer-link-population">Population Benchmark</a>
               <a href="/risk" class="hover:text-brand-teal transition-colors" id="footer-link-risk">Mental Health Risk</a>
-              <a href="#pitchdeck" class="hover:text-brand-teal transition-colors" id="footer-link-pitchdeck">Download Pitchdeck</a>
+              <a href="/feedback" class="hover:text-brand-teal transition-colors" id="footer-link-feedback">Report a Bug / Request a Feature</a>
             </div>
           </div>
         </div>
@@ -118,8 +121,8 @@ const {
         <div class="mt-12 pt-8 border-t border-brand-navy/10 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-brand-navy/60">
           <span>&copy; {new Date().getFullYear()} LDiHK. All rights reserved.</span>
           <div class="flex gap-6">
-            <a href="#" class="hover:text-brand-teal">Privacy Policy</a>
-            <a href="#" class="hover:text-brand-teal">Terms of Service</a>
+            <a href="/privacy" class="hover:text-brand-teal" id="footer-privacy">Privacy Policy</a>
+            <a href="/terms" class="hover:text-brand-teal" id="footer-terms">Terms of Service</a>
           </div>
         </div>
       </div>

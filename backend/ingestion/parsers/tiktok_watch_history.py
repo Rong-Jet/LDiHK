@@ -84,7 +84,9 @@ def _parse_video_record(
     if timestamp_warning is not None:
         warnings.append(ParseWarning(code=timestamp_warning, sample=sample))
 
-    video_id = _extract_video_id(_first_string(record, "Link", "link", "Url", "url"))
+    video_id = _extract_video_id(
+        _first_string(record, "Link", "link", "VideoLink", "videoLink", "Url", "url")
+    )
     if video_id is None:
         warnings.append(ParseWarning(code="missing_video_id", sample=sample))
 
@@ -116,22 +118,33 @@ def _decode_content(content: bytes) -> tuple[str, list[ParseWarning]]:
         )
 
 
+# (section, history) key pairs that hold the "VideoList" of watched videos.
+# Current exports (user_data_tiktok.json) use "Your Activity" -> "Watch
+# History"; older exports (user_data.json) use "Activity" -> "Video Browsing
+# History" with {"Date", "VideoLink"} entries.
+VIDEO_LIST_LOCATIONS = (
+    ("Your Activity", "Watch History"),
+    ("Activity", "Video Browsing History"),
+    ("Activity", "Watch History"),
+    ("Your Activity", "Video Browsing History"),
+)
+
+
 def _video_list(payload: Any) -> list[Any] | None:
     if not isinstance(payload, Mapping):
         return None
 
-    your_activity = payload.get("Your Activity")
-    if not isinstance(your_activity, Mapping):
-        return None
-
-    watch_history = your_activity.get("Watch History")
-    if not isinstance(watch_history, Mapping):
-        return None
-
-    video_list = watch_history.get("VideoList")
-    if not isinstance(video_list, list):
-        return None
-    return video_list
+    for section_key, history_key in VIDEO_LIST_LOCATIONS:
+        section = payload.get(section_key)
+        if not isinstance(section, Mapping):
+            continue
+        history = section.get(history_key)
+        if not isinstance(history, Mapping):
+            continue
+        video_list = history.get("VideoList")
+        if isinstance(video_list, list):
+            return video_list
+    return None
 
 
 def _parse_date(value: object) -> tuple[datetime | None, str | None]:

@@ -748,8 +748,8 @@ export const POST: APIRoute = async ({ request }) => {
     };
 
     // Combine means and standard deviations (sum of variances for standard dev)
-    const combinedMean = platforms.reduce((sum, p) => sum + (platformMeans[p] || 0.5), 0);
-    const combinedVariance = platforms.reduce((sum, p) => sum + Math.pow(platformStdDevs[p] || 0.3, 2), 0);
+    const combinedMean = platforms.reduce((sum: number, p: string) => sum + (platformMeans[p] || 0.5), 0);
+    const combinedVariance = platforms.reduce((sum: number, p: string) => sum + Math.pow(platformStdDevs[p] || 0.3, 2), 0);
     const combinedStdDev = Math.sqrt(combinedVariance);
 
     const scaleFactor = combinedMean / 2.4;

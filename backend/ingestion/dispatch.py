@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import posixpath
 from dataclasses import dataclass
 from importlib import import_module
 
@@ -28,141 +29,166 @@ class DispatchResult:
         return resolve_parser(self.callable_path)
 
 
+WATCH_HISTORY_CALLABLE = "backend.ingestion.parsers.watch_history:parse_watch_history"
+SEARCH_HISTORY_CALLABLE = "backend.ingestion.parsers.search_history:parse_search_history"
+YOUTUBE_ACTIVITY_AUTO_CALLABLE = (
+    "backend.ingestion.parsers.youtube_activity_auto:parse_youtube_activity_auto"
+)
+TIKTOK_WATCH_HISTORY_CALLABLE = (
+    "backend.ingestion.parsers.tiktok_watch_history:parse_tiktok_watch_history"
+)
+INSTAGRAM_ACTIVITY_CALLABLE = (
+    "backend.ingestion.parsers.instagram_activity:parse_instagram_activity"
+)
+SUBSCRIPTIONS_CALLABLE = "backend.ingestion.parsers.subscriptions:parse_subscriptions"
+LIKES_PLAYLISTS_CALLABLE = (
+    "backend.ingestion.parsers.likes_playlists:parse_likes_playlists"
+)
+COMMENTS_LIVE_CHAT_CALLABLE = (
+    "backend.ingestion.parsers.comments_live_chat:parse_comments_live_chat"
+)
+
+
+def _routes(parser_name: str, callable_path: str, *patterns: str) -> tuple[ParserRoute, ...]:
+    return tuple(
+        ParserRoute(
+            parser_name=parser_name,
+            callable_path=callable_path,
+            path_pattern=pattern,
+        )
+        for pattern in patterns
+    )
+
+
+# Instagram offers every export as HTML or JSON; both use the same base names.
+_INSTAGRAM_ACTIVITY_BASES = (
+    "your_instagram_activity/story_interactions/stories_viewed",
+    "your_instagram_activity/story_interactions/story_likes",
+    "your_instagram_activity/likes/liked_posts",
+    "your_instagram_activity/saved/saved_posts",
+    "ads_information/ads_and_topics/posts_viewed",
+    "ads_information/ads_and_topics/videos_watched",
+    "your_instagram_activity/content/posts",
+    "your_instagram_activity/content/posts_*",
+    "your_instagram_activity/content/reels",
+    "your_instagram_activity/content/stories",
+    "your_instagram_activity/followers_and_following/recently_unfollowed_profiles",
+    "connections/followers_and_following/recently_unfollowed_profiles",
+)
+
+
 DISPATCH_TABLE: tuple[ParserRoute, ...] = (
-    ParserRoute(
-        parser_name="watch_history",
-        callable_path="backend.ingestion.parsers.watch_history:parse_watch_history",
-        path_pattern="watch-history.html",
+    *_routes(
+        "watch_history",
+        WATCH_HISTORY_CALLABLE,
+        "watch-history.html",
+        "watch-history.json",
+        # German Takeout ("YouTube und YouTube Music/Verlauf/...").
+        "verlauf/wiedergabeverlauf.html",
+        "verlauf/wiedergabeverlauf.json",
     ),
-    ParserRoute(
-        parser_name="watch_history",
-        callable_path="backend.ingestion.parsers.watch_history:parse_watch_history",
-        path_pattern="watch-history.json",
+    *_routes(
+        "search_history",
+        SEARCH_HISTORY_CALLABLE,
+        "search-history.json",
+        "search-history.html",
+        "my activity/youtube/myactivity.json",
+        "my activity/youtube/myactivity.html",
+        "verlauf/suchverlauf.html",
+        "verlauf/suchverlauf.json",
     ),
-    ParserRoute(
-        parser_name="search_history",
-        callable_path="backend.ingestion.parsers.search_history:parse_search_history",
-        path_pattern="search-history.json",
+    *_routes(
+        "tiktok_watch_history",
+        TIKTOK_WATCH_HISTORY_CALLABLE,
+        "user_data_tiktok.json",
+        # Older TikTok exports ("Activity" -> "Video Browsing History").
+        "user_data.json",
     ),
-    ParserRoute(
-        parser_name="search_history",
-        callable_path="backend.ingestion.parsers.search_history:parse_search_history",
-        path_pattern="my activity/youtube/myactivity.json",
+    *_routes(
+        "instagram_activity",
+        INSTAGRAM_ACTIVITY_CALLABLE,
+        *(f"{base}.html" for base in _INSTAGRAM_ACTIVITY_BASES),
+        *(f"{base}.json" for base in _INSTAGRAM_ACTIVITY_BASES),
+        "your_instagram_activity/messages/**/*.html",
+        "your_instagram_activity/messages/**/message_*.json",
     ),
-    ParserRoute(
-        parser_name="tiktok_watch_history",
-        callable_path=(
-            "backend.ingestion.parsers.tiktok_watch_history:parse_tiktok_watch_history"
-        ),
-        path_pattern="user_data_tiktok.json",
+    *_routes(
+        "subscriptions",
+        SUBSCRIPTIONS_CALLABLE,
+        "subscriptions.csv",
+        "subscriptions.json",
+        "abos/abos.csv",
+        "abos/abos.json",
     ),
-    ParserRoute(
-        parser_name="instagram_activity",
-        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
-        path_pattern="your_instagram_activity/story_interactions/stories_viewed.html",
+    *_routes(
+        "likes_playlists",
+        LIKES_PLAYLISTS_CALLABLE,
+        "likes.json",
+        "playlists/*.json",
+        # Current Takeout format: one "<playlist>-videos.csv" per playlist.
+        "playlists/*.csv",
     ),
-    ParserRoute(
-        parser_name="instagram_activity",
-        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
-        path_pattern="your_instagram_activity/story_interactions/story_likes.html",
-    ),
-    ParserRoute(
-        parser_name="instagram_activity",
-        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
-        path_pattern="your_instagram_activity/likes/liked_posts.html",
-    ),
-    ParserRoute(
-        parser_name="instagram_activity",
-        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
-        path_pattern="your_instagram_activity/saved/saved_posts.html",
-    ),
-    ParserRoute(
-        parser_name="instagram_activity",
-        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
-        path_pattern="ads_information/ads_and_topics/posts_viewed.html",
-    ),
-    ParserRoute(
-        parser_name="instagram_activity",
-        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
-        path_pattern="ads_information/ads_and_topics/videos_watched.html",
-    ),
-    ParserRoute(
-        parser_name="instagram_activity",
-        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
-        path_pattern="your_instagram_activity/content/posts.html",
-    ),
-    ParserRoute(
-        parser_name="instagram_activity",
-        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
-        path_pattern="your_instagram_activity/content/reels.html",
-    ),
-    ParserRoute(
-        parser_name="instagram_activity",
-        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
-        path_pattern="your_instagram_activity/content/stories.html",
-    ),
-    ParserRoute(
-        parser_name="instagram_activity",
-        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
-        path_pattern=(
-            "your_instagram_activity/followers_and_following/"
-            "recently_unfollowed_profiles.html"
-        ),
-    ),
-    ParserRoute(
-        parser_name="instagram_activity",
-        callable_path="backend.ingestion.parsers.instagram_activity:parse_instagram_activity",
-        path_pattern="your_instagram_activity/messages/**/*.html",
-    ),
-    ParserRoute(
-        parser_name="subscriptions",
-        callable_path="backend.ingestion.parsers.subscriptions:parse_subscriptions",
-        path_pattern="subscriptions.csv",
-    ),
-    ParserRoute(
-        parser_name="subscriptions",
-        callable_path="backend.ingestion.parsers.subscriptions:parse_subscriptions",
-        path_pattern="subscriptions.json",
-    ),
-    ParserRoute(
-        parser_name="likes_playlists",
-        callable_path="backend.ingestion.parsers.likes_playlists:parse_likes_playlists",
-        path_pattern="likes.json",
-    ),
-    ParserRoute(
-        parser_name="likes_playlists",
-        callable_path="backend.ingestion.parsers.likes_playlists:parse_likes_playlists",
-        path_pattern="playlists/*.json",
-    ),
-    ParserRoute(
-        parser_name="comments_live_chat",
-        callable_path=(
-            "backend.ingestion.parsers.comments_live_chat:parse_comments_live_chat"
-        ),
-        path_pattern="comments.csv",
-    ),
-    ParserRoute(
-        parser_name="comments_live_chat",
-        callable_path=(
-            "backend.ingestion.parsers.comments_live_chat:parse_comments_live_chat"
-        ),
-        path_pattern="live chats.csv",
-    ),
-    ParserRoute(
-        parser_name="comments_live_chat",
-        callable_path=(
-            "backend.ingestion.parsers.comments_live_chat:parse_comments_live_chat"
-        ),
-        path_pattern="my-comments/*.html",
-    ),
-    ParserRoute(
-        parser_name="comments_live_chat",
-        callable_path=(
-            "backend.ingestion.parsers.comments_live_chat:parse_comments_live_chat"
-        ),
-        path_pattern="my-live-chat-messages/*.html",
+    *_routes(
+        "comments_live_chat",
+        COMMENTS_LIVE_CHAT_CALLABLE,
+        "comments.csv",
+        "live chats.csv",
+        # German Takeout: "Kommentare/Kommentare.csv", one CSV per chat in "Livechats/".
+        "kommentare/*.csv",
+        "livechats/*.csv",
+        "my-comments/*.html",
+        "my-live-chat-messages/*.html",
+        "youtube*/meine kommentare/*.html",
+        "youtube*/meine-live-chat-nachrichten/*.html",
     ),
 )
+
+# ---------------------------------------------------------------------------
+# Language-independent fallback for files inside a YouTube Takeout folder.
+#
+# Folder names are localised ("YouTube and YouTube Music", "YouTube und
+# YouTube Music", "YouTube y YouTube Music", ...) but always start with
+# "YouTube"; file names inside them are localised too.  Files the table above
+# does not know are routed by structure:
+#   <My Activity>/YouTube/<file>.json|html -> search history (as in English)
+#   any other YouTube .json/.html file     -> youtube_activity_auto, which
+#                                             classifies every record by URL
+# ---------------------------------------------------------------------------
+
+LOCALIZED_SUBSCRIPTION_STEMS = frozenset(
+    {
+        "subscriptions",
+        "abos",  # de
+        "suscripciones",  # es
+        "abonnements",  # fr
+        "iscrizioni",  # it
+        "inscrições",  # pt
+        "inscricoes",
+        "abonnementen",  # nl
+    }
+)
+LOCALIZED_PLAYLIST_FOLDERS = frozenset(
+    {
+        "playlists",
+        "playlist",  # it
+        "listas de reproducción",  # es
+        "listas de reproduccion",
+        "listas de reprodução",  # pt
+        "listas de reproducao",
+        "afspeellijsten",  # nl
+    }
+)
+LOCALIZED_COMMENT_FOLDERS = frozenset(
+    {
+        "my-comments",
+        "my-live-chat-messages",
+        "meine kommentare",  # de
+        "meine-kommentare",
+        "meine-live-chat-nachrichten",
+    }
+)
+_ACTIVITY_EXTENSIONS = frozenset({".json", ".html", ".htm"})
+_HTML_EXTENSIONS = frozenset({".html", ".htm"})
 
 
 def dispatch_member_path(source_path: str) -> DispatchResult:
@@ -176,14 +202,14 @@ def dispatch_member_path(source_path: str) -> DispatchResult:
             reason="unsafe_path",
         )
 
-    for route in DISPATCH_TABLE:
-        if _matches(normalized_path, route.path_pattern):
-            return DispatchResult(
-                source_path=source_path,
-                parser_name=route.parser_name,
-                callable_path=route.callable_path,
-                ignored=False,
-            )
+    route = _table_route(normalized_path) or _youtube_folder_route(normalized_path)
+    if route is not None:
+        return DispatchResult(
+            source_path=source_path,
+            parser_name=route[0],
+            callable_path=route[1],
+            ignored=False,
+        )
 
     return DispatchResult(
         source_path=source_path,
@@ -192,6 +218,53 @@ def dispatch_member_path(source_path: str) -> DispatchResult:
         ignored=True,
         reason="no_parser",
     )
+
+
+# Files that hold what someone watched. An archive without any of them gives a
+# workspace with no watch time, which looks like a broken import; the usual
+# cause is an export with the wrong options, so the worker rejects it with a
+# message that says which option was missing (see missing_history_problem).
+_WATCH_PARSERS = frozenset({"watch_history", "youtube_activity_auto", "tiktok_watch_history"})
+_INSTAGRAM_VIEW_FILES = frozenset({"stories_viewed", "posts_viewed", "videos_watched"})
+_INSTAGRAM_TOP_FOLDERS = frozenset(
+    {"your_instagram_activity", "ads_information", "connections", "personal_information", "logged_information"}
+)
+TAKEOUT_INDEX_ONLY_MESSAGE = (
+    "takeout_index_only: the archive holds only Google's table of contents "
+    "(archive_browser.html) and no YouTube data"
+)
+YOUTUBE_HISTORY_MISSING_MESSAGE = (
+    "youtube_history_missing: the archive has YouTube files but no watch history "
+    "(the 'history' option was not selected in Google Takeout)"
+)
+INSTAGRAM_VIEWS_MISSING_MESSAGE = (
+    "instagram_views_missing: the archive has Instagram files but no viewed "
+    "posts, Reels or stories (the 'Ads information' and 'Your Instagram activity' "
+    "categories were not selected)"
+)
+
+
+def missing_history_problem(source_paths: list[str]) -> str | None:
+    """Why an archive cannot give any watch time, or None when it can."""
+    dispatches = [dispatch_member_path(path) for path in source_paths]
+    for dispatch in dispatches:
+        if dispatch.parser_name in _WATCH_PARSERS:
+            return None
+        if dispatch.parser_name == "instagram_activity":
+            stem = posixpath.splitext(posixpath.basename(normalize_member_path(dispatch.source_path)))[0]
+            if stem in _INSTAGRAM_VIEW_FILES:
+                return None
+
+    normalized = [normalize_member_path(path) for path in source_paths]
+    if any(folder.startswith("youtube") for path in normalized for folder in path.split("/")[:-1]):
+        return YOUTUBE_HISTORY_MISSING_MESSAGE
+    if any(path.split("/")[0] in _INSTAGRAM_TOP_FOLDERS for path in normalized):
+        return INSTAGRAM_VIEWS_MISSING_MESSAGE
+    if all(dispatch.ignored for dispatch in dispatches) and any(
+        path.endswith("archive_browser.html") for path in normalized
+    ):
+        return TAKEOUT_INDEX_ONLY_MESSAGE
+    return None
 
 
 def parser_name_for_path(source_path: str) -> str | None:
@@ -220,6 +293,60 @@ def normalize_member_path(source_path: str) -> str:
 
 def is_unsafe_member_path(normalized_path: str) -> bool:
     return any(part == ".." for part in normalized_path.split("/"))
+
+
+def _table_route(normalized_path: str) -> tuple[str, str] | None:
+    for route in DISPATCH_TABLE:
+        if _matches(normalized_path, route.path_pattern):
+            return route.parser_name, route.callable_path
+    return None
+
+
+def _youtube_folder_route(normalized_path: str) -> tuple[str, str] | None:
+    parts = normalized_path.split("/")
+    folders, file_name = parts[:-1], parts[-1]
+    youtube_index = next(
+        (index for index, folder in enumerate(folders) if folder.startswith("youtube")),
+        None,
+    )
+    if youtube_index is None:
+        return None
+
+    stem, extension = posixpath.splitext(file_name)
+    inner_folders = folders[youtube_index + 1 :]
+    parent = inner_folders[-1] if inner_folders else None
+
+    if extension == ".csv":
+        if stem in LOCALIZED_SUBSCRIPTION_STEMS:
+            return "subscriptions", SUBSCRIPTIONS_CALLABLE
+        if parent in LOCALIZED_PLAYLIST_FOLDERS:
+            return "likes_playlists", LIKES_PLAYLISTS_CALLABLE
+        return None
+
+    if extension not in _ACTIVITY_EXTENSIONS:
+        return None
+    if parent in LOCALIZED_COMMENT_FOLDERS:
+        if extension in _HTML_EXTENSIONS:
+            return "comments_live_chat", COMMENTS_LIVE_CHAT_CALLABLE
+        return None
+    if parent in LOCALIZED_PLAYLIST_FOLDERS:
+        if extension == ".json":
+            return "likes_playlists", LIKES_PLAYLISTS_CALLABLE
+        return None
+    if stem in LOCALIZED_SUBSCRIPTION_STEMS:
+        if extension == ".json":
+            return "subscriptions", SUBSCRIPTIONS_CALLABLE
+        return None
+
+    is_my_activity_file = (
+        parent is None and folders[youtube_index] == "youtube" and youtube_index > 0
+    )
+    if is_my_activity_file:
+        # "<My Activity, localised>/YouTube/<MyActivity, localised>.json|html":
+        # like the English route, only searches are imported from My Activity.
+        return "search_history", SEARCH_HISTORY_CALLABLE
+
+    return "youtube_activity_auto", YOUTUBE_ACTIVITY_AUTO_CALLABLE
 
 
 def _matches(normalized_path: str, path_pattern: str) -> bool:

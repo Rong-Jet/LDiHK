@@ -116,6 +116,45 @@ class TikTokWatchHistoryParserTests(unittest.TestCase):
             [0, 30, 60],
         )
 
+    def test_older_user_data_layout_emits_watch_events(self):
+        payload = {
+            "Activity": {
+                "Video Browsing History": {
+                    "VideoList": [
+                        {
+                            "Date": "2021-03-04 05:06:07",
+                            "VideoLink": "https://www.tiktokv.com/share/video/6934567890123456789/",
+                        },
+                        {
+                            "Date": "2021-03-04 05:06:37",
+                            "VideoLink": "https://www.tiktokv.com/share/video/6934567890123456790/",
+                        },
+                    ]
+                },
+                "Favorite Videos": {"FavoriteVideoList": []},
+            }
+        }
+
+        result = parse_tiktok_watch_history(
+            json.dumps(payload).encode("utf-8"),
+            source_path="TikTok/user_data.json",
+        )
+
+        self.assertEqual(result.records_seen, 2)
+        self.assertEqual(result.warnings, [])
+        self.assertEqual(
+            [event.video_id for event in result.events],
+            ["tiktok:6934567890123456789", "tiktok:6934567890123456790"],
+        )
+        self.assertEqual([event.event_type for event in result.events], ["watch"] * 2)
+        self.assertEqual([event.platform for event in result.events], ["tiktok"] * 2)
+        self.assertEqual([event.product for event in result.events], ["shorts"] * 2)
+        self.assertEqual(
+            result.events[0].occurred_at,
+            datetime(2021, 3, 4, 5, 6, 7, tzinfo=timezone.utc),
+        )
+        self.assertEqual([event.duration_seconds for event in result.events], [30, 60])
+
 
 if __name__ == "__main__":
     unittest.main()

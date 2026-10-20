@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { apiRoutes, authHeaders, jsonHeaders } from '../lib/api';
+import { fetchPopulationJson, type ComparisonGroup, type PopulationSource } from '../lib/api';
 
 export interface DistributionRow {
   hours: number;
@@ -8,7 +8,8 @@ export interface DistributionRow {
 
 export interface DecileRow {
   date: string;
-  user: number;
+  /** Null on days outside the user's own history (no line there). */
+  user: number | null;
   median: number | null;
   top10: number | null;
   bottom10: number | null;
@@ -23,8 +24,21 @@ export interface HourlyAverageRow {
 
 export interface PopulationQueryResult {
   ready: boolean;
-  /** true when the backend served real population comparison data, false when unavailable */
-  hasPopulationData?: boolean;
+  /** true when the response carries real population comparison data */
+  hasPopulationData: boolean;
+  /** Why there is no comparison: 'no_user_data' or 'insufficient_population'. */
+  reason?: string;
+  message?: string;
+  /** Number of other people (real and synthetic) in the comparison. */
+  populationSize: number | null;
+  /** `total`: the population's total social media time; `matching`: the same platforms. */
+  populationSource: PopulationSource;
+  /** Platforms counted for the other people. */
+  comparisonPlatforms: string[];
+  /** Whom the user was compared with (missing from older backends). */
+  comparisonGroup: ComparisonGroup | null;
+  /** Days the synthetic profiles were generated for (used as a weekday baseline). */
+  syntheticBaseline: { startDate: string; endDate: string } | null;
   userPercentile: number | null;
   userDailyAverageHours: number | null;
   includeSynthetic: boolean;
@@ -34,6 +48,13 @@ export interface PopulationQueryResult {
   hourlyAverages: HourlyAverageRow[];
 }
 
+type PopulationResponse = Partial<PopulationQueryResult> & { ready?: boolean };
+
+/**
+ * POST /api/population. In live mode this goes straight to the backend (no
+ * Netlify function in between, so a waking server is not cut off after 10 s);
+ * in mock mode it resolves to the local Astro mock route.
+ */
 const fetchPopulationData = async (
   platforms: string[],
   startDate: string,
@@ -41,29 +62,35 @@ const fetchPopulationData = async (
   includeSynthetic: boolean,
   customPercentile: number,
   sessionToken: string,
-  visibleStartDate: string
+  visibleStartDate: string,
+  compareWith: 'cohort' | 'everyone',
+  populationSource: PopulationSource,
+  signal?: AbortSignal
 ): Promise<PopulationQueryResult> => {
-  const res = await fetch(apiRoutes.population(), {
-    method: 'POST',
-    headers: {
-      ...jsonHeaders,
-      ...authHeaders(sessionToken),
-    },
-    body: JSON.stringify({
-      platforms,
-      startDate,
-      endDate,
-      includeSynthetic,
-      customPercentile,
-      visibleStartDate
-    })
-  });
-
-  if (!res.ok) {
-    throw new Error('Failed to fetch population analytics');
-  }
-
-  return res.json();
+  const data = await fetchPopulationJson<PopulationResponse>(
+    sessionToken,
+    { platforms, startDate, endDate, includeSynthetic, customPercentile, visibleStartDate, compareWith, populationSource },
+    signal
+  );
+  const ready = data.ready === true;
+  return {
+    ready,
+    hasPopulationData: data.hasPopulationData ?? ready,
+    reason: data.reason,
+    message: data.message,
+    populationSize: data.populationSize ?? null,
+    comparisonGroup: data.comparisonGroup ?? null,
+    populationSource: data.populationSource ?? 'matching',
+    comparisonPlatforms: data.comparisonPlatforms ?? platforms,
+    syntheticBaseline: data.syntheticBaseline ?? null,
+    userPercentile: data.userPercentile ?? null,
+    userDailyAverageHours: data.userDailyAverageHours ?? null,
+    includeSynthetic: data.includeSynthetic ?? includeSynthetic,
+    customPercentile: data.customPercentile ?? customPercentile,
+    distribution: data.distribution ?? [],
+    deciles: data.deciles ?? [],
+    hourlyAverages: data.hourlyAverages ?? [],
+  };
 };
 
 export function usePopulationData(
@@ -74,11 +101,17 @@ export function usePopulationData(
   customPercentile: number,
   isReady: boolean,
   sessionToken: string | null,
-  visibleStartDate: string
+  visibleStartDate: string,
+  /** `cohort`: people of similar age range and sex (falls back to everyone). */
+  compareWith: 'cohort' | 'everyone' = 'everyone',
+  /** Default: compare the selected platforms with the population's total social media time. */
+  populationSource: PopulationSource = 'total'
 ) {
   return useQuery<PopulationQueryResult>({
-    queryKey: ['population', platforms.join(','), startDate, endDate, includeSynthetic, customPercentile, sessionToken, visibleStartDate],
-    queryFn: () => fetchPopulationData(platforms, startDate, endDate, includeSynthetic, customPercentile, sessionToken || '', visibleStartDate),
+    queryKey: ['population', platforms.join(','), startDate, endDate, includeSynthetic, customPercentile, sessionToken, visibleStartDate, compareWith, populationSource],
+    queryFn: ({ signal }) => fetchPopulationData(
+      platforms, startDate, endDate, includeSynthetic, customPercentile, sessionToken || '', visibleStartDate, compareWith, populationSource, signal
+    ),
     enabled: isReady && !!startDate && !!endDate && !!sessionToken && platforms.length > 0,
   });
 }

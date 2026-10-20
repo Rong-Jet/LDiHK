@@ -73,6 +73,41 @@ class CommentsLiveChatParserTests(unittest.TestCase):
         self.assertNotIn("raw private chat", event_payload)
         self.assertNotIn("takeoutSegments", event_payload)
 
+    def test_german_comment_and_live_chat_csvs(self):
+        comments = (
+            "Kommentar-ID,Kanal-ID,Zeitstempel der Erstellung des Kommentars,Preis,"
+            "Übergeordnete Kommentar-ID,Video-ID,Kommentartext,Kommentar-ID der obersten Ebene\n"
+            'kommentar-1,UCprivat,2026-01-11T16:15:29.123456+00:00,,,video-123,'
+            '"{""text"":""privater Kommentar""}",kommentar-1\n'
+        ).encode("utf-8")
+        chats = (
+            "Livechat-ID,Kanal-ID,Zeitstempel bei Erstellung des Livechats,Preis,"
+            "Video-ID,Text für den Livechat\n"
+            'chat-1,UCprivat,2026-03-01T20:00:00.5+00:00,,video-456,"{""text"":""hallo""}"\n'
+        ).encode("utf-8")
+
+        comment_result = parse_comments_live_chat(
+            comments, source_path="Takeout/YouTube und YouTube Music/Kommentare/Kommentare.csv"
+        )
+        chat_result = parse_comments_live_chat(
+            chats, source_path="Takeout/YouTube und YouTube Music/Livechats/Livechat 1.csv"
+        )
+
+        self.assertEqual(comment_result.warnings, [])
+        self.assertEqual(
+            [(e.event_type, e.video_id, e.native_id) for e in comment_result.events],
+            [("comment", "video-123", "kommentar-1")],
+        )
+        self.assertEqual(
+            comment_result.events[0].occurred_at,
+            datetime(2026, 1, 11, 16, 15, 29, 123456, tzinfo=timezone.utc),
+        )
+        self.assertEqual(chat_result.warnings, [])
+        self.assertEqual(
+            [(e.event_type, e.video_id, e.native_id) for e in chat_result.events],
+            [("live_chat", "video-456", "chat-1")],
+        )
+
     def test_comment_csv_supports_lowercase_takeout_header_variants(self):
         content = (
             "Comment ID,Channel ID,Comment create timestamp,Price,"

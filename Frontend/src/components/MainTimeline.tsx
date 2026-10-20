@@ -1,10 +1,20 @@
 import React, { useState, useMemo } from 'react';
-import { 
+import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid,
-  Tooltip, ResponsiveContainer 
+  Tooltip, ResponsiveContainer
 } from 'recharts';
 import { Calendar, Filter, Layers, CheckSquare, Square, ChevronDown, ChevronUp } from 'lucide-react';
 import type { FlattenedTimelineRecord } from '../hooks/useAnalyticsData';
+import { usesLocalMockApi } from '../lib/api';
+import {
+  DATE_PRESETS,
+  detectPreset,
+  formatAxisLabel,
+  formatCalendarValue,
+  getPresetRange,
+  isYearMonth,
+  type DateGranularity,
+} from '../lib/dates';
 
 interface MainTimelineProps {
   data: FlattenedTimelineRecord[];
@@ -12,14 +22,16 @@ interface MainTimelineProps {
   setActivePlatforms: (platforms: string[]) => void;
   selectedDate: string | null;
   onSelectDate: (date: string) => void;
-  
+
   // Date range filters for the timeline query
   startDate: string;
   endDate: string;
   setDateRange: (start: string, end: string) => void;
 
-  datasets?: Record<string, { status: string; min_date?: string; max_date?: string }>;
-  dateBounds?: { minDate: string; maxDate: string };
+  datasets?: Record<string, { status: string; min_date?: string; max_date?: string; watch_min_date?: string; watch_max_date?: string }>;
+  dateBounds?: { minDate: string; maxDate: string } | null;
+  /** `month` when the range is long enough to be charted as monthly averages. */
+  granularity?: DateGranularity;
 }
 
 const ALL_PLATFORMS = ['YouTube', 'Instagram', 'TikTok', 'Spotify', 'Twitter', 'LinkedIn'];
@@ -44,46 +56,50 @@ const PLATFORM_LABELS: Record<string, string> = {
 };
 
 const FALLBACK_REFERENCE_DATE = '2026-06-06';
-const PRESETS = ['1D', '7D', '15D', '30D', '1Y', '5Y', 'all'];
 
-const parseUtcDate = (dateString: string) => {
-  const [year, month, day] = dateString.split('-').map(Number);
-  return new Date(Date.UTC(year, month - 1, day));
+const PLATFORM_HOURS_KEYS: Record<string, keyof FlattenedTimelineRecord> = {
+  youtube: 'youtubeHours',
+  instagram: 'instagramHours',
+  tiktok: 'tiktokHours',
+  spotify: 'spotifyHours',
+  twitter: 'twitterHours',
+  linkedin: 'linkedinHours',
 };
 
-const formatUtcDate = (date: Date) => date.toISOString().split('T')[0];
+/** Whether a day (`YYYY-MM-DD`) or month (`YYYY-MM`) bucket lies within a platform's data. */
+export function bucketWithinData(bucket: string, minDate: string, maxDate: string): boolean {
+  if (isYearMonth(bucket)) return bucket >= minDate.slice(0, 7) && bucket <= maxDate.slice(0, 7);
+  return bucket >= minDate && bucket <= maxDate;
+}
 
-const clampStartDate = (start: string, minDate?: string) => (
-  minDate && start < minDate ? minDate : start
-);
+/**
+ * Chart rows where a platform's hours are `null` outside the days its watch
+ * data covers (inside, a day without use stays 0). A stacked area draws its
+ * outline along the stack even at 0, so a short export (Instagram keeps views
+ * for weeks, but likes and messages for years) looked like Instagram use
+ * across the whole range; null points are not drawn at all.
+ */
+export function chartRowsWithinData(
+  data: FlattenedTimelineRecord[],
+  datasets?: Record<string, { min_date?: string; max_date?: string; watch_min_date?: string; watch_max_date?: string }>,
+): Record<string, string | number | null>[] {
+  return data.map((row) => {
+    const chartRow: Record<string, string | number | null> = { ...row };
+    for (const [platform, hoursKey] of Object.entries(PLATFORM_HOURS_KEYS)) {
+      const info = datasets?.[platform];
+      // Older backends report only min/max_date (all event types).
+      const minDate = info?.watch_min_date ?? info?.min_date;
+      const maxDate = info?.watch_max_date ?? info?.max_date;
+      if (!minDate || !maxDate || !bucketWithinData(row.date, minDate, maxDate)) {
+        chartRow[hoursKey] = null;
+      }
+    }
+    return chartRow;
+  });
+}
 
-const getPresetRange = (preset: string, referenceDate: string, minDate?: string) => {
-  const refDateObj = parseUtcDate(referenceDate);
-  let start = referenceDate;
-
-  if (preset === '7D') {
-    refDateObj.setUTCDate(refDateObj.getUTCDate() - 6);
-    start = formatUtcDate(refDateObj);
-  } else if (preset === '15D') {
-    refDateObj.setUTCDate(refDateObj.getUTCDate() - 14);
-    start = formatUtcDate(refDateObj);
-  } else if (preset === '30D') {
-    refDateObj.setUTCDate(refDateObj.getUTCDate() - 29);
-    start = formatUtcDate(refDateObj);
-  } else if (preset === '1Y') {
-    refDateObj.setUTCFullYear(refDateObj.getUTCFullYear() - 1);
-    refDateObj.setUTCDate(refDateObj.getUTCDate() + 1);
-    start = formatUtcDate(refDateObj);
-  } else if (preset === '5Y') {
-    refDateObj.setUTCFullYear(refDateObj.getUTCFullYear() - 5);
-    refDateObj.setUTCDate(refDateObj.getUTCDate() + 1);
-    start = formatUtcDate(refDateObj);
-  } else if (preset === 'all') {
-    start = minDate || referenceDate;
-  }
-
-  return { start: clampStartDate(start, minDate), end: referenceDate };
-};
+/** Spotify is simulated by the mock routes only; the live backend cannot ingest it yet. */
+const COMING_SOON_PLATFORMS: string[] = usesLocalMockApi ? [] : ['spotify'];
 
 export default function MainTimeline({
   data,
@@ -96,6 +112,7 @@ export default function MainTimeline({
   setDateRange,
   datasets,
   dateBounds,
+  granularity = 'day',
 }: MainTimelineProps) {
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
 
@@ -110,38 +127,25 @@ export default function MainTimeline({
       return dateBounds || { minDate: FALLBACK_REFERENCE_DATE, maxDate: FALLBACK_REFERENCE_DATE };
     }
 
-    const intersectionMin = readyBounds
-      .map((dataset) => dataset.min_date)
-      .sort()
-      .at(-1) || FALLBACK_REFERENCE_DATE;
-    const intersectionMax = readyBounds
-      .map((dataset) => dataset.max_date)
-      .sort()[0] || FALLBACK_REFERENCE_DATE;
-
-    if (intersectionMin <= intersectionMax) {
-      return { minDate: intersectionMin, maxDate: intersectionMax };
-    }
-
-    const unionDates = readyBounds.flatMap((dataset) => [dataset.min_date, dataset.max_date]).sort();
+    // The span of all selected platforms together (not their overlap): a
+    // platform with a short history (Instagram keeps weeks) must not cut the
+    // 5Y and All presets of the others down to its own start.
+    const allDates = readyBounds.flatMap((dataset) => [dataset.min_date, dataset.max_date]).sort();
     return {
-      minDate: unionDates[0] || FALLBACK_REFERENCE_DATE,
-      maxDate: unionDates.at(-1) || FALLBACK_REFERENCE_DATE,
+      minDate: allDates[0] || FALLBACK_REFERENCE_DATE,
+      maxDate: allDates.at(-1) || FALLBACK_REFERENCE_DATE,
     };
   }, [activePlatforms, datasets, dateBounds]);
+
+  const chartRows = useMemo(() => chartRowsWithinData(data, datasets), [data, datasets]);
 
   const referenceDate = activeDateBounds.maxDate || dateBounds?.maxDate || endDate || FALLBACK_REFERENCE_DATE;
 
   // Determine active preset label based on startDate
-  const activePreset = useMemo(() => {
-    if (endDate !== referenceDate) return 'custom';
-
-    for (const preset of PRESETS) {
-      const range = getPresetRange(preset, referenceDate, activeDateBounds.minDate);
-      if (startDate === range.start) return preset;
-    }
-
-    return 'custom';
-  }, [activeDateBounds.minDate, endDate, referenceDate, startDate]);
+  const activePreset = useMemo(
+    () => detectPreset(startDate, endDate, referenceDate, activeDateBounds.minDate),
+    [activeDateBounds.minDate, endDate, referenceDate, startDate]
+  );
 
   // Handle Preset Click
   const applyPreset = (preset: string) => {
@@ -174,7 +178,7 @@ export default function MainTimeline({
   const hasData = data.length > 0;
 
   return (
-    <div className="bg-white border border-brand-navy/10 rounded-3xl p-6 shadow-sm space-y-6">
+    <div className="bg-white border border-brand-navy/10 rounded-3xl p-4 sm:p-6 shadow-sm space-y-6">
       {/* Controls Bar */}
       <div className="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4 pb-4 border-b border-brand-navy/5">
         <div className="flex items-center gap-3">
@@ -183,14 +187,18 @@ export default function MainTimeline({
           </div>
           <div>
             <h3 className="font-bold text-brand-navy text-lg">Daily Watchtime Allocation</h3>
-            <p className="text-xs text-brand-navy/50">Stacked area representation of hours used per day.</p>
+            <p className="text-xs text-brand-navy/50">
+              {granularity === 'month'
+                ? 'Stacked area of average hours per day, grouped by month (long ranges).'
+                : 'Stacked area representation of hours used per day.'}
+            </p>
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
           {/* Preset Buttons Grid */}
           <div className="flex items-center bg-brand-beige/60 p-1 rounded-xl border border-brand-navy/5 flex-wrap">
-            {['1D', '7D', '15D', '30D', '1Y', '5Y', 'all'].map((preset) => (
+            {DATE_PRESETS.map((preset) => (
               <button
                 key={preset}
                 onClick={() => applyPreset(preset)}
@@ -263,6 +271,26 @@ export default function MainTimeline({
             const key = platform.toLowerCase();
             const isSupported = key === 'youtube' || key === 'instagram' || key === 'tiktok' || key === 'spotify';
 
+            if (COMING_SOON_PLATFORMS.includes(key)) {
+              return (
+                <button
+                  key={platform}
+                  disabled={true}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold border border-transparent bg-brand-navy/5 text-brand-navy/35 cursor-not-allowed"
+                  title={`${platform} imports are not supported by the live backend yet`}
+                >
+                  <span
+                    className="w-2.5 h-2.5 rounded-full"
+                    style={{ backgroundColor: '#CBD5E1' }}
+                  ></span>
+                  <span>{platform}</span>
+                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-brand-navy/10 text-brand-navy/40 font-bold ml-1">
+                    Coming soon
+                  </span>
+                </button>
+              );
+            }
+
             if (!isSupported) {
               return (
                 <button
@@ -271,8 +299,8 @@ export default function MainTimeline({
                   className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold border border-transparent bg-brand-navy/5 text-brand-navy/35 cursor-not-allowed"
                   title={`${platform} is unsupported in v5 (hosted YouTube-only demo)`}
                 >
-                  <span 
-                    className="w-2.5 h-2.5 rounded-full" 
+                  <span
+                    className="w-2.5 h-2.5 rounded-full"
                     style={{ backgroundColor: '#CBD5E1' }}
                   ></span>
                   <span>{platform}</span>
@@ -282,7 +310,7 @@ export default function MainTimeline({
                 </button>
               );
             }
-            
+
             const datasetInfo = datasets?.[key] || { status: 'NOT_UPLOADED' };
             const isReady = datasetInfo.status === 'READY';
             const isProcessing = datasetInfo.status === 'PROCESSING';
@@ -303,15 +331,15 @@ export default function MainTimeline({
                     : 'bg-brand-navy/5 border-transparent text-brand-navy/35 cursor-not-allowed'
                 }`}
                 title={
-                  isProcessing 
-                    ? 'Extracting and normalizing dataset logs...' 
-                    : !isReady 
-                    ? 'Dataset not uploaded. Upload a ZIP file to unlock.' 
+                  isProcessing
+                    ? 'Extracting and normalizing dataset logs...'
+                    : !isReady
+                    ? 'Dataset not uploaded. Upload a ZIP file to unlock.'
                     : `Toggle ${platform}`
                 }
               >
-                <span 
-                  className={`w-2.5 h-2.5 rounded-full ${isProcessing ? 'animate-pulse' : ''}`} 
+                <span
+                  className={`w-2.5 h-2.5 rounded-full ${isProcessing ? 'animate-pulse' : ''}`}
                   style={{ backgroundColor: isReady || isProcessing ? PLATFORM_COLORS[key] : '#CBD5E1' }}
                 ></span>
                 <span>{platform}</span>
@@ -338,11 +366,8 @@ export default function MainTimeline({
         <div className="flex items-center gap-3">
           <button
             onClick={() => {
-              const ready = [];
-              if (datasets?.['youtube']?.status === 'READY') ready.push('youtube');
-              if (datasets?.['instagram']?.status === 'READY') ready.push('instagram');
-              if (datasets?.['tiktok']?.status === 'READY') ready.push('tiktok');
-              if (datasets?.['spotify']?.status === 'READY') ready.push('spotify');
+              const ready = ['youtube', 'instagram', 'tiktok', 'spotify']
+                .filter((platform) => datasets?.[platform]?.status === 'READY');
               if (ready.length > 0) setActivePlatforms(ready);
             }}
             className="text-[10px] uppercase tracking-wider font-extrabold text-brand-teal hover:underline cursor-pointer"
@@ -352,9 +377,9 @@ export default function MainTimeline({
           <span className="text-brand-navy/25 text-xs">|</span>
           <button
             onClick={() => {
-              if (datasets?.['youtube']?.status === 'READY') {
-                setActivePlatforms(['youtube']);
-              }
+              const firstReady = ['youtube', 'instagram', 'tiktok', 'spotify']
+                .find((platform) => datasets?.[platform]?.status === 'READY');
+              if (firstReady) setActivePlatforms([firstReady]);
             }}
             className="text-[10px] uppercase tracking-wider font-extrabold text-brand-navy/60 hover:underline cursor-pointer"
           >
@@ -384,42 +409,25 @@ export default function MainTimeline({
         ) : (
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart
-              data={data}
+              data={chartRows}
               margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
               onClick={(state) => {
-                if (state && state.activeLabel) {
-                  onSelectDate(state.activeLabel);
+                if (state && state.activeLabel !== undefined && state.activeLabel !== null) {
+                  onSelectDate(String(state.activeLabel));
                 }
               }}
               className="cursor-pointer"
             >
               <CartesianGrid strokeDasharray="3 3" stroke="#537D96" strokeOpacity={0.07} />
-              <XAxis 
-                dataKey="date" 
-                tickFormatter={(str) => {
-                  const parts = str.split('-');
-                  if (parts.length === 3) {
-                    const dateObj = new Date(str);
-                    const diffDays = data.length;
-                    
-                    if (diffDays > 730) {
-                      // 5Y / All: Show Year only (e.g. 2024)
-                      return dateObj.toLocaleDateString('en-US', { year: 'numeric' });
-                    }
-                    if (diffDays > 30) {
-                      // 1Y: Show Month & Year (e.g. Jun 25)
-                      return dateObj.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
-                    }
-                    // 7D / 15D / 30D / 1D: Show Month/Day
-                    return `${parts[1]}/${parts[2]}`;
-                  }
-                  return str;
-                }}
+              <XAxis
+                dataKey="date"
+                // Calendar labels without timezone shifts (YYYY-MM-DD / YYYY-MM buckets).
+                tickFormatter={(value) => formatAxisLabel(String(value), data.length)}
                 tick={{ fill: '#537D96', fontSize: 10, fontWeight: 600 }}
                 axisLine={{ stroke: '#537D96', strokeOpacity: 0.15 }}
                 tickLine={false}
               />
-              <YAxis 
+              <YAxis
                 tickFormatter={(val) => `${val}h`}
                 tick={{ fill: '#537D96', fontSize: 10, fontWeight: 600 }}
                 axisLine={{ stroke: '#537D96', strokeOpacity: 0.15 }}
@@ -434,15 +442,22 @@ export default function MainTimeline({
                   fontFamily: 'Outfit, sans-serif',
                 }}
                 labelClassName="font-extrabold text-brand-navy text-xs mb-2 block border-b border-brand-navy/5 pb-1"
-                formatter={(value: any, name: string) => {
+                labelFormatter={(label) => {
+                  const value = String(label);
+                  return isYearMonth(value)
+                    ? `${formatCalendarValue(value, { month: 'long', year: 'numeric' })} (avg per day)`
+                    : formatCalendarValue(value, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+                }}
+                formatter={(value: any, name: any) => {
                   if (value === null || value === undefined) return null;
+                  const unit = granularity === 'month' ? 'hrs/day' : 'hrs';
                   if (PLATFORM_LABELS[name]) {
-                    return [`${value} hrs`, PLATFORM_LABELS[name]];
+                    return [`${value} ${unit}`, PLATFORM_LABELS[name]];
                   }
-                  return [`${value} hrs`, name];
+                  return [`${value} ${unit}`, name];
                 }}
               />
-              
+
               {/* Stacked Areas in hours */}
               {activePlatforms.includes('youtube') && (
                 <Area
@@ -520,7 +535,8 @@ export default function MainTimeline({
         </div>
         {selectedDate && (
           <div className="text-brand-teal font-extrabold">
-            Selected Date: {selectedDate}
+            Selected {isYearMonth(selectedDate) ? 'Month' : 'Date'}:{' '}
+            {isYearMonth(selectedDate) ? formatCalendarValue(selectedDate, { month: 'long', year: 'numeric' }) : selectedDate}
           </div>
         )}
       </div>

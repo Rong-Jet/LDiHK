@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
-from datetime import datetime, timezone
+from collections.abc import Iterable, Mapping
+from datetime import datetime
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from backend.ingestion.models import ParseResult, ParseWarning, ParsedEvent
+from backend.ingestion.parsers.takeout_activity import (
+    ActivityCard,
+    is_json_array,
+    iter_activity_cards,
+    iter_json_array,
+    parse_iso_timestamp,
+    parse_text_timestamp,
+)
 
 
 SEARCH_FIELD_NAMES = (
@@ -26,11 +34,17 @@ URL_FIELD_NAMES = (
     "page_url",
 )
 SEARCH_TITLE_RE = re.compile(r"^\s*Searched\s+for\b(?P<query>.*)$", re.IGNORECASE)
+YOUTUBE_PRODUCTS = {"youtube", "youtube music"}
+HTML_PARSE_CHUNK_BYTES = 64 * 1024
 
 
 def parse_search_history(content: bytes, *, source_path: str) -> ParseResult:
-    text, warnings = _decode_content(content)
-    result = _parse_json_history(text, source_path=source_path)
+    if _is_html_source(source_path, content):
+        warnings: list[ParseWarning] = []
+        result = _parse_html_history(content)
+    else:
+        text, warnings = _decode_content(content)
+        result = _parse_json_history(text, source_path=source_path)
 
     return ParseResult(
         events=result.events,
@@ -42,7 +56,41 @@ def parse_search_history(content: bytes, *, source_path: str) -> ParseResult:
 
 def _parse_json_history(text: str, *, source_path: str) -> ParseResult:
     try:
-        payload = json.loads(text)
+        if is_json_array(text):
+            # "My Activity" exports can hold every YouTube activity; decode
+            # them record by record instead of all at once.
+            records: Iterable[object] = iter_json_array(text)
+        else:
+            payload = json.loads(text)
+            records = _json_records(payload)
+            if records is None:
+                return ParseResult(
+                    events=[],
+                    subscriptions=[],
+                    warnings=[ParseWarning(code="json_shape_unsupported", sample=None)],
+                    records_seen=0,
+                )
+
+        events: list[ParsedEvent] = []
+        warnings: list[ParseWarning] = []
+        source_path_is_youtube = _source_path_is_youtube(source_path)
+        records_seen = 0
+
+        for sequence, record in enumerate(records, start=1):
+            records_seen = sequence
+            sample = _sample(sequence)
+            if not isinstance(record, Mapping):
+                warnings.append(ParseWarning(code="malformed_json_record", sample=sample))
+                continue
+
+            event, record_warnings = _parse_json_record(
+                record,
+                sequence=sequence,
+                source_path_is_youtube=source_path_is_youtube,
+            )
+            warnings.extend(record_warnings)
+            if event is not None:
+                events.append(event)
     except json.JSONDecodeError:
         return ParseResult(
             events=[],
@@ -51,39 +99,25 @@ def _parse_json_history(text: str, *, source_path: str) -> ParseResult:
             records_seen=0,
         )
 
-    records = _json_records(payload)
-    if records is None:
-        return ParseResult(
-            events=[],
-            subscriptions=[],
-            warnings=[ParseWarning(code="json_shape_unsupported", sample=None)],
-            records_seen=0,
-        )
-
-    events: list[ParsedEvent] = []
-    warnings: list[ParseWarning] = []
-    source_path_is_youtube = _source_path_is_youtube(source_path)
-
-    for sequence, record in enumerate(records, start=1):
-        sample = _sample(sequence)
-        if not isinstance(record, Mapping):
-            warnings.append(ParseWarning(code="malformed_json_record", sample=sample))
-            continue
-
-        event, record_warnings = _parse_json_record(
-            record,
-            sequence=sequence,
-            source_path_is_youtube=source_path_is_youtube,
-        )
-        warnings.extend(record_warnings)
-        if event is not None:
-            events.append(event)
-
     return ParseResult(
         events=events,
         subscriptions=[],
         warnings=warnings,
-        records_seen=len(records),
+        records_seen=records_seen,
+    )
+
+
+def parse_search_json_record(
+    record: Mapping[str, Any],
+    *,
+    sequence: int,
+    source_path_is_youtube: bool = True,
+) -> tuple[ParsedEvent | None, list[ParseWarning]]:
+    """Turn one activity JSON record into a search event, if it is one."""
+    return _parse_json_record(
+        record,
+        sequence=sequence,
+        source_path_is_youtube=source_path_is_youtube,
     )
 
 
@@ -134,12 +168,95 @@ def _parse_json_record(
     )
 
 
+def _parse_html_history(content: bytes) -> ParseResult:
+    events: list[ParsedEvent] = []
+    warnings: list[ParseWarning] = []
+    records_seen = 0
+
+    for card in iter_activity_cards(content, chunk_size=HTML_PARSE_CHUNK_BYTES):
+        records_seen += 1
+        event, record_warnings = parse_search_card(card, sequence=records_seen)
+        warnings.extend(record_warnings)
+        if event is not None:
+            events.append(event)
+
+    return ParseResult(
+        events=events,
+        subscriptions=[],
+        warnings=warnings,
+        records_seen=records_seen,
+    )
+
+
+def parse_search_card(
+    card: ActivityCard, *, sequence: int
+) -> tuple[ParsedEvent | None, list[ParseWarning]]:
+    """Turn one HTML activity card into a search event, if it is one.
+
+    Detection is language independent: a card is a YouTube search when its
+    main content links to ``youtube.com/results?search_query=...``.  The
+    English "Searched for <query>" text is only a fallback for link-less cards.
+    Non-search cards (watches in MyActivity.html) are skipped silently, like
+    the JSON parser does.
+    """
+    if not _is_youtube_product(card.product) or not card.body:
+        return None, []
+
+    sample = _sample(sequence)
+    search_anchors = [
+        (href, text) for href, text in card.anchors if _is_youtube_search_url(href)
+    ]
+    search_query: str | None = None
+    if search_anchors:
+        for href, _ in search_anchors:
+            search_query = _search_query_from_url(href)
+            if search_query is not None:
+                break
+    elif card.anchors and SEARCH_TITLE_RE.match(card.body):
+        search_query = _clean_query(card.anchors[0][1])
+    else:
+        return None, []
+
+    if search_query is None:
+        return None, [ParseWarning(code="missing_search_query", sample=sample)]
+
+    occurred_at, timestamp_warning = parse_text_timestamp(card.body)
+    warnings: list[ParseWarning] = []
+    if timestamp_warning is not None:
+        warnings.append(ParseWarning(code=timestamp_warning, sample=sample))
+
+    return (
+        ParsedEvent(
+            event_type="search",
+            product="youtube",
+            occurred_at=occurred_at,
+            search_query=search_query,
+            sequence=sequence,
+        ),
+        warnings,
+    )
+
+
+def is_youtube_search_url(url: str | None) -> bool:
+    """Public helper used by the format-sniffing YouTube activity parser."""
+    return bool(url) and _is_youtube_search_url(url)
+
+
+def _is_html_source(source_path: str, content: bytes) -> bool:
+    normalized = source_path.replace("\\", "/").lower()
+    if normalized.endswith((".html", ".htm")):
+        return True
+    if normalized.endswith(".json"):
+        return False
+    return content[:64].lstrip(b"\xef\xbb\xbf \t\r\n").startswith(b"<")
+
+
 def _decode_content(content: bytes) -> tuple[str, list[ParseWarning]]:
     try:
-        return content.decode("utf-8"), []
+        return content.decode("utf-8-sig"), []
     except UnicodeDecodeError:
         return (
-            content.decode("utf-8", errors="replace"),
+            content.decode("utf-8-sig", errors="replace"),
             [ParseWarning(code="invalid_utf8", sample=None)],
         )
 
@@ -188,7 +305,7 @@ def _has_product_marker(record: Mapping[str, Any]) -> bool:
 def _is_youtube_product(value: Any) -> bool:
     if not isinstance(value, str):
         return False
-    return _normalize_whitespace(value).lower() in {"youtube", "youtube music"}
+    return _normalize_whitespace(value).lower() in YOUTUBE_PRODUCTS
 
 
 def _has_search_url(record: Mapping[str, Any]) -> bool:
@@ -256,22 +373,7 @@ def _parse_json_timestamp(record: Mapping[str, Any]) -> tuple[datetime | None, s
     value = _first_string(record, "time", "timestamp", "activityTime", "activity_time")
     if not value:
         return None, "missing_timestamp"
-    return _parse_iso_timestamp(value)
-
-
-def _parse_iso_timestamp(value: str) -> tuple[datetime | None, str | None]:
-    normalized = value.strip()
-    if normalized.endswith("Z"):
-        normalized = f"{normalized[:-1]}+00:00"
-
-    try:
-        parsed = datetime.fromisoformat(normalized)
-    except ValueError:
-        return None, "timestamp_parse_failed"
-
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc), "timestamp_missing_timezone"
-    return parsed, None
+    return parse_iso_timestamp(value)
 
 
 def _is_youtube_search_url(url: str) -> bool:
@@ -302,12 +404,17 @@ def _absolute_url(url: str) -> str:
 
 
 def _source_path_is_youtube(source_path: str) -> bool:
+    """True for search-history / My Activity files inside a YouTube folder.
+
+    Folder and file names are localised ("Meine Aktivitäten/YouTube/
+    MeineAktivitäten.json", "Verlauf/Suchverlauf.json"), so any JSON/HTML file
+    below a folder whose name starts with "youtube" qualifies.
+    """
     normalized_path = source_path.replace("\\", "/").strip("/").lower()
-    return "youtube" in normalized_path and (
-        normalized_path.endswith("/search-history.json")
-        or normalized_path.endswith("/myactivity.json")
-        or normalized_path.endswith("/my-activity.json")
-    )
+    parts = [part for part in normalized_path.split("/") if part]
+    if not parts or not parts[-1].endswith((".json", ".html", ".htm")):
+        return False
+    return any(part.startswith("youtube") for part in parts[:-1])
 
 
 def _first_string(record: Mapping[str, Any], *keys: str) -> str | None:

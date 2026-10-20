@@ -90,14 +90,32 @@ integration contract.
 
 ## 4. Query Compilation Logic
 
-When `/api/population` is called:
-1. **User Standings**: Calculate the active user's daily watch time timeline and average over the requested date range (this query runs in real-time as it is fast for a single user).
-2. **Retrieve Cache/Population Aggregates**: Fetch percentile, distribution, and hourly averages for YouTube matching the `includeSynthetic` flag and selected dates. The initial backend may compute these directly from indexed `usage_events`; cache tables remain the scaling target.
-3. **Linear Interpolation (Custom Percentile Line)**:
-   If `customPercentile` is requested, the backend performs linear interpolation over the cached cohort boundaries:
-   - For `customPercentile = 90`, fetch directly from `top10`.
-   - For other percentiles, interpolate between `bottom10` (10th), `median` (50th), and `top10` (90th).
-4. **Determine Rank**: Calculate the user's percentile standing by comparing the user's daily average against the cached distribution table.
+Current implementation (`backend/population_api.py`, no cache tables yet):
+
+1. **Requester**: look up the bearer's real user. Without YouTube watch rows in
+   the range the response is `reason: "no_user_data"`.
+2. **Real usage, one scan**: per-user daily hours and per-user hourly seconds
+   for all real users in the range, using `GROUPING SETS` over the clipped
+   watch events (watch time capped at the next watch start). The requester's
+   own profile is taken out of this result.
+3. **Coverage**: each other real user's first and last watch date. A member
+   counts on the days of the range inside that span, with 0 hours on days
+   without watching, and is left out when the span misses the range.
+4. **Synthetic baseline** (`includeSynthetic`): the synthetic profiles are
+   read over their own seeded window. A requested day outside the window maps
+   to the same weekday inside it (`_baseline_day`), so the seed serves any
+   date range instead of only the days around when it ran.
+5. **Privacy guard**: with fewer than `MIN_POPULATION_SIZE` (5) other people
+   the response is `reason: "insufficient_population"` and carries no
+   aggregates.
+6. **Aggregates in Python**: per-day percentiles (linear interpolation, same
+   as Postgres `percentile_cont`) for bottom 10 %, median, top 10 % and the
+   custom percentile; the distribution of members' average daily hours; hourly
+   averages per covered day; the requester's percentile rank.
+
+This is 3 to 5 queries per request, each scanning the range once. The cache
+tables above remain the scaling target if the real population grows into
+the thousands.
 
 ---
 
