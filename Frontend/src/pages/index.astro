@@ -2,15 +2,20 @@
 import Layout from '../layouts/Layout.astro';
 ---
 
-<Layout title="LDiHK | Social Media Analytics & Mental Wellness Insurance Platform">
+<Layout title="LDiHK | Social Media Analytics for Preventive Mental Health">
   <!-- Hero Section -->
   <section class="relative overflow-hidden bg-white py-24 lg:py-32">
     <div class="absolute inset-0 bg-[linear-gradient(to_right,#F4F0E4_1px,transparent_1px),linear-gradient(to_bottom,#F4F0E4_1px,transparent_1px)] bg-[size:4rem_4rem] [mask-image:radial-gradient(ellipse_60%_50%_at_50%_0%,#000_70%,transparent_100%)] opacity-60"></div>
 
     <div class="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center space-y-6">
-      <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-brand-teal/10 border border-brand-teal/20 text-xs font-bold text-brand-teal mb-2 tracking-wide uppercase">
-        <span class="w-2 h-2 rounded-full bg-brand-teal animate-pulse"></span>
-        InsurTech for Preventive Mental Health
+      <div class="flex flex-wrap items-center justify-center gap-2 mb-2">
+        <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-brand-teal/10 border border-brand-teal/20 text-xs font-bold text-brand-teal tracking-wide uppercase">
+          <span class="w-2 h-2 rounded-full bg-brand-teal animate-pulse"></span>
+          InsurTech for Preventive Mental Health
+        </div>
+        <a href="#hackathon" class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-brand-peach/10 border border-brand-peach/30 text-xs font-bold text-brand-navy tracking-wide uppercase hover:bg-brand-peach/20 transition-colors">
+          Hackathon Project &middot; Munich 2026
+        </a>
       </div>
 
       <h1 class="text-4xl sm:text-6xl font-extrabold text-brand-navy tracking-tight max-w-4xl mx-auto leading-[1.15] text-left sm:text-center">
@@ -18,7 +23,7 @@ import Layout from '../layouts/Layout.astro';
       </h1>
 
       <p class="text-base sm:text-lg text-brand-navy/70 max-w-3xl mx-auto leading-relaxed text-left sm:text-center">
-        LDiHK turns the data exports every user can request under privacy law (YouTube via Google Takeout, Instagram and TikTok) into an anonymous picture of their digital habits: how much, how fragmented and how late at night they use social media. Together with partnering insurers, we build models that recognise depression risk early, so prevention can start before treatment becomes necessary, rewarding healthier habits along the way.
+        LDiHK turns the data exports every user can request under privacy law (YouTube via Google Takeout, Instagram and TikTok) into an anonymous picture of their digital habits: how much, how fragmented and how late at night they use social media. Our concept: together with insurers, build models that recognise depression risk early, so prevention can start before treatment becomes necessary, rewarding healthier habits along the way.
       </p>
 
       <div class="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4">
@@ -38,6 +43,37 @@ import Layout from '../layouts/Layout.astro';
           id="hero-cta-pitchdeck"
         >
           How It Works
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Project origin -->
+  <section id="hackathon" class="py-16 bg-white border-t border-brand-navy/5 text-left">
+    <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="rounded-3xl border border-brand-navy/10 bg-brand-beige/30 p-6 sm:p-10 space-y-4">
+        <span class="inline-block px-3 py-1 rounded-md bg-brand-peach/20 text-brand-navy font-bold text-xs uppercase tracking-wider">
+          About this project
+        </span>
+        <h2 class="text-2xl sm:text-3xl font-extrabold text-brand-navy tracking-tight">
+          Built at the EuroTech x Hong Kong Talent Exchange Hackathon 2026 in Munich
+        </h2>
+        <p class="text-brand-navy/70 text-sm sm:text-base leading-relaxed">
+          LDiHK (Life Data Intelligence Hong Kong) was created by a team of four for the EuroTech x HKTE Hackathon 2026.
+          The challenge we chose: Hong Kong's mental health care is overloaded, with long waits for psychiatric referrals,
+          while decades of research link heavy, fragmented and late-night social media use to depression risk.
+        </p>
+        <p class="text-brand-navy/70 text-sm sm:text-base leading-relaxed">
+          This website is the working prototype from the hackathon. You can upload your own data exports and see your usage
+          patterns, a comparison with a synthetic population and a study-based risk indicator. The insurance partnerships,
+          roadmap and business model below are the concept we pitched to the jury. No insurer is involved, and no data is
+          shared with anyone.
+        </p>
+        <a href="https://marlonmueller.eu/en/projects/Eurotech-x-HKTE-Hackathon" target="_blank" rel="noopener" class="inline-flex items-center gap-2 text-sm font-bold text-brand-teal hover:underline">
+          Read the story behind the project
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+          </svg>
         </a>
       </div>
     </div>
@@ -242,7 +278,7 @@ import Layout from '../layouts/Layout.astro';
           Venture Deployment Roadmap
         </h2>
         <p class="text-brand-navy/70 max-w-2xl mx-auto text-base">
-          Our three-phased roadmap to bring preventative mental wellness underwriting to life.
+          The three-phase roadmap we pitched at the hackathon for bringing preventive mental wellness insurance to life.
         </p>
       </div>
 
@@ -365,13 +401,13 @@ import Layout from '../layouts/Layout.astro';
       <div class="bg-brand-beige p-8 sm:p-12 rounded-3xl border border-brand-navy/15 flex flex-col md:flex-row items-center gap-8 shadow-sm">
         <div class="flex-grow space-y-4 text-left">
           <span class="inline-block px-3 py-1 rounded-md bg-brand-peach/20 text-brand-navy font-bold text-xs uppercase tracking-wider">
-            Investor Relations
+            Hackathon Pitch
           </span>
           <h2 class="text-2xl sm:text-3xl font-black text-brand-navy tracking-tight">
-            Review the Venture Deck
+            Our Hackathon Pitch Deck
           </h2>
           <p class="text-brand-navy/70 text-sm sm:text-base leading-relaxed max-w-lg">
-            Download our pitch deck for the business model, the partnership roadmap with insurers and the methodology behind the risk model.
+            The deck we presented at the EuroTech x HKTE Hackathon 2026: the business model, the partnership roadmap with insurers and the methodology behind the risk model.
           </p>
         </div>
 
@@ -406,10 +442,10 @@ import Layout from '../layouts/Layout.astro';
     <div class="absolute right-0 bottom-0 w-64 h-64 bg-brand-peach/10 rounded-full blur-3xl pointer-events-none"></div>
     <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 text-center relative z-10 space-y-6">
       <h2 class="text-2xl sm:text-3xl font-extrabold text-brand-navy tracking-tight">
-        Insurer, Researcher or Curious User?
+        Questions or Feedback?
       </h2>
       <p class="text-brand-navy/70 max-w-xl mx-auto text-sm sm:text-base leading-relaxed">
-        We are looking for insurance partners for Phase 1, researchers to validate the model with, and feedback on the console. Write to us.
+        LDiHK is a hackathon prototype. If you have questions about the project or the model, found a bug or have an idea for the console, write to us or use the feedback form.
       </p>
 
       <div class="inline-flex flex-col sm:flex-row items-center gap-4 justify-center">
@@ -422,6 +458,13 @@ import Layout from '../layouts/Layout.astro';
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
           </svg>
           contact@LDiHK.xyz
+        </a>
+        <a
+          href="/feedback"
+          class="inline-flex items-center gap-3 px-6 py-3.5 rounded-xl bg-white text-brand-navy font-bold text-sm border border-brand-navy/15 hover:border-brand-navy/30 transition-all duration-150"
+          id="main-feedback-link"
+        >
+          Report a bug or request a feature
         </a>
       </div>
     </div>
